@@ -99,12 +99,18 @@ def _token_valido():
 def _renovar_token():
     """Renueva el access_token usando el refresh_token."""
     try:
-        r = requests.post(f"{ML_AUTH_URL}/jms/MLU/oidc/token", data={
+        payload = {
             "grant_type":    "refresh_token",
             "client_id":     ML_APP_ID,
             "client_secret": ML_SECRET_KEY,
             "refresh_token": _tokens.get("refresh_token", ""),
-        }, timeout=10)
+        }
+        # Intentar con endpoint global primero (más confiable)
+        r = requests.post("https://api.mercadolibre.com/oauth/token",
+                          data=payload, timeout=10)
+        if r.status_code != 200:
+            r = requests.post(f"{ML_AUTH_URL}/oauth/token",
+                              data=payload, timeout=10)
         if r.status_code == 200:
             d = r.json()
             _tokens["access_token"]  = d["access_token"]
@@ -310,22 +316,52 @@ def auth_callback():
             Reintentar</a></body></html>"""
 
     try:
-        r = requests.post(f"{ML_AUTH_URL}/jms/MLU/oidc/token", data={
-            "grant_type":    "authorization_code",
-            "client_id":     ML_APP_ID,
-            "client_secret": ML_SECRET_KEY,
-            "code":          code,
-            "redirect_uri":  ML_REDIRECT,
-        }, timeout=15)
+        # ML requiere application/x-www-form-urlencoded con el token en el header
+        import base64
+        credentials = base64.b64encode(
+            f"{ML_APP_ID}:{ML_SECRET_KEY}".encode()
+        ).decode()
+
+        headers = {
+            "Content-Type":  "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {credentials}",
+            "Accept":        "application/json",
+        }
+        payload = (
+            f"grant_type=authorization_code"
+            f"&client_id={ML_APP_ID}"
+            f"&client_secret={ML_SECRET_KEY}"
+            f"&code={code}"
+            f"&redirect_uri={ML_REDIRECT}"
+        )
+
+        # Endpoint oficial ML
+        r = requests.post(
+            "https://api.mercadolibre.com/oauth/token",
+            data=payload,
+            headers=headers,
+            timeout=15
+        )
 
         if r.status_code != 200:
-            return f"""<html><body style="font-family:Arial;padding:40px;background:#0F172A;color:#F1F5F9">
+            # Mostrar respuesta completa para diagnosticar
+            try:
+                err_json = r.json()
+                err_detail = json.dumps(err_json, indent=2, ensure_ascii=False)
+            except Exception:
+                err_detail = r.text
+            return f"""<html><body style="font-family:Arial;padding:40px;
+                background:#0F172A;color:#F1F5F9">
                 <h2 style="color:#EF4444">Error obteniendo token ({r.status_code})</h2>
-                <pre style="background:#1E293B;padding:16px;border-radius:6px;color:#94A3B8;
-                white-space:pre-wrap">{r.text}</pre>
-                <a href="/auth/login" style="background:#3B82F6;color:white;padding:10px 20px;
-                border-radius:6px;text-decoration:none;display:inline-block;margin-top:16px">
-                Reintentar</a></body></html>"""
+                <pre style="background:#1E293B;padding:16px;border-radius:6px;
+                color:#94A3B8;white-space:pre-wrap;font-size:13px">{err_detail}</pre>
+                <p style="color:#475569;font-size:12px">
+                App ID: {ML_APP_ID[:8]}...&nbsp;|&nbsp;
+                Redirect URI: {ML_REDIRECT}</p>
+                <a href="/auth/login" style="background:#3B82F6;color:white;
+                padding:10px 20px;border-radius:6px;text-decoration:none;
+                display:inline-block;margin-top:16px">Reintentar</a>
+                </body></html>"""
 
         d = r.json()
         _tokens["access_token"]  = d["access_token"]
