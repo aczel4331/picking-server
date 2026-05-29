@@ -316,38 +316,23 @@ def auth_callback():
             Reintentar</a></body></html>"""
 
     try:
-        # ML requiere application/x-www-form-urlencoded con el token en el header
-        import base64
-        credentials = base64.b64encode(
-            f"{ML_APP_ID}:{ML_SECRET_KEY}".encode()
-        ).decode()
-
-        headers = {
-            "Content-Type":  "application/x-www-form-urlencoded",
-            "Authorization": f"Basic {credentials}",
-            "Accept":        "application/json",
-        }
-        payload = (
-            f"grant_type=authorization_code"
-            f"&client_id={ML_APP_ID}"
-            f"&client_secret={ML_SECRET_KEY}"
-            f"&code={code}"
-            f"&redirect_uri={ML_REDIRECT}"
-        )
-
-        # Endpoint oficial ML
         r = requests.post(
             "https://api.mercadolibre.com/oauth/token",
-            data=payload,
-            headers=headers,
+            headers={"Accept": "application/json",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type":    "authorization_code",
+                "client_id":     ML_APP_ID,
+                "client_secret": ML_SECRET_KEY,
+                "code":          code,
+                "redirect_uri":  ML_REDIRECT,
+            },
             timeout=15
         )
 
         if r.status_code != 200:
-            # Mostrar respuesta completa para diagnosticar
             try:
-                err_json = r.json()
-                err_detail = json.dumps(err_json, indent=2, ensure_ascii=False)
+                err_detail = json.dumps(r.json(), indent=2, ensure_ascii=False)
             except Exception:
                 err_detail = r.text
             return f"""<html><body style="font-family:Arial;padding:40px;
