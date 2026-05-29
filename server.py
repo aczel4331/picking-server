@@ -1,11 +1,11 @@
 """
-server.py – Sistema de Picking integrado con MercadoLibre (Uruguay)
+server.py — Sistema de Picking integrado con MercadoLibre (Uruguay)
 ====================================================================
 Deploy en Railway. Variables de entorno requeridas:
-  ML_APP_ID      – App ID de tu aplicación ML
-  ML_SECRET_KEY  – Secret Key de tu aplicación ML
-  APP_SECRET_KEY – Clave para sesiones Flask (cualquier string largo)
-  PICKING_API_KEY – Clave interna para sincronización con app_deposito.py
+  ML_APP_ID      → App ID de tu aplicación ML
+  ML_SECRET_KEY  → Secret Key de tu aplicación ML
+  APP_SECRET_KEY → Clave para sesiones Flask (cualquier string largo)
+  PICKING_API_KEY → Clave interna para sincronización con app_deposito.py
 
 Flujo OAuth2 ML:
   1. Usuario va a /auth/login  →  redirige a ML
@@ -31,7 +31,7 @@ ML_SECRET_KEY = os.environ.get("ML_SECRET_KEY", "")
 ML_SITE_ID    = "MLU"   # Uruguay
 ML_AUTH_URL   = "https://auth.mercadolibre.com.uy"
 ML_API_URL    = "https://api.mercadolibre.com"
-# Redirect URI fijo – debe coincidir EXACTAMENTE con el configurado en ML Developers
+# Redirect URI fijo — debe coincidir EXACTAMENTE con el configurado en ML Developers
 ML_REDIRECT   = os.environ.get(
     "ML_REDIRECT_URI",
     "https://picking-server-production.up.railway.app/auth/callback"
@@ -83,9 +83,9 @@ def _sku_info(sku):
 
 _cargar_sku_db()
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 # HELPERS ML
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _token_valido():
     if not _tokens.get("access_token"):
@@ -153,6 +153,7 @@ def _ml_get_all_orders():
                 item = it.get("item", {})
                 var  = it.get("item", {}).get("variation_attributes", [])
                 sku  = ""
+                # Intentar obtener SKU del seller_custom_field o variation
                 if it.get("item", {}).get("seller_custom_field"):
                     sku = str(it["item"]["seller_custom_field"])
                 attrs = var if var else []
@@ -203,6 +204,7 @@ def _enriquecer_skus(pedidos):
 
     sku_map = {}
     ids_list = list(item_ids_sin_sku)
+    # ML permite multiget de hasta 20 items
     for i in range(0, len(ids_list), 20):
         chunk = ids_list[i:i+20]
         r = _ml_get("/items", params={"ids": ",".join(chunk)})
@@ -215,6 +217,7 @@ def _enriquecer_skus(pedidos):
                 if iid and sku:
                     sku_map[iid] = str(sku).upper()
 
+    # Aplicar al dict de pedidos
     for p in pedidos.values():
         for it in p["items"]:
             if not it["sku"] and it["item_id"] in sku_map:
@@ -232,6 +235,7 @@ def _refresh_pedidos_worker():
         pedidos = _ml_get_all_orders()
         pedidos = _enriquecer_skus(pedidos)
         with _lock:
+            # Preservar flag 'impreso' de pedidos ya existentes
             for oid, p in pedidos.items():
                 if oid in _pedidos_ml:
                     p["impreso"] = _pedidos_ml[oid].get("impreso", False)
@@ -244,7 +248,7 @@ def _refresh_pedidos_worker():
 def _auto_refresh_loop():
     """Hilo que refresca pedidos cada 5 minutos automáticamente."""
     while True:
-        time.sleep(300)
+        time.sleep(300)  # 5 minutos
         if _token_valido() and _pedidos_ml:
             _refresh_pedidos_worker()
 
@@ -252,9 +256,9 @@ def _auto_refresh_loop():
 threading.Thread(target=_auto_refresh_loop, daemon=True).start()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 # DECORADORES
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def requiere_auth(f):
     @wraps(f)
@@ -276,9 +280,9 @@ def requiere_api_key(f):
     return decorated
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 # AUTH ROUTES
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/auth/login")
 def auth_login():
@@ -328,10 +332,12 @@ def auth_callback():
         _tokens["refresh_token"] = d.get("refresh_token", "")
         _tokens["expires_at"]    = datetime.now() + timedelta(seconds=d.get("expires_in", 21600))
 
+        # Obtener datos del usuario
         me = _ml_get("/users/me").json()
         _tokens["user_id"]  = str(me.get("id",""))
         _tokens["nickname"] = me.get("nickname","")
 
+        # Traer pedidos en background
         threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
 
         return redirect("/")
@@ -357,13 +363,13 @@ def auth_status():
         "nickname":    _tokens.get("nickname",""),
         "user_id":     _tokens.get("user_id",""),
         "pedidos":     len(_pedidos_ml),
-        "ultimo_refresh": _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S") if _ultimo_refresh_pedidos else "–",
+        "ultimo_refresh": _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S") if _ultimo_refresh_pedidos else "—",
     })
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 # API PEDIDOS ML
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/pedidos")
 @requiere_auth
@@ -373,7 +379,7 @@ def api_pedidos():
             "ok":      True,
             "pedidos": list(_pedidos_ml.values()),
             "total":   len(_pedidos_ml),
-            "ts":      _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S") if _ultimo_refresh_pedidos else "–",
+            "ts":      _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S") if _ultimo_refresh_pedidos else "—",
         })
 
 
@@ -397,10 +403,16 @@ def api_etiqueta(order_id):
     if not shipping_id:
         return jsonify({"ok": False, "msg": "Este pedido no tiene envío"}), 400
 
+    # Obtener label de ML
+    r = _ml_get(f"/shipments/{shipping_id}/labels",
+                params={"response_type": "zpl2", "caller.id": _tokens.get("user_id","")})
+
+    # ML también permite PDF directo
     r_pdf = _ml_get(f"/shipments/{shipping_id}/labels",
                     params={"response_type": "pdf2"})
 
     if r_pdf.status_code == 200:
+        # Devolver URL directa al PDF de ML
         label_url = f"{ML_API_URL}/shipments/{shipping_id}/labels?response_type=pdf2&access_token={_tokens['access_token']}"
         return jsonify({"ok": True, "url": label_url, "shipping_id": shipping_id})
 
@@ -416,9 +428,9 @@ def marcar_impreso(order_id):
     return jsonify({"ok": True})
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 # API PICKING (sync con app_deposito.py)
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/ping")
 def ping():
@@ -520,9 +532,9 @@ def limpiar():
     return jsonify({"ok": True})
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 # API BASE DE SKUs
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/skus")
 @requiere_auth
@@ -616,9 +628,9 @@ def api_skus_limpiar():
     return jsonify({"ok": True, "msg": "BD de SKUs limpiada"})
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FRONTEND – página principal (requiere auth)
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# FRONTEND — página principal (requiere auth)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/")
 def index():
@@ -632,16 +644,16 @@ def movil():
     return render_template_string(HTML_MOVIL)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HTML – APP PRINCIPAL (PC + tablet)
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# HTML — APP PRINCIPAL (PC + tablet)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 HTML_APP = r"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sistema de Picking – MercadoLibre</title>
+<title>Sistema de Picking — MercadoLibre</title>
 <style>
 :root{--bg:#0F172A;--panel:#1E293B;--card:#162032;--border:#334155;
   --accent:#3B82F6;--accent2:#6366F1;--success:#10B981;--warning:#F59E0B;
@@ -649,6 +661,7 @@ HTML_APP = r"""<!DOCTYPE html>
   --ml:#FFE600}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;height:100vh;display:flex;flex-direction:column}
+/* TOPBAR */
 .topbar{background:var(--panel);border-bottom:1px solid var(--border);
   padding:0 20px;height:56px;display:flex;align-items:center;gap:12px;flex-shrink:0}
 .logo{font-size:22px}
@@ -671,15 +684,18 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .btn-ml{background:var(--ml);color:#000}
 .btn-ml:hover{background:#EAD700}
 .btn:disabled{opacity:.4;cursor:not-allowed}
+/* TABS */
 .tabs{background:var(--panel);border-bottom:1px solid var(--border);
   display:flex;padding:0 20px;flex-shrink:0}
 .tab{padding:12px 20px;font-size:13px;font-weight:700;color:var(--mid);
   cursor:pointer;border-bottom:3px solid transparent;transition:.15s}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
 .tab:hover:not(.active){color:var(--hi)}
+/* CONTENT */
 .content{flex:1;overflow:hidden;display:flex;flex-direction:column}
 .tab-panel{display:none;flex:1;overflow:hidden}
 .tab-panel.active{display:flex;flex-direction:column}
+/* TOOLBAR */
 .toolbar{padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex-shrink:0}
 .search-input{background:var(--card);border:1px solid var(--border);color:var(--hi);
@@ -687,6 +703,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .search-input:focus{border-color:var(--accent)}
 .badge-count{background:var(--accent);color:#fff;font-size:11px;font-weight:700;
   padding:2px 8px;border-radius:12px}
+/* TABLA PEDIDOS */
 .tabla-wrap{flex:1;overflow-y:auto;padding:16px 20px}
 .tabla{width:100%;border-collapse:collapse}
 .tabla th{text-align:left;font-size:11px;font-weight:700;color:var(--lo);
@@ -703,12 +720,14 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .estado-paid{background:rgba(16,185,129,.15);color:var(--success)}
 .estado-ready{background:rgba(59,130,246,.15);color:var(--accent)}
 .estado-pending{background:rgba(245,158,11,.15);color:var(--warning)}
+/* PICKING PANEL */
 .picking-wrap{display:flex;gap:0;flex:1;overflow:hidden}
 .picking-left{width:340px;flex-shrink:0;overflow-y:auto;
   border-right:1px solid var(--border);background:var(--panel)}
 .picking-center{flex:1;overflow-y:auto;padding:20px}
 .picking-right{width:320px;flex-shrink:0;overflow-y:auto;
   border-left:1px solid var(--border);padding:16px;background:var(--panel)}
+/* SKU GROUP */
 .grupo-hdr{background:var(--bar);padding:8px 14px;
   display:flex;justify-content:space-between;align-items:center;
   cursor:pointer;border-bottom:1px solid var(--border)}
@@ -728,6 +747,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .sku-cnt.ok{color:var(--success)}
 .sku-cnt.pend{color:var(--accent)}
 .sku-loc{font-size:10px;color:var(--accent2);margin-top:1px}
+/* SCAN BOX */
 .scan-section{padding:14px;background:var(--card);border-radius:10px;margin-bottom:14px;
   border:1px solid var(--border)}
 .scan-lbl{font-size:10px;font-weight:700;color:var(--lo);letter-spacing:.08em;margin-bottom:8px}
@@ -740,22 +760,27 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 #scan-fb.warn{background:rgba(245,158,11,.15);color:var(--warning)}
 #scan-fb.err{background:rgba(239,68,68,.15);color:var(--danger)}
 #scan-fb.neu{color:var(--mid)}
+/* FASE BADGE */
 .fase-badge{border-radius:20px;padding:4px 14px;font-size:12px;font-weight:800;display:inline-block}
 .fase-1{background:rgba(59,130,246,.2);color:var(--accent)}
 .fase-2{background:rgba(16,185,129,.2);color:var(--success)}
+/* STATS */
 .stats-row{display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap}
 .stat{background:var(--card);border:1px solid var(--border);border-radius:8px;
   padding:10px 16px;min-width:110px}
 .stat-n{font-size:22px;font-weight:800;color:var(--accent)}
 .stat-l{font-size:10px;color:var(--lo);margin-top:2px}
+/* MODAL */
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;
   display:flex;align-items:center;justify-content:center;display:none}
 .modal-bg.open{display:flex}
 .modal{background:var(--panel);border:1px solid var(--border);border-radius:12px;
   padding:24px;width:540px;max-width:95vw;max-height:90vh;overflow-y:auto}
 .modal h3{font-size:16px;margin-bottom:14px}
+/* SPINNER */
 .spin{animation:spin .7s linear infinite;display:inline-block}
 @keyframes spin{to{transform:rotate(360deg)}}
+/* TOAST */
 #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);
   background:var(--panel);border:1px solid var(--border);color:var(--hi);
   padding:10px 22px;border-radius:30px;font-size:14px;font-weight:600;z-index:9999;
@@ -763,12 +788,14 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 #toast.show{transform:translateX(-50%) translateY(0);opacity:1}
 #toast.ok{border-color:var(--success);color:var(--success)}
 #toast.err{border-color:var(--danger);color:var(--danger)}
+/* EMPTY */
 .empty{text-align:center;padding:60px 20px;color:var(--lo)}
 .empty-i{font-size:48px;margin-bottom:12px}
 </style>
 </head>
 <body>
 
+<!-- TOPBAR -->
 <div class="topbar">
   <span class="logo">⬡</span>
   <div><div class="topbar-title">Sistema de Picking</div>
@@ -781,6 +808,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   <button class="btn btn-ghost" onclick="location='/auth/logout'">Cerrar sesión</button>
 </div>
 
+<!-- TABS -->
 <div class="tabs">
   <div class="tab active" onclick="showTab('pedidos')">📋 Pedidos ML</div>
   <div class="tab" onclick="showTab('picking')">📦 Picking</div>
@@ -790,6 +818,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 
 <div class="content">
 
+  <!-- ═══════════════════════════════════════ TAB PEDIDOS ══════════════════ -->
   <div class="tab-panel active" id="tab-pedidos">
     <div class="toolbar">
       <input class="search-input" type="text" id="search-pedidos"
@@ -827,23 +856,29 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     </div>
   </div>
 
+  <!-- ═══════════════════════════════════════ TAB PICKING ══════════════════ -->
   <div class="tab-panel" id="tab-picking">
     <div class="toolbar">
-      <span id="fase-badge" class="fase-badge fase-1">⬡ FASE 1: COLECTA</span>
+      <span id="fase-badge" class="fase-badge fase-1">● FASE 1: COLECTA</span>
       <div class="spacer"></div>
       <button class="btn btn-ghost" id="btn-fase2" onclick="pasarFase2()" disabled>
         ▶ Pasar a Fase 2
       </button>
     </div>
     <div class="picking-wrap">
+
+      <!-- Lista de SKUs por pasillo -->
       <div class="picking-left" id="picking-lista">
         <div class="empty" style="padding:40px 20px">
           <div class="empty-i">📋</div>
           <div style="font-size:13px">Generá un lote desde la pestaña Pedidos ML</div>
         </div>
       </div>
+
+      <!-- Centro: escaneo -->
       <div class="picking-center">
         <div class="stats-row" id="stats-picking"></div>
+
         <div class="scan-section">
           <div class="scan-lbl">ESCANEAR CÓDIGO</div>
           <input id="scan-input" type="text" autocomplete="off"
@@ -851,17 +886,22 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
                  placeholder="SKU…" onkeydown="onScanKey(event)">
           <div id="scan-fb" class="neu">Listo para escanear</div>
         </div>
+
         <div id="picking-cajas"></div>
       </div>
+
+      <!-- Panel derecho: info -->
       <div class="picking-right">
         <div style="font-size:12px;font-weight:800;color:var(--lo);letter-spacing:.06em;margin-bottom:12px">
           RESUMEN DE PEDIDOS
         </div>
         <div id="resumen-pedidos-picking"></div>
       </div>
+
     </div>
   </div>
 
+  <!-- ═════════════════════════════════════ TAB SKU DB ════════════════════ -->
   <div class="tab-panel" id="tab-skudb">
     <div class="toolbar">
       <input class="search-input" type="text" id="search-skus"
@@ -875,8 +915,10 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
       </button>
       <input type="file" id="import-file" accept=".json" style="display:none"
              onchange="importarSkus(event)">
-      <button class="btn btn-success" onclick="abrirFormSku(null)">+ Nuevo SKU</button>
+      <button class="btn btn-success" onclick="abrirFormSku(null)">➕ Nuevo SKU</button>
     </div>
+
+    <!-- Tabla -->
     <div class="tabla-wrap">
       <table class="tabla" id="tabla-skus">
         <thead>
@@ -898,6 +940,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     </div>
   </div>
 
+  <!-- ═════════════════════════════════════ TAB MÓVIL ══════════════════════ -->
   <div class="tab-panel" id="tab-movil-link">
     <div style="padding:40px;text-align:center">
       <div style="font-size:48px;margin-bottom:16px">📱</div>
@@ -914,8 +957,9 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     </div>
   </div>
 
-</div>
+</div><!-- /content -->
 
+<!-- MODAL ETIQUETA -->
 <div class="modal-bg" id="modal-etiqueta">
   <div class="modal">
     <h3>🏷️ Etiqueta de envío</h3>
@@ -929,9 +973,10 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   </div>
 </div>
 
+<!-- MODAL FORM SKU -->
 <div class="modal-bg" id="modal-sku">
   <div class="modal" style="width:480px">
-    <h3 id="modal-sku-title">+ Nuevo SKU</h3>
+    <h3 id="modal-sku-title">➕ Nuevo SKU</h3>
     <div style="display:flex;flex-direction:column;gap:12px">
       <div>
         <label style="font-size:11px;font-weight:700;color:var(--lo);letter-spacing:.06em;display:block;margin-bottom:4px">SKU *</label>
@@ -958,7 +1003,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     </div>
     <div style="margin-top:20px;display:flex;gap:8px;justify-content:flex-end">
       <button class="btn btn-ghost" onclick="cerrarModal('modal-sku')">Cancelar</button>
-      <button class="btn btn-success" onclick="guardarSku()">✔ Guardar SKU</button>
+      <button class="btn btn-success" onclick="guardarSku()">✅ Guardar SKU</button>
     </div>
   </div>
 </div>
@@ -966,15 +1011,25 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <div id="toast"></div>
 
 <script>
-let PEDIDOS = {}, ESTADO_PK = null, FASE_ACTUAL = 1, COLECTA = {}, LOTE_IDS = [];
+// ════════════════════════════════════════════════════════════
+// ESTADO LOCAL
+// ════════════════════════════════════════════════════════════
+let PEDIDOS     = {};
+let ESTADO_PK   = null;
+let FASE_ACTUAL = 1;
+let COLECTA     = {};
+let LOTE_IDS    = [];   // order_ids incluidos en el lote actual
 let etiquetaUrlActual = "";
 
+// ════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   cargarStatus();
   cargarPedidos();
   document.getElementById('movil-url').textContent = location.origin + '/movil';
-  setInterval(cargarPedidosQuiet, 120000);
-  setInterval(syncEstadoPicking, 5000);
+  setInterval(cargarPedidosQuiet, 120000);  // auto-refresh cada 2 min
+  setInterval(syncEstadoPicking, 5000);     // sync picking cada 5s
 });
 
 async function cargarStatus() {
@@ -983,15 +1038,20 @@ async function cargarStatus() {
   document.getElementById('nickname').textContent = d.nickname || 'Usuario ML';
 }
 
+// ════════════════════════════════════════════════════════════
+// TABS
+// ════════════════════════════════════════════════════════════
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelector(`.tab[onclick="showTab('${name}')"]`).classList.add('active');
   document.getElementById(`tab-${name}`).classList.add('active');
   if (name === 'picking') renderPicking();
-  if (name === 'skudb') cargarSkus();
 }
 
+// ════════════════════════════════════════════════════════════
+// PEDIDOS
+// ════════════════════════════════════════════════════════════
 async function cargarPedidos() {
   try {
     const r = await fetch('/api/pedidos');
@@ -1028,19 +1088,22 @@ function renderPedidos(filtro='') {
            p.items.some(it => it.titulo.toLowerCase().includes(q) ||
                                it.sku.toLowerCase().includes(q));
   });
+
   document.getElementById('badge-pedidos').textContent = peds.length;
+
   if (!peds.length) {
     tbody.innerHTML = `<tr><td colspan="7"><div class="empty">
-      <div class="empty-i">📭</div><div>Sin pedidos${filtro?' que coincidan':''}</div>
+      <div class="empty-i">📋</div><div>Sin pedidos${filtro?' que coincidan':''}</div>
     </div></td></tr>`;
     return;
   }
+
   tbody.innerHTML = peds.map(p => {
     const skus = p.items.map(it =>
       `<span class="sku-chip">${it.sku||'?'}</span> ${it.titulo.substring(0,25)}… ×${it.cantidad}`
     ).join('<br>');
     const envChip = p.estado_envio ?
-      `<span class="estado-chip estado-ready">${p.estado_envio}</span>` : '–';
+      `<span class="estado-chip estado-ready">${p.estado_envio}</span>` : '—';
     const btnEtiq = p.shipping_id ?
       `<button class="btn btn-ml" style="font-size:11px;padding:4px 10px"
         onclick="verEtiqueta('${p.order_id}')">🏷️ Etiqueta</button>` : '';
@@ -1055,21 +1118,28 @@ function renderPedidos(filtro='') {
     </tr>`;
   }).join('');
 }
-function filtrarPedidos() { renderPedidos(document.getElementById('search-pedidos').value); }
 
+function filtrarPedidos() {
+  renderPedidos(document.getElementById('search-pedidos').value);
+}
+
+// ════════════════════════════════════════════════════════════
+// ETIQUETAS
+// ════════════════════════════════════════════════════════════
 async function verEtiqueta(orderId) {
   const p = PEDIDOS[orderId];
   document.getElementById('modal-etiqueta-body').innerHTML =
-    `<div>📦 Pedido #${orderId} – ${p.comprador}<br>
+    `<div>📦 Pedido #${orderId} — ${p.comprador}<br>
      <span class="spin">⏳</span> Obteniendo etiqueta…</div>`;
   document.getElementById('modal-etiqueta').classList.add('open');
   etiquetaUrlActual = '';
+
   const r = await fetch(`/api/etiqueta/${orderId}`);
   const d = await r.json();
   if (d.ok) {
     etiquetaUrlActual = d.url;
     document.getElementById('modal-etiqueta-body').innerHTML =
-      `<div style="margin-bottom:8px">📦 <b>#${orderId}</b> – ${p.comprador}</div>
+      `<div style="margin-bottom:8px">📦 <b>#${orderId}</b> — ${p.comprador}</div>
        <iframe src="${d.url}" style="width:100%;height:400px;border:none;border-radius:8px;
        background:#fff"></iframe>`;
     await fetch(`/api/pedidos/marcar_impreso/${orderId}`, {method:'POST'});
@@ -1077,7 +1147,7 @@ async function verEtiqueta(orderId) {
     renderPedidos(document.getElementById('search-pedidos').value);
   } else {
     document.getElementById('modal-etiqueta-body').innerHTML =
-      `<div style="color:var(--danger)">✗ ${d.msg}</div>
+      `<div style="color:var(--danger)">❌ ${d.msg}</div>
        <div style="color:var(--mid);font-size:12px;margin-top:8px">
        Verificá que el pedido tenga envío activo en ML.</div>`;
   }
@@ -1085,35 +1155,53 @@ async function verEtiqueta(orderId) {
 function abrirEtiqueta() { if (etiquetaUrlActual) window.open(etiquetaUrlActual,'_blank'); }
 function cerrarModal(id) { document.getElementById(id).classList.remove('open'); }
 
+// ════════════════════════════════════════════════════════════
+// GENERAR LOTE DE PICKING
+// ════════════════════════════════════════════════════════════
 async function generarLotePicking() {
   const peds = Object.values(PEDIDOS).filter(p => !p.impreso);
   if (!peds.length) { toast('No hay pedidos pendientes', 'err'); return; }
+
+  // Asegurarse de tener la BD de SKUs actualizada
   if (!Object.keys(SKU_DB).length) await cargarSkus();
-  const totalReq = {}, skuNombre = {};
+
+  // Consolidar SKUs sumando cantidades
+  const totalReq  = {};
+  const skuNombre = {};
   peds.forEach(p => {
     p.items.forEach(it => {
       const sku = (it.sku || it.item_id).toUpperCase();
-      totalReq[sku] = (totalReq[sku]||0) + it.cantidad;
+      totalReq[sku]  = (totalReq[sku]||0) + it.cantidad;
       if (!skuNombre[sku]) skuNombre[sku] = it.titulo;
     });
   });
+
+  // Enriquecer con BD de SKUs y agrupar por pasillo
   const gruposDict = {};
   Object.entries(totalReq).sort().forEach(([sku, req]) => {
-    const dbInfo = SKU_DB[sku] || {};
-    const nombre = dbInfo.nombre || skuNombre[sku] || sku;
-    const pasillo = dbInfo.pasillo || 'Sin ubicación en BD';
+    const dbInfo   = SKU_DB[sku] || {};
+    const nombre   = dbInfo.nombre   || skuNombre[sku] || sku;
+    const pasillo  = dbInfo.pasillo  || 'Sin ubicación en BD';
     const estanteria = dbInfo.estanteria || '';
     if (!gruposDict[pasillo]) gruposDict[pasillo] = [];
     gruposDict[pasillo].push({sku, nombre, req, pasillo, estanteria});
   });
+
+  // Ordenar pasillos: numerados primero
   const sortPasillo = n => { const m=n.match(/(\d+)/); return m?[0,+m[1],n]:[1,0,n]; };
   const grupos = Object.entries(gruposDict)
     .sort((a,b) => { const x=sortPasillo(a[0]),y=sortPasillo(b[0]); return x[0]-y[0]||x[1]-y[1]||a[0].localeCompare(b[0]); })
     .map(([pasillo,items]) => ({pasillo, items}));
+
   const totalSkus = Object.keys(totalReq).length;
   const totalUds  = Object.values(totalReq).reduce((a,b)=>a+b,0);
   const sinBD     = Object.keys(totalReq).filter(s=>!SKU_DB[s]).length;
-  const payload = { fase: 1, grupos, colecta: {}, colecta_completa: false, total_skus: totalSkus, total_uds: totalUds };
+
+  const payload = {
+    fase: 1, grupos, colecta: {}, colecta_completa: false,
+    total_skus: totalSkus, total_uds: totalUds,
+  };
+
   const r = await fetch('/api/subir_estado', {
     method:'POST',
     headers:{'Content-Type':'application/json','X-API-Key':'everest2024'},
@@ -1121,16 +1209,20 @@ async function generarLotePicking() {
   });
   const d = await r.json();
   if (d.ok) {
-    COLECTA = {}; FASE_ACTUAL = 1; LOTE_IDS = peds.map(p=>p.order_id);
+    COLECTA = {}; FASE_ACTUAL = 1;
+    LOTE_IDS = peds.map(p=>p.order_id);
     const msg = sinBD > 0
-      ? `✔ Lote generado (${sinBD} SKUs sin info en BD → agregálos en 🗃 Base de SKUs)`
-      : `✔ Lote generado: ${totalSkus} SKUs en ${grupos.length} pasillo(s)`;
+      ? `✅ Lote generado (${sinBD} SKUs sin info en BD — agregálos en 🗃 Base de SKUs)`
+      : `✅ Lote generado: ${totalSkus} SKUs en ${grupos.length} pasillo(s)`;
     toast(msg, 'ok');
     showTab('picking');
     syncEstadoPicking();
   } else toast('Error: '+d.msg, 'err');
 }
 
+// ════════════════════════════════════════════════════════════
+// PICKING
+// ════════════════════════════════════════════════════════════
 async function syncEstadoPicking() {
   try {
     const r = await fetch('/api/estado');
@@ -1141,6 +1233,7 @@ async function syncEstadoPicking() {
     renderPickingLista();
   } catch(e) {}
 }
+
 function renderPicking() { syncEstadoPicking(); }
 
 function renderPickingStats() {
@@ -1153,7 +1246,7 @@ function renderPickingStats() {
     <div class="stat"><div class="stat-n" style="color:var(--success)">${done}</div><div class="stat-l">Colectadas</div></div>
   `;
   const fb = document.getElementById('fase-badge');
-  fb.textContent = FASE_ACTUAL===1 ? '⬡ FASE 1: COLECTA' : '✔ FASE 2: ARMADO';
+  fb.textContent = FASE_ACTUAL===1 ? '● FASE 1: COLECTA' : '● FASE 2: ARMADO';
   fb.className   = `fase-badge fase-${FASE_ACTUAL}`;
   document.getElementById('btn-fase2').disabled = FASE_ACTUAL === 2;
 }
@@ -1167,8 +1260,8 @@ function renderPickingLista() {
     return;
   }
   lista.innerHTML = grupos.map(g => {
-    const col = COLECTA;
-    const done = g.items.filter(it=>(col[it.sku]||0)>=it.req).length;
+    const col   = COLECTA;
+    const done  = g.items.filter(it=>(col[it.sku]||0)>=it.req).length;
     const gDone = done === g.items.length;
     return `<div>
       <div class="grupo-hdr" onclick="this.nextElementSibling.classList.toggle('hidden')">
@@ -1179,20 +1272,21 @@ function renderPickingLista() {
       <div>${g.items.map(it=>{
         const c=col[it.sku]||0, ok=c>=it.req;
         return`<div class="sku-row ${ok?'done':''}">
-          <div class="sku-chk ${ok?'ok':''}">${ ok?'✔':'○'}</div>
+          <div class="sku-chk ${ok?'ok':''}">${ok?'✔':'○'}</div>
           <div class="sku-body">
             <div class="sku-name">${it.nombre||it.sku}</div>
             <div class="sku-meta">
               <span class="sku-code">${it.sku}</span>
               <span class="sku-cnt ${ok?'ok':'pend'}">${c} / ${it.req}</span>
             </div>
-            ${it.estanteria?`<div class="sku-loc">📍 ${it.estanteria}</div>`:''}
+            ${it.estanteria?`<div class="sku-loc">🗂 ${it.estanteria}</div>`:''}
           </div></div>`;
       }).join('')}</div>
     </div>`;
   }).join('');
 }
 
+// SCAN
 function onScanKey(e) {
   const inp = document.getElementById('scan-input');
   if (e.key === 'Enter') {
@@ -1213,18 +1307,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function procesarScan(sku) {
   sku = sku.toUpperCase();
-  const r = await fetch('/api/escanear', {method:'POST',
+  const r    = await fetch('/api/escanear', {method:'POST',
     headers:{'Content-Type':'application/json'}, body:JSON.stringify({sku})});
-  const d = await r.json();
-  const fb = document.getElementById('scan-fb');
+  const d    = await r.json();
+  const fb   = document.getElementById('scan-fb');
   if (!d.ok) {
-    fb.className='err'; fb.textContent=`✗ ${d.msg}`;
+    fb.className='err'; fb.textContent=`❌ ${d.msg}`;
   } else if (d.tipo==='ya_completo') {
     fb.className='warn'; fb.textContent=`⚠ ${d.nombre||sku} ya completo`;
   } else {
     fb.className='ok';
     fb.textContent = d.tipo==='completo'
-      ? `✔ ${d.nombre||sku} – ¡Completo!`
+      ? `✔ ${d.nombre||sku} — ¡Completo!`
       : `${d.nombre||sku}  ${d.collected}/${d.req}`;
     if(!COLECTA) COLECTA={};
     COLECTA[sku] = d.collected;
@@ -1243,13 +1337,19 @@ async function pasarFase2() {
     headers:{'Content-Type':'application/json','X-API-Key':'everest2024'},
     body:JSON.stringify(est)});
   renderPickingStats();
-  toast('✔ Pasado a Fase 2', 'ok');
+  toast('✅ Pasado a Fase 2', 'ok');
 }
 
+// UTILS
+function getCookie(n){const v=document.cookie.match('(^|;)\\s*'+n+'\\s*=\\s*([^;]+)');return v?v.pop():'';}
 function toast(m,t=''){const el=document.getElementById('toast');el.textContent=m;el.className='show '+t;setTimeout(()=>el.className='',2800);}
 function copiarUrl(){navigator.clipboard.writeText(location.origin+'/movil');toast('URL copiada','ok');}
 
-let SKU_DB = {}, SKU_EDITANDO = null;
+// ════════════════════════════════════════════════════════════
+// BASE DE SKUs
+// ════════════════════════════════════════════════════════════
+let SKU_DB      = {};   // cache local
+let SKU_EDITANDO = null; // null = nuevo, string = SKU que se está editando
 
 async function cargarSkus() {
   try {
@@ -1266,47 +1366,55 @@ function renderSkus(filtro='') {
     !q || sku.includes(q) || v.nombre.toUpperCase().includes(q) ||
     v.pasillo.toUpperCase().includes(q)
   ).sort((a,b) => a[0].localeCompare(b[0]));
+
   document.getElementById('badge-skus').textContent = Object.keys(SKU_DB).length;
+
   if (!items.length) {
     tbody.innerHTML = `<tr><td colspan="5"><div class="empty">
       <div class="empty-i">🗃</div>
-      <div>${filtro ? 'Sin resultados' : 'No hay SKUs cargados aún.<br>Usá + Nuevo SKU o ⬆ Importar JSON'}</div>
+      <div>${filtro ? 'Sin resultados' : 'No hay SKUs cargados aún.<br>Usá ➕ Nuevo SKU o ⬆ Importar JSON'}</div>
     </div></td></tr>`;
     return;
   }
+
   tbody.innerHTML = items.map(([sku, v]) => `
     <tr>
       <td><span class="sku-chip">${sku}</span></td>
       <td style="font-weight:600">${v.nombre}</td>
-      <td style="color:var(--accent2)">${v.pasillo || '–'}</td>
-      <td style="color:var(--mid);font-size:12px">${v.estanteria || '–'}</td>
+      <td style="color:var(--accent2)">${v.pasillo || '—'}</td>
+      <td style="color:var(--mid);font-size:12px">${v.estanteria || '—'}</td>
       <td>
         <button class="btn btn-ghost" style="padding:4px 8px;font-size:11px"
-          onclick="abrirFormSku('${sku}')">✎</button>
+          onclick="abrirFormSku('${sku}')">✏</button>
         <button class="btn btn-danger" style="padding:4px 8px;font-size:11px;margin-left:4px"
           onclick="eliminarSku('${sku}')">🗑</button>
       </td>
     </tr>`).join('');
 }
 
-function filtrarSkus() { renderSkus(document.getElementById('search-skus').value); }
+function filtrarSkus() {
+  renderSkus(document.getElementById('search-skus').value);
+}
 
 function abrirFormSku(skuOrig) {
   SKU_EDITANDO = skuOrig;
   const v = skuOrig ? (SKU_DB[skuOrig] || {}) : {};
-  document.getElementById('modal-sku-title').textContent = skuOrig ? `✎ Editar: ${skuOrig}` : '+ Nuevo SKU';
+  document.getElementById('modal-sku-title').textContent = skuOrig ? `✏ Editar: ${skuOrig}` : '➕ Nuevo SKU';
   document.getElementById('form-sku').value         = skuOrig || '';
   document.getElementById('form-sku').disabled      = !!skuOrig;
   document.getElementById('form-nombre').value      = v.nombre || '';
   document.getElementById('form-pasillo').value     = v.pasillo || '';
   document.getElementById('form-estanteria').value  = v.estanteria || '';
   document.getElementById('form-error').style.display = 'none';
+
+  // Sugerencias de pasillos existentes
   const pasillos = [...new Set(Object.values(SKU_DB).map(x=>x.pasillo).filter(Boolean))];
   document.getElementById('pasillo-sugs').innerHTML = pasillos.map(p =>
     `<span style="background:var(--bar);border:1px solid var(--border);border-radius:4px;
       padding:2px 8px;font-size:11px;cursor:pointer;color:var(--accent)"
       onclick="document.getElementById('form-pasillo').value='${p}'">${p}</span>`
   ).join('');
+
   document.getElementById('modal-sku').classList.add('open');
   setTimeout(() => document.getElementById(skuOrig ? 'form-nombre' : 'form-sku').focus(), 100);
 }
@@ -1317,12 +1425,16 @@ async function guardarSku() {
   const pasillo    = document.getElementById('form-pasillo').value.trim();
   const estanteria = document.getElementById('form-estanteria').value.trim();
   const errEl      = document.getElementById('form-error');
+
   if (!sku)    { errEl.textContent='SKU obligatorio';    errEl.style.display='block'; return; }
   if (!nombre) { errEl.textContent='Nombre obligatorio'; errEl.style.display='block'; return; }
   errEl.style.display = 'none';
+
+  // Si estamos editando y el SKU cambió, eliminar el viejo
   if (SKU_EDITANDO && SKU_EDITANDO !== sku) {
     await fetch(`/api/skus/${SKU_EDITANDO}`, {method:'DELETE'});
   }
+
   const r = await fetch('/api/skus', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
@@ -1335,7 +1447,7 @@ async function guardarSku() {
     cerrarModal('modal-sku');
     renderSkus(document.getElementById('search-skus').value);
     document.getElementById('badge-skus').textContent = Object.keys(SKU_DB).length;
-    toast(`✔ ${d.msg}`, 'ok');
+    toast(`✅ ${d.msg}`, 'ok');
   } else {
     errEl.textContent = d.msg; errEl.style.display = 'block';
   }
@@ -1358,7 +1470,7 @@ function exportarSkus() {
   a.href = URL.createObjectURL(blob);
   a.download = 'skus_db.json';
   a.click();
-  toast('⬇ JSON descargado', 'ok');
+  toast('📥 JSON descargado', 'ok');
 }
 
 async function importarSkus(e) {
@@ -1367,8 +1479,12 @@ async function importarSkus(e) {
   const text = await file.text();
   let data;
   try { data = JSON.parse(text); } catch(err) { toast('JSON inválido', 'err'); return; }
+
+  // Aceptar tanto { "SKU": {nombre,pasillo,estanteria} }
+  // como { "skus": { "SKU": {...} } }
   const skus = data.skus || data;
   if (typeof skus !== 'object') { toast('Formato no reconocido', 'err'); return; }
+
   const r = await fetch('/api/skus/importar', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
@@ -1377,25 +1493,34 @@ async function importarSkus(e) {
   const d = await r.json();
   if (d.ok) {
     await cargarSkus();
-    toast(`✔ ${d.msg}`, 'ok');
+    toast(`✅ ${d.msg}`, 'ok');
   } else toast('Error: '+d.msg, 'err');
   e.target.value = '';
 }
 
+// Enter en cualquier campo del form guarda
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && document.getElementById('modal-sku').classList.contains('open'))
     guardarSku();
-  if (e.key === 'Escape')
+  if (e.key === 'Escape') {
     document.querySelectorAll('.modal-bg.open').forEach(m => m.classList.remove('open'));
+  }
 });
+
+// Al abrir tab SKU cargar datos
+const _origShowTab = showTab;
+function showTab(name) {
+  _origShowTab(name);
+  if (name === 'skudb') cargarSkus();
+}
 </script>
 </body>
 </html>"""
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 # HTML MÓVIL (operarios en celular)
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 HTML_MOVIL = r"""<!DOCTYPE html>
 <html lang="es">
@@ -1470,7 +1595,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     <span style="font-size:20px">⬡</span>
     <div><div class="t-title">PICKING · FASE 1</div><div class="t-sub">Colecta en depósito</div></div>
   </div>
-  <div id="badge" class="badge">– / –</div>
+  <div id="badge" class="badge">— / —</div>
 </div>
 <div id="ban">🎉 ¡COLECTA COMPLETA!</div>
 <div class="scan-box">
@@ -1494,7 +1619,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <script>
 let E=null,camOn=false,stream=null,bd=null,loop=null,last=null;
 const $=id=>document.getElementById(id);
-async function load(){try{const r=await fetch('/api/estado');E=await r.json();render();}catch(e){fb('err','✗ Sin conexión');}}
+async function load(){try{const r=await fetch('/api/estado');E=await r.json();render();}catch(e){fb('err','❌ Sin conexión');}}
 async function loadQ(){try{const r=await fetch('/api/estado');E=await r.json();render(true);}catch(e){}}
 function render(q=false){
   if(!E||!E.cargado){$('content').innerHTML='<div class="empty"><div style="font-size:48px">📋</div><div>Esperando lote del supervisor…</div></div>';return;}
@@ -1518,7 +1643,7 @@ function render(q=false){
 <div class="ibody">
   <div class="iname">${it.nombre||it.sku}</div>
   <div class="irow"><span class="isku">${it.sku}</span><span class="icnt ${ok?'ok':'pend'}">${c}/${it.req}</span></div>
-  ${it.estanteria?`<div class="iest">📍 ${it.estanteria}</div>`:''}
+  ${it.estanteria?`<div class="iest">🗂 ${it.estanteria}</div>`:''}
 </div></div>`;}).join('')}</div></div>`;}).join('');
 }
 function tog(h){h.nextElementSibling.classList.toggle('col');}
@@ -1528,7 +1653,7 @@ async function scan(raw){
   try{
     const r=await fetch('/api/escanear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sku})});
     const d=await r.json();
-    if(!d.ok){flash('err');vib([200,80,200]);fb('err',`✗ ${d.msg}`);}
+    if(!d.ok){flash('err');vib([200,80,200]);fb('err',`❌ ${d.msg}`);}
     else if(d.tipo==='ya_completo'){fb('warn',`⚠ ${d.nombre||sku} ya completo`);}
     else{
       flash('ok');vib([60]);
@@ -1537,7 +1662,7 @@ async function scan(raw){
       if(d.todo_completo){E.colecta_completa=true;toast('🎉 ¡Colecta completa!','ok');}
       render(true);
     }
-  }catch(e){fb('err','✗ Error');}
+  }catch(e){fb('err','❌ Error');}
 }
 function fb(t,m){const el=$('fb');el.className=t;el.textContent=m;}
 function toast(m,t=''){const el=$('toast');el.textContent=m;el.className='show '+t;setTimeout(()=>el.className='',2800);}
@@ -1550,7 +1675,7 @@ async function camStart(){
     $('vid').srcObject=stream;$('cam-wrap').classList.add('open');$('btn-cam').classList.add('on');$('btn-cam').textContent='⏹';camOn=true;
     if('BarcodeDetector' in window){bd=new BarcodeDetector({formats:['code_128','code_39','ean_13','ean_8','qr_code','upc_a','upc_e','itf']});loop=requestAnimationFrame(detect);}
     else fb('warn','⚠ Usá el lector físico.');
-  }catch(e){fb('err','✗ '+e.message);}
+  }catch(e){fb('err','❌ '+e.message);}
 }
 async function detect(){
   if(!camOn||!bd)return;
@@ -1566,7 +1691,7 @@ function camStop(){
 document.addEventListener('DOMContentLoaded',()=>{
   load();
   const inp=$('sku');
-  inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();const v=inp.value.trim();if(v){scan(v);inp.value='';}}});
+  inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();const v=inp.value.trim();if(v){scan(v);inp.value='';}}}); 
   inp.addEventListener('input',()=>{clearTimeout(window._t);window._t=setTimeout(()=>{const v=inp.value.trim();if(v.length>=4){scan(v);inp.value='';}},400);});
   $('btn-cam').addEventListener('click',camTog);
   $('fab').addEventListener('click',()=>{$('fab').classList.add('spin');load().finally(()=>setTimeout(()=>$('fab').classList.remove('spin'),500));});
@@ -1578,9 +1703,9 @@ document.addEventListener('DOMContentLoaded',()=>{
 </html>"""
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     port  = int(os.environ.get("PORT", 5050))
@@ -1590,8 +1715,8 @@ if __name__ == "__main__":
     else:
         try:
             from waitress import serve
-            print(f"✔ Servidor iniciado (waitress) en http://0.0.0.0:{port}")
+            print(f"✅ Servidor iniciado (waitress) en http://0.0.0.0:{port}")
             serve(app, host="0.0.0.0", port=port, threads=8)
         except ImportError:
-            print(f"✔ Servidor iniciado (flask dev) en http://0.0.0.0:{port}")
+            print(f"✅ Servidor iniciado (flask dev) en http://0.0.0.0:{port}")
             app.run(host="0.0.0.0", port=port, debug=False)
