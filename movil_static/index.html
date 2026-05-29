@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1E293B">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Picking">
+<title>Sistema de Picking</title>
+<link rel="manifest" href="/manifest.json">
+<style>
+  :root {
+    --bg:       #0F172A;
+    --panel:    #1E293B;
+    --card:     #162032;
+    --border:   #334155;
+    --accent:   #3B82F6;
+    --accent2:  #6366F1;
+    --success:  #10B981;
+    --warning:  #F59E0B;
+    --danger:   #EF4444;
+    --hi:       #F1F5F9;
+    --mid:      #94A3B8;
+    --lo:       #475569;
+    --bar:      #1E3A5F;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body { background: var(--bg); color: var(--hi); font-family: 'Segoe UI', system-ui, sans-serif;
+         min-height: 100vh; overflow-x: hidden; }
+
+  /* ── TOPBAR ── */
+  .topbar { background: var(--panel); padding: 12px 16px 10px;
+            display: flex; align-items: center; justify-content: space-between;
+            position: sticky; top: 0; z-index: 100; border-bottom: 1px solid var(--border); }
+  .topbar-left { display: flex; align-items: center; gap: 10px; }
+  .topbar-icon { font-size: 22px; }
+  .topbar-title { font-size: 14px; font-weight: 700; color: var(--hi); }
+  .topbar-sub   { font-size: 11px; color: var(--mid); }
+  .badge { background: var(--accent); color: white; font-size: 12px; font-weight: 700;
+           padding: 4px 10px; border-radius: 20px; white-space: nowrap; }
+  .badge.done { background: var(--success); }
+
+  /* ── SCANNER BOX ── */
+  .scanner-section { padding: 12px 14px; background: var(--panel);
+                     border-bottom: 1px solid var(--border); }
+  .scanner-label { font-size: 10px; font-weight: 700; color: var(--lo);
+                   letter-spacing: .08em; margin-bottom: 6px; }
+
+  .input-wrap { display: flex; gap: 8px; align-items: center; }
+  #sku-input { flex: 1; background: var(--card); border: 2px solid var(--accent);
+               color: var(--hi); font-size: 16px; font-family: 'Consolas', monospace;
+               font-weight: 700; padding: 11px 14px; border-radius: 10px;
+               outline: none; text-align: center; text-transform: uppercase; }
+  #sku-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,.25); }
+
+  .btn-cam { background: var(--accent); border: none; border-radius: 10px;
+             color: white; font-size: 22px; width: 48px; height: 48px;
+             display: flex; align-items: center; justify-content: center;
+             cursor: pointer; flex-shrink: 0; }
+  .btn-cam.active { background: var(--danger); }
+
+  /* ── FEEDBACK ── */
+  #feedback { margin-top: 8px; min-height: 36px; border-radius: 8px;
+              padding: 8px 12px; font-size: 13px; font-weight: 600;
+              display: flex; align-items: center; gap: 8px;
+              transition: background .2s, color .2s; }
+  #feedback.ok      { background: rgba(16,185,129,.15); color: var(--success); }
+  #feedback.warn    { background: rgba(245,158,11,.15);  color: var(--warning); }
+  #feedback.error   { background: rgba(239,68,68,.15);   color: var(--danger); }
+  #feedback.neutral { background: transparent; color: var(--mid); }
+
+  /* ── CAMERA ── */
+  #cam-container { display: none; background: #000; position: relative; }
+  #cam-container.open { display: block; }
+  #cam-video { width: 100%; max-height: 240px; object-fit: cover; display: block; }
+  .cam-overlay { position: absolute; inset: 0; display: flex; align-items: center;
+                 justify-content: center; pointer-events: none; }
+  .cam-frame { width: 65%; height: 60px; border: 2px solid var(--accent);
+               border-radius: 6px; box-shadow: 0 0 0 2000px rgba(0,0,0,.45); }
+  .cam-hint { position: absolute; bottom: 8px; width: 100%; text-align: center;
+              font-size: 11px; color: rgba(255,255,255,.7); }
+
+  /* ── GRUPOS ── */
+  .content { padding: 10px 10px 80px; }
+
+  .grupo { margin-bottom: 10px; border-radius: 10px; overflow: hidden;
+           border: 1px solid var(--border); }
+  .grupo-header { background: var(--bar); padding: 10px 14px;
+                  display: flex; align-items: center; justify-content: space-between;
+                  cursor: pointer; user-select: none; }
+  .grupo-header-left { display: flex; align-items: center; gap: 8px; }
+  .grupo-nombre { font-size: 13px; font-weight: 800; color: var(--accent);
+                  text-transform: uppercase; letter-spacing: .04em; }
+  .grupo-stats  { font-size: 11px; color: var(--mid); }
+  .grupo-prog   { font-size: 13px; font-weight: 700; }
+  .grupo-prog.done { color: var(--success); }
+  .grupo-prog.pend { color: var(--accent); }
+
+  .grupo-items { background: var(--card); }
+  .grupo-items.collapsed { display: none; }
+
+  /* ── SKU ITEM ── */
+  .item { display: flex; align-items: center; gap: 10px;
+          padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .item:last-child { border-bottom: none; }
+  .item.done { opacity: .55; }
+
+  .item-check { font-size: 20px; flex-shrink: 0; width: 26px; text-align: center; }
+  .item-check.ok   { color: var(--success); }
+  .item-check.pend { color: var(--lo); }
+
+  .item-body { flex: 1; min-width: 0; }
+  .item-nombre { font-size: 13px; font-weight: 600; color: var(--hi);
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item-sku-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+  .item-sku { font-family: 'Consolas', monospace; font-size: 11px; color: var(--mid); }
+  .item-cnt { font-size: 12px; font-weight: 700; }
+  .item-cnt.ok   { color: var(--success); }
+  .item-cnt.pend { color: var(--accent); }
+  .item-estante { font-size: 10px; color: var(--accent2); margin-top: 2px; }
+
+  /* ── TOAST flash ── */
+  #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+           background: var(--panel); border: 1px solid var(--border);
+           color: var(--hi); padding: 12px 22px; border-radius: 30px;
+           font-size: 14px; font-weight: 600; z-index: 999;
+           transition: transform .3s ease, opacity .3s; opacity: 0; white-space: nowrap; }
+  #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  #toast.success { border-color: var(--success); color: var(--success); }
+  #toast.error   { border-color: var(--danger);  color: var(--danger); }
+
+  /* ── FLASH OVERLAY (scan feedback) ── */
+  #flash { position: fixed; inset: 0; background: rgba(59,130,246,.18);
+           pointer-events: none; opacity: 0; transition: opacity .15s; z-index: 200; }
+  #flash.ok-flash    { background: rgba(16,185,129,.22); }
+  #flash.error-flash { background: rgba(239,68,68,.22); }
+
+  /* ── EMPTY STATE ── */
+  .empty { text-align: center; padding: 60px 20px; color: var(--lo); }
+  .empty-icon { font-size: 52px; margin-bottom: 12px; }
+  .empty-text { font-size: 15px; }
+
+  /* ── FAB REFRESH ── */
+  .fab { position: fixed; bottom: 20px; right: 20px; background: var(--accent);
+         color: white; border: none; border-radius: 50%; width: 52px; height: 52px;
+         font-size: 22px; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+         display: flex; align-items: center; justify-content: center; z-index: 50; }
+  .fab:active { transform: scale(.92); }
+  .spinning { animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── COMPLETADO BANNER ── */
+  #completado-banner { display: none; background: var(--success); color: white;
+                       text-align: center; padding: 14px; font-size: 15px;
+                       font-weight: 800; letter-spacing: .05em; }
+  #completado-banner.show { display: block; }
+</style>
+</head>
+<body>
+
+<!-- Flash overlay -->
+<div id="flash"></div>
+
+<!-- Topbar -->
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="topbar-icon">⬡</span>
+    <div>
+      <div class="topbar-title">PICKING · FASE 1</div>
+      <div class="topbar-sub">Colecta en depósito</div>
+    </div>
+  </div>
+  <div id="badge-global" class="badge">— / —</div>
+</div>
+
+<!-- Completado banner -->
+<div id="completado-banner">🎉 ¡COLECTA COMPLETA! Volvé a la PC para pasar a Fase 2.</div>
+
+<!-- Scanner -->
+<div class="scanner-section">
+  <div class="scanner-label">ESCANEAR CÓDIGO</div>
+  <div class="input-wrap">
+    <input id="sku-input" type="text" inputmode="text" autocomplete="off"
+           autocorrect="off" autocapitalize="characters" spellcheck="false"
+           placeholder="Escaneá o escribí el SKU">
+    <button class="btn-cam" id="btn-cam" title="Usar cámara">📷</button>
+  </div>
+  <div id="feedback" class="neutral">Listo para escanear</div>
+</div>
+
+<!-- Cámara -->
+<div id="cam-container">
+  <video id="cam-video" autoplay playsinline muted></video>
+  <div class="cam-overlay"><div class="cam-frame"></div></div>
+  <div class="cam-hint">Apuntá el código de barras al recuadro</div>
+</div>
+
+<!-- Lista de grupos -->
+<div class="content" id="content">
+  <div class="empty">
+    <div class="empty-icon">📦</div>
+    <div class="empty-text">Cargando lista desde la PC…</div>
+  </div>
+</div>
+
+<!-- Botón refresh -->
+<button class="fab" id="btn-refresh" title="Actualizar">🔄</button>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+//  ESTADO LOCAL
+// ═══════════════════════════════════════════════════════════
+let estado = null;
+let scannerActivo = false;
+let streamCam = null;
+let barcodeDetector = null;
+let scanLoop = null;
+let ultimoEscaneado = null;  // para evitar dobles lecturas
+
+// ═══════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  cargarEstado();
+
+  const input = document.getElementById('sku-input');
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = input.value.trim();
+      if (v) { procesarSKU(v); input.value = ''; }
+    }
+  });
+
+  // Lector físico Bluetooth: manda el código completo y luego Enter.
+  // Si por algún motivo no manda Enter, esperamos una pausa de 400ms
+  // sin tipeo nuevo antes de procesar — da tiempo a que lleguen todos los chars.
+  input.addEventListener('input', () => {
+    clearTimeout(window._scanTimeout);
+    const v = input.value.trim();
+    if (!v) return;
+    window._scanTimeout = setTimeout(() => {
+      const v2 = input.value.trim();
+      if (v2.length >= 4) { procesarSKU(v2); input.value = ''; }
+    }, 400);
+  });
+
+  document.getElementById('btn-refresh').addEventListener('click', () => {
+    document.getElementById('btn-refresh').classList.add('spinning');
+    cargarEstado().finally(() =>
+      setTimeout(() => document.getElementById('btn-refresh').classList.remove('spinning'), 500));
+  });
+
+  document.getElementById('btn-cam').addEventListener('click', toggleCamara);
+
+  // Auto-refresh cada 8 segundos (para ver cambios desde la PC)
+  setInterval(cargarEstadoSilencioso, 8000);
+
+  // Mantener el input activo para lector físico
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#cam-container') && !e.target.closest('#btn-cam'))
+      input.focus();
+  });
+  input.focus();
+});
+
+// ═══════════════════════════════════════════════════════════
+//  CARGAR ESTADO DESDE EL SERVIDOR
+// ═══════════════════════════════════════════════════════════
+async function cargarEstado() {
+  try {
+    const r = await fetch('/api/estado');
+    estado = await r.json();
+    renderLista();
+  } catch(e) {
+    mostrarFeedback('error', '❌ Sin conexión con la PC. Verificá el WiFi.');
+  }
+}
+
+async function cargarEstadoSilencioso() {
+  try {
+    const r = await fetch('/api/estado');
+    estado = await r.json();
+    renderLista(true);  // silent=true: no scrollea
+  } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════════
+//  RENDER
+// ═══════════════════════════════════════════════════════════
+function renderLista(silent = false) {
+  if (!estado) return;
+  const content = document.getElementById('content');
+  const grupos  = estado.grupos || [];
+  const colecta = estado.colecta || {};
+
+  if (!grupos.length) {
+    content.innerHTML = `<div class="empty">
+      <div class="empty-icon">📋</div>
+      <div class="empty-text">No hay lista cargada.<br>Cargá un PDF en la PC primero.</div>
+    </div>`;
+    document.getElementById('badge-global').textContent = '— / —';
+    return;
+  }
+
+  // Totales globales
+  let totalSKUs = 0, donesGlobal = 0;
+  grupos.forEach(g => g.items.forEach(it => {
+    totalSKUs++;
+    if ((colecta[it.sku] || 0) >= it.req) donesGlobal++;
+  }));
+
+  const badge = document.getElementById('badge-global');
+  badge.textContent = `${donesGlobal} / ${totalSKUs}`;
+  badge.className   = donesGlobal === totalSKUs ? 'badge done' : 'badge';
+
+  // Banner completado
+  document.getElementById('completado-banner').className =
+    estado.colecta_completa ? 'show' : '';
+
+  // Recordar qué grupos están colapsados
+  const colapsados = new Set();
+  document.querySelectorAll('.grupo').forEach(el => {
+    if (el.querySelector('.grupo-items.collapsed'))
+      colapsados.add(el.dataset.pasillo);
+  });
+
+  // Render grupos
+  content.innerHTML = grupos.map(grupo => {
+    const pasillo  = grupo.pasillo;
+    const items    = grupo.items;
+    const dones    = items.filter(it => (colecta[it.sku]||0) >= it.req).length;
+    const totalUds = items.reduce((s,it) => s + it.req, 0);
+    const grupoDone = dones === items.length;
+    const collapsed = colapsados.has(pasillo) ? 'collapsed' : '';
+
+    const itemsHTML = items.map(it => {
+      const col  = colecta[it.sku] || 0;
+      const done = col >= it.req;
+      return `<div class="item ${done?'done':''}" data-sku="${it.sku}">
+        <div class="item-check ${done?'ok':'pend'}">${done?'✔':'○'}</div>
+        <div class="item-body">
+          <div class="item-nombre">${it.nombre || it.sku}</div>
+          <div class="item-sku-row">
+            <span class="item-sku">${it.sku}</span>
+            <span class="item-cnt ${done?'ok':'pend'}">${col} / ${it.req}</span>
+          </div>
+          ${it.estanteria ? `<div class="item-estante">🗂 ${it.estanteria}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div class="grupo" data-pasillo="${pasillo}">
+      <div class="grupo-header" onclick="toggleGrupo(this)">
+        <div class="grupo-header-left">
+          <span style="font-size:16px">📦</span>
+          <div>
+            <div class="grupo-nombre">${pasillo}</div>
+            <div class="grupo-stats">${items.length} SKU${items.length>1?'s':''} · ${totalUds} ud.</div>
+          </div>
+        </div>
+        <div class="grupo-prog ${grupoDone?'done':'pend'}">${dones}/${items.length}</div>
+      </div>
+      <div class="grupo-items ${collapsed}">${itemsHTML}</div>
+    </div>`;
+  }).join('');
+}
+
+function toggleGrupo(header) {
+  const items = header.nextElementSibling;
+  items.classList.toggle('collapsed');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  PROCESAR ESCANEO
+// ═══════════════════════════════════════════════════════════
+async function procesarSKU(raw) {
+  const sku = raw.trim().toUpperCase();
+  if (!sku || sku.length < 2) return;
+
+  // Anti-doble lectura (100ms)
+  if (ultimoEscaneado === sku) return;
+  ultimoEscaneado = sku;
+  setTimeout(() => ultimoEscaneado = null, 100);
+
+  try {
+    const r    = await fetch('/api/escanear', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({sku})
+    });
+    const data = await r.json();
+
+    if (!data.ok) {
+      flashOverlay('error-flash');
+      vibrar([200, 80, 200]);
+      mostrarFeedback('error', `❌ ${data.msg}`);
+      toast(data.msg, 'error');
+    } else if (data.tipo === 'ya_completo') {
+      mostrarFeedback('warn', `⚠ ${data.nombre || sku} ya completo (${data.req}/${data.req})`);
+      vibrar([80]);
+    } else {
+      flashOverlay('ok-flash');
+      vibrar([60]);
+      const txt = data.tipo === 'completo'
+        ? `✔ ${data.nombre || sku} — ¡Completo!`
+        : `${data.nombre || sku}  ${data.collected}/${data.req}`;
+      mostrarFeedback('ok', txt);
+
+      // Actualizar estado local sin refetch
+      if (!estado.colecta) estado.colecta = {};
+      estado.colecta[sku] = data.collected;
+      if (data.todo_completo) {
+        estado.colecta_completa = true;
+        toast('🎉 ¡Colecta completa!', 'success');
+      }
+      renderLista(true);
+
+      // Scroll al item
+      setTimeout(() => {
+        const el = document.querySelector(`[data-sku="${sku}"]`);
+        if (el) el.scrollIntoView({behavior:'smooth', block:'center'});
+      }, 100);
+    }
+  } catch(e) {
+    mostrarFeedback('error', '❌ Error de conexión');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CÁMARA (BarcodeDetector API nativa de Android Chrome)
+// ═══════════════════════════════════════════════════════════
+async function toggleCamara() {
+  if (scannerActivo) {
+    detenerCamara();
+  } else {
+    iniciarCamara();
+  }
+}
+
+async function iniciarCamara() {
+  const container = document.getElementById('cam-container');
+  const video     = document.getElementById('cam-video');
+  const btn       = document.getElementById('btn-cam');
+
+  try {
+    streamCam = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: {ideal:1280}, height: {ideal:720} }
+    });
+    video.srcObject = streamCam;
+    container.classList.add('open');
+    btn.classList.add('active');
+    btn.textContent = '⏹';
+    scannerActivo = true;
+
+    // Usar BarcodeDetector nativo (disponible en Chrome Android 83+)
+    if ('BarcodeDetector' in window) {
+      barcodeDetector = new BarcodeDetector({
+        formats: ['code_128','code_39','ean_13','ean_8','qr_code','upc_a','upc_e','itf','codabar']
+      });
+      scanLoop = requestAnimationFrame(detectarBarcode);
+    } else {
+      mostrarFeedback('warn', '⚠ Tu navegador no soporta detección de cámara. Usá el lector físico.');
+    }
+  } catch(e) {
+    mostrarFeedback('error', '❌ No se pudo acceder a la cámara: ' + e.message);
+  }
+}
+
+async function detectarBarcode() {
+  if (!scannerActivo || !barcodeDetector) return;
+  const video = document.getElementById('cam-video');
+  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    try {
+      const barcodes = await barcodeDetector.detect(video);
+      if (barcodes.length > 0) {
+        const val = barcodes[0].rawValue;
+        procesarSKU(val);
+        // Pausa de 1.5s antes de leer de nuevo
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    } catch(e) {}
+  }
+  if (scannerActivo) scanLoop = requestAnimationFrame(detectarBarcode);
+}
+
+function detenerCamara() {
+  if (streamCam) { streamCam.getTracks().forEach(t => t.stop()); streamCam = null; }
+  if (scanLoop)  { cancelAnimationFrame(scanLoop); scanLoop = null; }
+  document.getElementById('cam-container').classList.remove('open');
+  document.getElementById('btn-cam').classList.remove('active');
+  document.getElementById('btn-cam').textContent = '📷';
+  scannerActivo = false;
+  document.getElementById('sku-input').focus();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  UTILIDADES
+// ═══════════════════════════════════════════════════════════
+function mostrarFeedback(tipo, msg) {
+  const el = document.getElementById('feedback');
+  el.className = tipo;
+  el.textContent = msg;
+}
+
+function toast(msg, tipo='') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show ' + tipo;
+  setTimeout(() => el.className = '', 2800);
+}
+
+function flashOverlay(cls) {
+  const el = document.getElementById('flash');
+  el.className = cls;
+  el.style.opacity = '1';
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.className = '', 300); }, 150);
+}
+
+function vibrar(pattern) {
+  if (navigator.vibrate) navigator.vibrate(pattern);
+}
+</script>
+</body>
+</html>

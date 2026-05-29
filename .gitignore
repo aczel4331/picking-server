@@ -1,0 +1,32 @@
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Estado en tiempo real (se genera solo, no va al repo)
+estado_picking.json
+
+# SSL autofirmado (se genera automáticamente)
+ssl_cert.pem
+ssl_key.pem
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
