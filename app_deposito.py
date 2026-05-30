@@ -403,20 +403,28 @@ class VentanaConfiguracion(tk.Toplevel):
         ml_frame = tk.Frame(body, bg=C["bg_dark"])
         ml_frame.pack(fill="x", pady=(8,0))
 
+        # Estado de conexión (se actualiza en _cfg_verificar_ml)
         self.lbl_ml_estado_cfg = tk.Label(
-            ml_frame, text="",
+            body, text="Verificando conexion...",
             font=("Segoe UI", 9), bg=C["bg_dark"], fg=C["text_lo"])
-        self.lbl_ml_estado_cfg.pack(anchor="w", pady=(0,6))
+        self.lbl_ml_estado_cfg.pack(anchor="w", pady=(0,8))
 
+        # Panel de cuentas conectadas (se llena dinámicamente)
+        self.frame_cuentas_cfg = tk.Frame(body, bg=C["bg_dark"])
+        self.frame_cuentas_cfg.pack(fill="x", pady=(0,6))
+
+        # Botones de acción
         btn_ml_row = tk.Frame(body, bg=C["bg_dark"])
         btn_ml_row.pack(fill="x", pady=(0,4))
 
-        tk.Button(btn_ml_row, text="Conectar con MercadoLibre",
-                  font=("Segoe UI Semibold", 10),
-                  bg="#CA8A04", fg="black",
-                  activebackground="#EAD700", activeforeground="black",
-                  relief="flat", cursor="hand2", padx=16, pady=7, bd=0,
-                  command=self._cfg_conectar_ml).pack(side="left")
+        self.btn_cfg_agregar_ml = tk.Button(
+            btn_ml_row, text="Agregar cuenta MercadoLibre",
+            font=("Segoe UI Semibold", 10),
+            bg="#CA8A04", fg="black",
+            activebackground="#EAD700", activeforeground="black",
+            relief="flat", cursor="hand2", padx=16, pady=7, bd=0,
+            command=self._cfg_conectar_ml)
+        self.btn_cfg_agregar_ml.pack(side="left")
 
         tk.Button(btn_ml_row, text="Verificar conexion",
                   font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"],
@@ -430,33 +438,110 @@ class VentanaConfiguracion(tk.Toplevel):
         tk.Frame(body, bg=C["bg_dark"], height=16).pack()
 
     def _cfg_conectar_ml(self):
+        """Abre el browser para conectar/agregar una cuenta ML."""
         import webbrowser
-        url = RAILWAY_URL.rstrip("/") + "/auth/login"
+        # Determinar el próximo cuenta_id
+        n = len(getattr(self, "_cfg_cuentas_actuales", []))
+        cuenta_id = f"cuenta_{n}"
+        url = RAILWAY_URL.rstrip("/") + f"/auth/login?cuenta={cuenta_id}"
         webbrowser.open(url)
         self.lbl_ml_estado_cfg.config(
-            text="Se abrio el navegador. Autorica la app en ML y volvé aqui.",
+            text=f"Se abrio el navegador. Autorizá la cuenta en MercadoLibre y volvé aqui.",
             fg=C["warning"])
-        # Reverificar después de 10 segundos
-        self.after(10000, self._cfg_verificar_ml)
+        self.after(8000, self._cfg_verificar_ml)
 
     def _cfg_verificar_ml(self):
+        """Verifica el estado de ML y actualiza la UI de configuración."""
         import threading, urllib.request, json as _j
         def _worker():
             try:
                 url = RAILWAY_URL.rstrip("/") + "/auth/status"
                 with urllib.request.urlopen(url, timeout=5) as r:
                     d = _j.loads(r.read())
-                if d.get("autenticado"):
-                    txt = f"Conectado como {d.get('nickname','')}  |  {d.get('pedidos',0)} pedidos"
-                    col = C["success"]
-                else:
-                    txt = "No conectado a MercadoLibre"
-                    col = C["warning"]
-                self.after(0, lambda: self.lbl_ml_estado_cfg.config(text=txt, fg=col))
+                self.after(0, lambda: self._cfg_actualizar_ml_ui(d))
             except Exception:
                 self.after(0, lambda: self.lbl_ml_estado_cfg.config(
-                    text="No se pudo verificar (servidor Railway inactivo?)", fg=C["danger"]))
+                    text="No se pudo verificar (Railway inactivo?)", fg=C["danger"]))
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _cfg_actualizar_ml_ui(self, d):
+        """Actualiza el panel de cuentas ML en la ventana de configuración."""
+        cuentas = d.get("cuentas", [])
+        self._cfg_cuentas_actuales = cuentas
+
+        # Limpiar panel de cuentas
+        for w in self.frame_cuentas_cfg.winfo_children():
+            w.destroy()
+
+        COLORES = ["#7C3AED", "#0891B2", "#D97706", "#DC2626", "#059669"]
+
+        if cuentas:
+            # Mostrar cada cuenta como chip con botón de desconectar
+            for idx, cuenta in enumerate(cuentas):
+                color = COLORES[idx % len(COLORES)]
+                nick  = cuenta["nickname"]
+                cid   = cuenta["cuenta_id"]
+
+                chip = tk.Frame(self.frame_cuentas_cfg, bg=color,
+                                padx=2, pady=2)
+                chip.pack(side="left", padx=(0,6), pady=2)
+
+                inner = tk.Frame(chip, bg=color)
+                inner.pack()
+
+                tk.Label(inner, text=f"✅  {nick}",
+                         font=("Segoe UI Semibold", 9),
+                         bg=color, fg="white",
+                         padx=8, pady=4).pack(side="left")
+
+                tk.Button(inner, text="×",
+                          font=("Segoe UI", 10, "bold"),
+                          bg=color, fg="white",
+                          activebackground=C["danger"], activeforeground="white",
+                          relief="flat", cursor="hand2", padx=6, pady=4, bd=0,
+                          command=lambda c=cid, n=nick: self._cfg_desconectar_cuenta(c, n)
+                          ).pack(side="left")
+
+            total_ped = d.get("pedidos", 0)
+            self.lbl_ml_estado_cfg.config(
+                text=f"{len(cuentas)} cuenta(s) conectada(s)  ·  {total_ped} pedidos en Railway",
+                fg=C["success"])
+
+            # Cambiar texto del botón a "Agregar otra cuenta"
+            self.btn_cfg_agregar_ml.config(
+                text="+ Agregar otra cuenta ML",
+                bg=C["success"], fg="white",
+                activebackground="#059669")
+        else:
+            self.lbl_ml_estado_cfg.config(
+                text="No hay cuentas conectadas a MercadoLibre",
+                fg=C["warning"])
+            self.btn_cfg_agregar_ml.config(
+                text="Conectar MercadoLibre",
+                bg="#CA8A04", fg="black",
+                activebackground="#EAD700")
+
+    def _cfg_desconectar_cuenta(self, cuenta_id, nick):
+        """Desconecta una cuenta ML desde la ventana de configuración."""
+        if not messagebox.askyesno(
+                "Desconectar",
+                f"¿Desconectar la cuenta '{nick}'?",
+                parent=self):
+            return
+        import threading, urllib.request, json as _j
+        def _w():
+            try:
+                url = RAILWAY_URL.rstrip("/")
+                req = urllib.request.Request(
+                    f"{url}/api/cuentas/{cuenta_id}/logout",
+                    method="POST",
+                    headers={"Content-Type": "application/json",
+                             "X-API-Key": "everest2024"})
+                urllib.request.urlopen(req, timeout=6)
+            except Exception:
+                pass
+            self.after(500, self._cfg_verificar_ml)
+        threading.Thread(target=_w, daemon=True).start()
 
     def _resumir_ruta(self, ruta):
         if not ruta:
@@ -1106,7 +1191,7 @@ class AsistenteDepositoApp:
                   font=FONT_SMALL, bg=C["success"], fg="white",
                   activebackground="#059669", activeforeground="white",
                   relief="flat", cursor="hand2", padx=10, pady=4, bd=0,
-                  command=self.toggle_servidor_movil)
+                  command=self._mostrar_info_movil)
         self.btn_servidor.pack(side="left", padx=(0, 6))
 
         tk.Button(btns_row, text="⚙  Impresora",
@@ -1181,92 +1266,273 @@ class AsistenteDepositoApp:
     def _build_ml_panel(self):
         p = self.panel_ml
 
-        # Toolbar
+        # ── Colores por tipo de logística ────────────────────────────────────
+        self._logistica_cfg = {
+            "flex":      {"label": "FLEX",         "color": "#7C3AED", "light": "#EDE9FE", "emoji": "⚡"},
+            "me2":       {"label": "ME2",           "color": "#2563EB", "light": "#DBEAFE", "emoji": "🚚"},
+            "me1":       {"label": "ME1",           "color": "#0891B2", "light": "#CFFAFE", "emoji": "📦"},
+            "desconocido": {"label": "SIN ENVIO",  "color": "#475569", "light": "#F1F5F9", "emoji": "❓"},
+        }
+
+        # ── Toolbar ───────────────────────────────────────────────────────────
         tb = tk.Frame(p, bg=C["panel"], pady=8)
         tb.pack(fill="x")
-        tb.pack_propagate(False)
 
-        # Botón conectar / estado
         self.btn_ml_login = tk.Button(
-            tb, text="🔗  Conectar con MercadoLibre",
+            tb, text="Conectar MercadoLibre",
             font=("Segoe UI Semibold", 10),
             bg="#CA8A04", fg="black",
             activebackground="#EAD700", activeforeground="black",
             relief="flat", cursor="hand2", padx=14, pady=5, bd=0,
             command=self._ml_abrir_login)
-        self.btn_ml_login.pack(side="left", padx=(14, 8))
+        self.btn_ml_login.pack(side="left", padx=(14, 6))
 
         self.btn_ml_refresh = tk.Button(
-            tb, text="🔄  Actualizar pedidos",
+            tb, text="Actualizar",
             font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"],
             activebackground=C["border"], activeforeground=C["text_hi"],
-            relief="flat", cursor="hand2", padx=12, pady=5, bd=0,
+            relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
             command=self._ml_refresh_pedidos)
         self.btn_ml_refresh.pack(side="left")
 
         self.lbl_ml_estado = tk.Label(
             tb, text="Sin conexion a MercadoLibre",
             font=FONT_SMALL, bg=C["panel"], fg=C["text_lo"])
-        self.lbl_ml_estado.pack(side="left", padx=(12, 0))
+        self.lbl_ml_estado.pack(side="left", padx=(10, 0))
 
-        # Búsqueda
-        buscar_frame = tk.Frame(tb, bg=C["panel"])
-        buscar_frame.pack(side="right", padx=14)
+        # Buscar
+        bw = tk.Frame(tb, bg=C["border"], padx=1, pady=1)
+        bw.pack(side="right", padx=14)
         self.var_buscar_ml = tk.StringVar()
         self.var_buscar_ml.trace_add("write", lambda *_: self._ml_filtrar())
-        bw = tk.Frame(buscar_frame, bg=C["border"], padx=1, pady=1)
-        bw.pack(side="left")
         tk.Entry(bw, textvariable=self.var_buscar_ml,
                  font=FONT_BODY, bg=C["card"], fg=C["text_hi"],
                  insertbackground=C["accent"], relief="flat", bd=0,
-                 width=22).pack(fill="x", ipady=4, padx=6)
+                 width=20).pack(fill="x", ipady=4, padx=6)
 
-        # Botón generar lote
+        # Generar lote
         self.btn_ml_lote = tk.Button(
             tb, text="▶  Generar Lote de Picking",
             font=("Segoe UI Semibold", 10),
             bg=C["success"], fg="white",
             activebackground="#059669", activeforeground="white",
             relief="flat", cursor="hand2", padx=14, pady=5, bd=0,
-            state="disabled",
-            command=self._ml_generar_lote)
-        self.btn_ml_lote.pack(side="right", padx=(0, 14))
+            state="disabled", command=self._ml_generar_lote)
+        self.btn_ml_lote.pack(side="right", padx=(0, 8))
 
-        # Cabecera tabla
+        # ── Pestañas de cuentas ML ────────────────────────────────────────────
+        self._cuenta_tabs_frame = tk.Frame(p, bg=C["panel"], pady=4)
+        self._cuenta_tabs_frame.pack(fill="x", padx=6)
+        # Se llena dinámicamente en _rebuild_cuenta_tabs()
+
+        # ── Sub-pestañas: Todos / Flex / Mercado Envíos ───────────────────────
+        sub_tabs = tk.Frame(p, bg=C["bg_dark"])
+        sub_tabs.pack(fill="x")
+
+        self._ml_filtro_tipo = tk.StringVar(value="todos")
+        self._ml_sub_btns = {}
+
+        for key, txt, color in [
+            ("todos",  "Todos los pedidos", C["accent"]),
+            ("flex",   "⚡ Mercado Flex",    "#7C3AED"),
+            ("me2",    "🚚 Mercado Envios",  "#2563EB"),
+            ("me1",    "📦 ME1 / Propio",    "#0891B2"),
+        ]:
+            btn = tk.Button(sub_tabs, text=txt,
+                            font=("Segoe UI Semibold", 9),
+                            bg=color if key == "todos" else C["panel"],
+                            fg="white" if key == "todos" else C["text_mid"],
+                            activebackground=color, activeforeground="white",
+                            relief="flat", cursor="hand2",
+                            padx=14, pady=6, bd=0,
+                            command=lambda k=key, c=color: self._ml_set_filtro(k, c))
+            btn.pack(side="left")
+            self._ml_sub_btns[key] = (btn, color)
+
+        # Badges de conteo
+        self.lbl_flex_badge  = tk.Label(sub_tabs, text="",
+                                         font=("Segoe UI", 8), bg="#7C3AED",
+                                         fg="white", padx=6, pady=2)
+        self.lbl_me2_badge   = tk.Label(sub_tabs, text="",
+                                         font=("Segoe UI", 8), bg="#2563EB",
+                                         fg="white", padx=6, pady=2)
+
+        # ── Cabecera tabla ────────────────────────────────────────────────────
         hdr = tk.Frame(p, bg=C["bar_bg"])
-        hdr.pack(fill="x", padx=0)
-        for txt, w in [("Pedido", 10), ("Fecha", 8), ("Comprador", 18),
-                       ("Productos / SKUs", 35), ("Total", 9),
-                       ("Envio", 10), ("Etiqueta", 8)]:
+        hdr.pack(fill="x")
+        for txt, w in [("Tipo", 8), ("Pedido", 10), ("Fecha", 8),
+                       ("Comprador", 16), ("Productos / SKUs", 32),
+                       ("Total", 8), ("Estado Envio", 12), ("Etiqueta", 8)]:
             tk.Label(hdr, text=txt, font=("Segoe UI", 8, "bold"),
                      bg=C["bar_bg"], fg=C["accent"],
                      width=w, anchor="w").pack(side="left", padx=4, pady=5)
 
-        # Lista scrollable
-        lista_frame = tk.Frame(p, bg=C["bg_dark"])
-        lista_frame.pack(fill="both", expand=True)
-        self.canvas_ml = tk.Canvas(lista_frame, bg=C["bg_dark"], highlightthickness=0)
-        sb_ml = tk.Scrollbar(lista_frame, orient="vertical", command=self.canvas_ml.yview)
-        self.frame_ml = tk.Frame(self.canvas_ml, bg=C["bg_dark"])
+        # ── Lista scrollable ──────────────────────────────────────────────────
+        lista = tk.Frame(p, bg=C["bg_dark"])
+        lista.pack(fill="both", expand=True)
+        self.canvas_ml = tk.Canvas(lista, bg=C["bg_dark"], highlightthickness=0)
+        sb = tk.Scrollbar(lista, orient="vertical", command=self.canvas_ml.yview)
+        self.frame_ml  = tk.Frame(self.canvas_ml, bg=C["bg_dark"])
         self.canvas_ml.create_window((0, 0), window=self.frame_ml, anchor="nw")
-        self.canvas_ml.configure(yscrollcommand=sb_ml.set)
+        self.canvas_ml.configure(yscrollcommand=sb.set)
         self.frame_ml.bind("<Configure>",
                            lambda e: self.canvas_ml.configure(
                                scrollregion=self.canvas_ml.bbox("all")))
         self.canvas_ml.pack(side="left", fill="both", expand=True)
-        sb_ml.pack(side="right", fill="y")
+        sb.pack(side="right", fill="y")
         self.canvas_ml.bind("<MouseWheel>",
                             lambda e: self.canvas_ml.yview_scroll(
                                 int(-1*(e.delta/120)), "units"))
 
-        # Estado inicial
-        self._ml_pedidos = {}      # { order_id: {...} }
-        self._ml_autenticado = False
+        # ── Estado inicial ────────────────────────────────────────────────────
+        self._ml_pedidos       = {}
+        self._ml_autenticado   = False
+        self._ml_filtro_actual = "todos"
+        self._ml_cuentas       = {}       # { cuenta_id: nickname }
+        self._ml_cuenta_filtro = "todas"  # "todas" o cuenta_id específico
+        self._cuenta_tab_widgets = []
 
         self._ml_mostrar_placeholder("Conéctate a MercadoLibre para ver los pedidos")
-
-        # Auto-verificar conexión al iniciar
         self.root.after(1200, self._ml_verificar_conexion)
+
+    def _tipo_logistica(self, ped):
+        """Clasifica un pedido en: flex, me2, me1, desconocido."""
+        log  = (ped.get("logistica") or "").lower()
+        tags = [t.lower() for t in ped.get("tags", [])]
+        if "self_service" in log or "flex" in log:
+            return "flex"
+        if log in ("cross_docking", "drop_off", "xd_drop_off", "fulfillment"):
+            return "me2"
+        if log == "default" or "me1" in log:
+            return "me1"
+        # Fallback por estado de envio
+        est = (ped.get("estado_envio") or "").lower()
+        if est:
+            return "me2"
+        return "desconocido"
+
+    def _ml_set_filtro(self, key, color):
+        """Cambia la sub-pestaña activa."""
+        self._ml_filtro_actual = key
+        for k, (btn, c) in self._ml_sub_btns.items():
+            if k == key:
+                btn.config(bg=c, fg="white")
+            else:
+                btn.config(bg=C["panel"], fg=C["text_mid"])
+        self._ml_filtrar()
+
+    def _ml_filtrar(self):
+        q    = self.var_buscar_ml.get().strip().lower()
+        tipo = getattr(self, "_ml_filtro_actual", "todos")
+        cta  = getattr(self, "_ml_cuenta_filtro", "todas")
+        peds = list(self._ml_pedidos.values())
+
+        # Filtrar por cuenta ML
+        if cta != "todas":
+            peds = [p for p in peds if p.get("_cuenta") == cta]
+
+        # Filtrar por tipo de logística
+        if tipo != "todos":
+            peds = [p for p in peds if self._tipo_logistica(p) == tipo]
+
+        # Filtrar por búsqueda de texto
+        if q:
+            peds = [p for p in peds if
+                    q in p.get("comprador","").lower() or
+                    q in str(p.get("order_id","")).lower() or
+                    any(q in it.get("titulo","").lower() or
+                        q in it.get("sku","").lower()
+                        for it in p.get("items",[]))]
+
+        # Actualizar badges de tipo
+        todos = list(self._ml_pedidos.values())
+        n_flex = sum(1 for p in todos if self._tipo_logistica(p) == "flex")
+        n_me2  = sum(1 for p in todos if self._tipo_logistica(p) == "me2")
+        self.lbl_flex_badge.config(text=f" {n_flex} " if n_flex else "")
+        if n_flex: self.lbl_flex_badge.pack(side="left", after=self._ml_sub_btns["flex"][0])
+        self.lbl_me2_badge.config(text=f" {n_me2} " if n_me2 else "")
+        if n_me2:  self.lbl_me2_badge.pack(side="left", after=self._ml_sub_btns["me2"][0])
+
+        self._ml_render_pedidos(peds)
+
+    def _ml_render_pedidos(self, pedidos):
+        for w in self.frame_ml.winfo_children():
+            w.destroy()
+
+        if not pedidos:
+            tk.Label(self.frame_ml,
+                     text="Sin pedidos en esta categoría",
+                     font=("Segoe UI", 11), bg=C["bg_dark"],
+                     fg=C["text_lo"]).pack(pady=50)
+            return
+
+        bg_alt = [C["card"], C["bg_dark"]]
+        for i, ped in enumerate(pedidos):
+            bg   = bg_alt[i % 2]
+            tipo = self._tipo_logistica(ped)
+            cfg  = self._logistica_cfg.get(tipo, self._logistica_cfg["desconocido"])
+
+            fila = tk.Frame(self.frame_ml, bg=bg)
+            fila.pack(fill="x")
+
+            # Borde izquierdo de color según tipo
+            borde = tk.Frame(fila, bg=cfg["color"], width=4)
+            borde.pack(side="left", fill="y")
+
+            inner = tk.Frame(fila, bg=bg, pady=5)
+            inner.pack(side="left", fill="x", expand=True)
+
+            def _lbl(parent, txt, w, fg=None, mono=False, bold=False):
+                f = ("Consolas", 9) if mono else \
+                    (("Segoe UI Semibold", 9) if bold else FONT_SMALL)
+                tk.Label(parent, text=txt, font=f, bg=bg,
+                         fg=fg or C["text_hi"], width=w,
+                         anchor="w", wraplength=220).pack(side="left", padx=4)
+
+            # Chip de tipo
+            chip = tk.Label(inner,
+                            text=f"{cfg['emoji']} {cfg['label']}",
+                            font=("Segoe UI Semibold", 7),
+                            bg=cfg["color"], fg="white",
+                            padx=6, pady=2)
+            chip.pack(side="left", padx=(4, 2))
+
+            # Datos
+            _lbl(inner, f"#{ped['order_id']}", 10, fg=C["accent"], bold=True)
+            _lbl(inner, ped.get("fecha","")[:10], 8, fg=C["text_mid"])
+            _lbl(inner, ped.get("comprador","")[:18], 16, bold=True)
+
+            # SKUs
+            its = ped.get("items", [])
+            items_txt = " | ".join(
+                f"{it.get('sku') or it.get('titulo','?')[:12]} x{it.get('cantidad',1)}"
+                for it in its[:3])
+            if len(its) > 3:
+                items_txt += f" +{len(its)-3}"
+            _lbl(inner, items_txt, 32, mono=True)
+
+            # Total
+            _lbl(inner, f"${ped.get('total',0):.0f}", 8, fg=C["success"])
+
+            # Estado envío
+            est = ped.get("estado_envio", "") or "—"
+            col_est = C["success"] if "ready" in est else \
+                      (C["warning"] if est != "—" else C["text_lo"])
+            _lbl(inner, est[:14], 12, fg=col_est)
+
+            # Botón etiqueta
+            if ped.get("shipping_id"):
+                lbl_color = cfg["color"]
+                tk.Button(inner, text="Etiqueta",
+                          font=("Segoe UI Semibold", 8),
+                          bg=lbl_color, fg="white",
+                          activebackground=C["accent2"],
+                          activeforeground="white",
+                          relief="flat", cursor="hand2", padx=8, pady=2, bd=0,
+                          command=lambda oid=ped["order_id"]: self._ml_ver_etiqueta(oid)
+                          ).pack(side="left", padx=4)
+
+        self.canvas_ml.yview_moveto(0)
 
     def _switch_tab(self, nombre):
         """Alterna entre el panel ML y el panel de Picking."""
@@ -1284,7 +1550,7 @@ class AsistenteDepositoApp:
     # ── Conexión ML ──────────────────────────────────────────────────────────
 
     def _ml_verificar_conexion(self):
-        """Consulta el servidor Railway para ver si ya hay sesión ML activa."""
+        """Consulta el servidor Railway para ver todas las cuentas activas."""
         import threading
         def _worker():
             try:
@@ -1295,47 +1561,246 @@ class AsistenteDepositoApp:
                 self.root.after(0, lambda: self._ml_on_status(d))
             except Exception:
                 self.root.after(0, lambda: self.lbl_ml_estado.config(
-                    text="Sin conexión al servidor Railway", fg=C["danger"]))
+                    text="Sin conexion al servidor Railway", fg=C["danger"]))
         threading.Thread(target=_worker, daemon=True).start()
 
     def _ml_on_status(self, d):
-        if d.get("autenticado"):
+        cuentas = d.get("cuentas", [])
+        if cuentas:
             self._ml_autenticado = True
-            nick = d.get("nickname", "")
-            n_ped = d.get("pedidos", 0)
+            n_ped  = d.get("pedidos", 0)
+
+            # Actualizar botón principal — mostrar nicknames conectados
+            if len(cuentas) == 1:
+                nick = cuentas[0]["nickname"]
+                self.btn_ml_login.config(
+                    text=f"✅  {nick}",
+                    bg=C["success"], fg="white",
+                    activebackground="#059669",
+                    command=self._ml_agregar_cuenta)   # clic → agregar otra cuenta
+            else:
+                nicks = "  +  ".join(c["nickname"] for c in cuentas)
+                self.btn_ml_login.config(
+                    text=f"✅  {nicks}",
+                    bg=C["success"], fg="white",
+                    activebackground="#059669",
+                    command=self._ml_agregar_cuenta)
+
             self.lbl_ml_estado.config(
-                text=f"✅  Conectado como {nick}  ·  {n_ped} pedidos",
+                text=f"{'  ·  '.join(c['nickname'] for c in cuentas)}"
+                     f"  ·  {n_ped} pedidos  ·  {d.get('ultimo_refresh','')}",
                 fg=C["success"])
-            self.btn_ml_login.config(
-                text=f"✅  {nick}", bg=C["success"], fg="white")
+
+            # Reconstruir pestañas de cuentas
+            self._ml_cuentas = {c["cuenta_id"]: c["nickname"] for c in cuentas}
+            self._rebuild_cuenta_tabs()
+
             if n_ped > 0:
                 self._ml_refresh_pedidos()
             else:
-                self._ml_mostrar_placeholder("Cargando pedidos...")
                 self.root.after(500, self._ml_refresh_pedidos)
         else:
+            # No hay cuentas conectadas
+            self.btn_ml_login.config(
+                text="Conectar MercadoLibre",
+                bg="#CA8A04", fg="black",
+                activebackground="#EAD700",
+                command=self._ml_abrir_login)
             self.lbl_ml_estado.config(
-                text="No autenticado — hacé clic en 'Conectar con MercadoLibre'",
+                text="No conectado a MercadoLibre",
                 fg=C["warning"])
 
-    def _ml_abrir_login(self):
-        """Abre el browser para autenticar con ML."""
+    def _rebuild_cuenta_tabs(self):
+        """Reconstruye las pestañas de cuentas en la toolbar ML."""
+        # Eliminar botones de cuenta anteriores
+        for w in getattr(self, "_cuenta_tab_widgets", []):
+            try: w.destroy()
+            except Exception: pass
+        self._cuenta_tab_widgets = []
+
+        if not hasattr(self, "_ml_cuentas"):
+            return
+
+        # Contenedor de pestañas de cuentas (se inserta en _cuenta_tabs_frame)
+        frame = getattr(self, "_cuenta_tabs_frame", None)
+        if not frame or not frame.winfo_exists():
+            return
+
+        # Limpiar frame
+        for w in frame.winfo_children():
+            w.destroy()
+
+        COLORES = ["#7C3AED", "#0891B2", "#D97706", "#DC2626", "#059669"]
+        for idx, (cid, nick) in enumerate(self._ml_cuentas.items()):
+            color = COLORES[idx % len(COLORES)]
+            is_active = getattr(self, "_ml_cuenta_filtro", "todas") == cid
+
+            btn = tk.Button(
+                frame,
+                text=f"  {nick}  ",
+                font=("Segoe UI Semibold", 9),
+                bg=color if is_active else C["panel"],
+                fg="white" if is_active else C["text_mid"],
+                activebackground=color, activeforeground="white",
+                relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
+                command=lambda c=cid, co=color: self._ml_set_cuenta_filtro(c, co))
+            btn.pack(side="left")
+            self._cuenta_tab_widgets.append(btn)
+
+            # X para desconectar
+            x_btn = tk.Button(
+                frame,
+                text="×",
+                font=("Segoe UI", 9, "bold"),
+                bg=color if is_active else C["panel"],
+                fg="white" if is_active else C["text_lo"],
+                activebackground=C["danger"], activeforeground="white",
+                relief="flat", cursor="hand2", padx=4, pady=5, bd=0,
+                command=lambda c=cid, n=nick: self._ml_desconectar_cuenta(c, n))
+            x_btn.pack(side="left", padx=(0, 6))
+            self._cuenta_tab_widgets.append(x_btn)
+
+        # Botón agregar nueva cuenta
+        add_btn = tk.Button(
+            frame,
+            text="+ Agregar cuenta",
+            font=("Segoe UI", 8),
+            bg=C["panel"], fg=C["text_mid"],
+            activebackground=C["success"], activeforeground="white",
+            relief="flat", cursor="hand2", padx=8, pady=5, bd=0,
+            command=self._ml_agregar_cuenta)
+        add_btn.pack(side="left", padx=(4, 0))
+        self._cuenta_tab_widgets.append(add_btn)
+
+    def _ml_set_cuenta_filtro(self, cuenta_id, color):
+        """Filtra la lista por cuenta específica."""
+        self._ml_cuenta_filtro = cuenta_id
+        self._rebuild_cuenta_tabs()
+        self._ml_filtrar()
+
+    def _ml_desconectar_cuenta(self, cuenta_id, nick):
+        if not messagebox.askyesno(
+                "Desconectar cuenta",
+                f"¿Desconectar la cuenta '{nick}'?\n"
+                f"Se eliminarán sus pedidos de la lista.",
+                parent=self.root):
+            return
+        import threading, urllib.request, json as _j
+        def _w():
+            try:
+                url = RAILWAY_URL.rstrip("/")
+                req = urllib.request.Request(
+                    f"{url}/api/cuentas/{cuenta_id}/logout",
+                    method="POST",
+                    headers={"Content-Type": "application/json",
+                             "X-API-Key": self.config.get("clave_nube", "everest2024")})
+                urllib.request.urlopen(req, timeout=6)
+            except Exception:
+                pass
+            self.root.after(0, lambda: self._ml_verificar_conexion())
+        threading.Thread(target=_w, daemon=True).start()
+
+    def _ml_agregar_cuenta(self):
+        """Abre el login de ML para una nueva cuenta."""
+        # Calcular próximo ID de cuenta
+        cuentas = getattr(self, "_ml_cuentas", {})
+        n = len(cuentas)
+        cuenta_id = f"cuenta_{n}"
+
         import webbrowser
-        url = RAILWAY_URL.rstrip("/") + "/auth/login"
+        url = RAILWAY_URL.rstrip("/") + f"/auth/login?cuenta={cuenta_id}"
+        webbrowser.open(url)
+
+        # Ventana de espera elegante
+        win = tk.Toplevel(self.root)
+        win.title("Conectar cuenta ML")
+        win.geometry("440x260")
+        win.resizable(False, False)
+        win.config(bg=C["bg_dark"])
+        win.grab_set()
+
+        hdr = tk.Frame(win, bg="#CA8A04", pady=12)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="Conectar nueva cuenta MercadoLibre",
+                 font=("Segoe UI Semibold", 12), bg="#CA8A04", fg="black").pack()
+
+        body = tk.Frame(win, bg=C["bg_dark"], padx=28, pady=20)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(body,
+                 text="Se abrió el navegador.\n\n"
+                      "1. Iniciá sesión con la cuenta ML a agregar\n"
+                      "2. Autorizá la aplicación\n"
+                      "3. Volvé aquí y hacé clic en Verificar",
+                 font=("Segoe UI", 10), bg=C["bg_dark"], fg=C["text_hi"],
+                 justify="left").pack(anchor="w")
+
+        sep = tk.Frame(body, bg=C["border"], height=1)
+        sep.pack(fill="x", pady=(16, 10))
+
+        btn_row = tk.Frame(body, bg=C["bg_dark"])
+        btn_row.pack(fill="x")
+
+        lbl_res = tk.Label(body, text="", font=FONT_SMALL,
+                           bg=C["bg_dark"], fg=C["text_mid"])
+        lbl_res.pack(anchor="w", pady=(6, 0))
+
+        def _verificar():
+            lbl_res.config(text="Verificando...", fg=C["accent"])
+            win.update_idletasks()
+            import urllib.request, json as _j, threading
+            def _w():
+                try:
+                    url2 = RAILWAY_URL.rstrip("/") + "/auth/status"
+                    with urllib.request.urlopen(url2, timeout=6) as r:
+                        d = _j.loads(r.read())
+                    cuentas_nuevas = {c["cuenta_id"]: c["nickname"]
+                                      for c in d.get("cuentas", [])}
+                    if cuenta_id in cuentas_nuevas:
+                        nick = cuentas_nuevas[cuenta_id]
+                        self.root.after(0, lambda: [
+                            lbl_res.config(text=f"✅ Conectado como {nick}",
+                                           fg=C["success"]),
+                            win.after(1200, win.destroy),
+                            self._ml_on_status(d),
+                            self._ml_refresh_pedidos(),
+                        ])
+                    else:
+                        self.root.after(0, lambda: lbl_res.config(
+                            text="Aún no conectado. Completá la autorización en el browser.",
+                            fg=C["warning"]))
+                except Exception as e:
+                    self.root.after(0, lambda: lbl_res.config(
+                        text=f"Error: {e}", fg=C["danger"]))
+            threading.Thread(target=_w, daemon=True).start()
+
+        tk.Button(btn_row, text="Cancelar",
+                  font=FONT_BODY, bg=C["panel"], fg=C["text_mid"],
+                  relief="flat", cursor="hand2", padx=14, pady=6, bd=0,
+                  command=win.destroy).pack(side="left")
+        tk.Button(btn_row, text="✅  Ya autoricé — Verificar",
+                  font=("Segoe UI Semibold", 10),
+                  bg=C["success"], fg="white",
+                  activebackground="#059669", activeforeground="white",
+                  relief="flat", cursor="hand2", padx=16, pady=6, bd=0,
+                  command=_verificar).pack(side="right")
+
+    def _ml_abrir_login(self):
+        """Login para la cuenta_0 (primera cuenta)."""
+        import webbrowser
+        url = RAILWAY_URL.rstrip("/") + "/auth/login?cuenta=cuenta_0"
         webbrowser.open(url)
         messagebox.showinfo(
             "Autenticación MercadoLibre",
-            f"Se abrió el navegador para conectar con MercadoLibre.\n\n"
-            f"1. Iniciá sesión con tu cuenta ML\n"
-            f"2. Autorizá la aplicación\n"
-            f"3. Volvé acá y hacé clic en 'Actualizar pedidos'\n\n"
-            f"URL: {url}",
+            "Se abrió el navegador.\n\n"
+            "1. Iniciá sesión con tu cuenta ML\n"
+            "2. Autorizá la aplicación\n"
+            "3. Volvé acá y hacé clic en 'Actualizar pedidos'",
             parent=self.root)
-        # Re-verificar conexión después de 8 segundos
         self.root.after(8000, self._ml_verificar_conexion)
 
     def _ml_refresh_pedidos(self):
-        """Trae los pedidos desde el servidor Railway."""
+        """Trae pedidos de TODAS las cuentas conectadas."""
         import threading
         self.lbl_ml_estado.config(text="Actualizando pedidos...", fg=C["accent"])
         self.btn_ml_refresh.config(state="disabled")
@@ -1344,13 +1809,16 @@ class AsistenteDepositoApp:
             try:
                 import urllib.request, json as _j
                 url = RAILWAY_URL.rstrip("/")
-                # Primero disparar refresh en el servidor
-                req = urllib.request.Request(
-                    url + "/api/pedidos/refresh", method="POST",
-                    headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=5)
-                import time; time.sleep(3)
-                # Luego traer los pedidos
+                # Disparar refresh en el servidor (actualiza todas las cuentas)
+                try:
+                    req = urllib.request.Request(
+                        url + "/api/pedidos/refresh", method="POST",
+                        headers={"Content-Type": "application/json"})
+                    urllib.request.urlopen(req, timeout=5)
+                    import time; time.sleep(3)
+                except Exception:
+                    pass
+                # Traer los pedidos ya procesados
                 with urllib.request.urlopen(url + "/api/pedidos", timeout=15) as r:
                     d = _j.loads(r.read())
                 self.root.after(0, lambda: self._ml_on_pedidos(d))
@@ -1365,7 +1833,7 @@ class AsistenteDepositoApp:
             if "login" in str(d.get("msg", "")):
                 self.lbl_ml_estado.config(
                     text="Sesión expirada — reconectá con ML", fg=C["warning"])
-                self._ml_mostrar_placeholder("Sesión expirada. Clic en 'Conectar con MercadoLibre'")
+                self._ml_mostrar_placeholder("Sesión expirada. Clic en 'Conectar MercadoLibre'")
             else:
                 self._ml_on_error(d.get("msg", "Error desconocido"))
             return
@@ -1374,13 +1842,23 @@ class AsistenteDepositoApp:
         total  = len(self._ml_pedidos)
         pend   = sum(1 for p in self._ml_pedidos.values() if not p.get("impreso"))
 
+        # Contar por cuenta
+        por_cuenta = {}
+        for p in self._ml_pedidos.values():
+            cid = p.get("_cuenta", "cuenta_0")
+            nick = p.get("_nickname", cid)
+            por_cuenta.setdefault(nick, 0)
+            por_cuenta[nick] += 1
+
+        resumen = "  ·  ".join(f"{n}: {c}" for n, c in por_cuenta.items()) or f"{total} pedidos"
         self.lbl_ml_estado.config(
-            text=f"✅  {total} pedidos  ·  {pend} pendientes  ·  actualizado {d.get('ts','')}",
+            text=f"✅  {resumen}  ·  {pend} pendientes  ·  {d.get('ts','')}",
             fg=C["success"])
         self.btn_ml_lote.config(state="normal" if pend > 0 else "disabled")
-        # Badge en la pestaña
+
         if pend > 0:
-            self.lbl_ml_badge.config(text=f" {pend} pendientes ", bg=C["warning"], fg="black")
+            self.lbl_ml_badge.config(text=f" {pend} ", bg=C["warning"], fg="black")
+            self.lbl_ml_badge.pack(side="left")
         else:
             self.lbl_ml_badge.config(text="")
 
@@ -1609,11 +2087,13 @@ class AsistenteDepositoApp:
         self.lbl_fase_actual.config(text="● FASE 1: COLECTA EN DEPOSITO", fg=C["accent"])
         self.lbl_col1_header.config(text="FASE 1: COLECTA EN DEPOSITO")
         self.lbl_estado_pdf.config(
-            text=f"Lote ML: {len(self.pedidos)} pedidos / {total_uds} unidades",
-            fg=C["success"])
+            text=f"Lote ML: {len(self.pedidos)} pedidos / {total_uds} unidades — Subiendo a celulares…",
+            fg=C["accent"])
 
-        # Exportar al servidor Railway para los celulares
-        self._exportar_debounced()
+        # Siempre subir a Railway para que los celulares reciban el lote
+        self._exportar_estado_movil()
+        self._subir_a_nube_async()
+        self.root.after(5000, self._sincronizar_desde_nube)
 
         # Cambiar a la pestaña de Picking
         self._switch_tab("picking")
@@ -1946,7 +2426,7 @@ class AsistenteDepositoApp:
         VentanaConfiguracion(self.root, self.config, self._on_config_guardada)
 
     def _verificar_primera_vez(self):
-        """Al primer arranque, si no hay impresora configurada, muestra bienvenida."""
+        """Solo muestra bienvenida si NO hay impresora configurada."""
         if not self.config.get("impresora", "").strip():
             self._mostrar_bienvenida()
 
@@ -2311,7 +2791,8 @@ class AsistenteDepositoApp:
 
         cant = len(self.pedidos)
         self.lbl_estado_pdf.config(
-            text=f"✅  {cant} paquetes cargados.", fg=C["success"])
+            text=f"✅  {cant} paquetes cargados. Subiendo a Railway…",
+            fg=C["accent"])
         self.btn_cargar.config(state="normal")
         self.actualizar_contador_global()
         self._dibujar_fase1()
@@ -2319,14 +2800,13 @@ class AsistenteDepositoApp:
         self.entrada_sku.focus()
         self.btn_fase2.config(state="normal", bg=C["success"], fg="white")
         self.lbl_fase_actual.config(
-            text="● FASE 1: COLECTA EN DEPÓSITO", fg=C["accent"])
+            text="● FASE 1: COLECTA EN DEPOSITO", fg=C["accent"])
         self.lbl_col1_header.config(
-            text="📦  FASE 1: COLECTA EN DEPÓSITO")
+            text="FASE 1: COLECTA EN DEPOSITO")
         self._exportar_estado_movil()
-        # Subir al servidor en la nube y arrancar polling de sincronización
-        if self.config.get("servidor_nube", "").strip():
-            self._subir_a_nube_async()
-            self.root.after(5000, self._sincronizar_desde_nube)
+        # Siempre subir a Railway y arrancar polling
+        self._subir_a_nube_async()
+        self.root.after(5000, self._sincronizar_desde_nube)
 
     def _pdf_error(self, msg):
         self.btn_cargar.config(state="normal")
@@ -3436,15 +3916,58 @@ try {{
             return False
 
     def _sincronizar_colecta_movil(self, colecta_movil):
-        """Recibe escaneos del celular y actualiza solo los checkmarks afectados."""
+        """Recibe escaneos del celular y actualiza checkmarks en tiempo real."""
         cambios = False
+        nuevos  = []   # SKUs que cambiaron en esta sincronización
+
         for sku, qty in colecta_movil.items():
-            if self.colecta_global.get(sku, 0) != qty:
+            qty = int(qty)
+            ant = self.colecta_global.get(sku, 0)
+            if ant != qty:
                 self.colecta_global[sku] = qty
                 self._actualizar_checkmarks_fase1(sku)
+                if qty > ant:   # Nuevo escaneo (no retroceso)
+                    nuevos.append(sku)
                 cambios = True
+
         if cambios:
+            # Actualizar totales globales
+            self.actualizar_contador_global()
             self.root.update_idletasks()
+
+            # Parpadeo verde en el panel izquierdo por cada SKU nuevo escaneado
+            for sku in nuevos[:3]:   # máximo 3 simultáneos
+                self._flash_sku_escaneado(sku)
+
+            # Si toda la colecta está completa, notificar
+            total_req = {}
+            for d in self.pedidos.values():
+                for s, q in d["skus_requeridos"].items():
+                    total_req[s] = total_req.get(s, 0) + q
+            if all(self.colecta_global.get(s,0) >= q for s,q in total_req.items()):
+                self.lbl_resultado.config(
+                    text="✅ ¡Colecta completa desde celular! Pasá a Fase 2.",
+                    fg=C["success"])
+                self.col_control.config(bg=C["success"])
+                self.root.after(1000, lambda: self.col_control.config(bg=C["panel"]))
+
+    def _flash_sku_escaneado(self, sku):
+        """Parpadeo verde en el item de la lista cuando llega un escaneo del celular."""
+        if not hasattr(self, "fase1_items") or sku not in self.fase1_items:
+            return
+        item = self.fase1_items[sku]
+        chk  = item.get("checkbox")
+        cnt  = item.get("lbl_cnt")
+        if not chk or not chk.winfo_exists():
+            return
+        # Flash: cambiar color brevemente
+        orig_bg_chk = chk.cget("fg")
+        if chk.winfo_exists():
+            chk.config(fg="#FFFFFF")
+        def _restaurar():
+            if chk.winfo_exists():
+                chk.config(fg=orig_bg_chk)
+        self.root.after(400, _restaurar)
 
     def _construir_payload_nube(self):
         """Construye el dict para subir al servidor en la nube."""
@@ -3483,33 +4006,215 @@ try {{
         threading.Thread(target=self._subir_a_nube_worker, daemon=True).start()
 
     def _subir_a_nube_worker(self):
-        """Worker que hace la petición HTTP al servidor en la nube."""
+        """Sube el estado al servidor Railway. Siempre usa RAILWAY_URL."""
         try:
             import urllib.request, json as _json
-            url  = self.config.get("servidor_nube", "").strip().rstrip("/")
-            key  = self.config.get("clave_nube", "").strip()
-            if not url:
-                return
+            url = RAILWAY_URL.rstrip("/")
+            key = self.config.get("clave_nube", "everest2024").strip()
             payload = _json.dumps(self._construir_payload_nube()).encode("utf-8")
             req = urllib.request.Request(
                 url + "/api/subir_estado",
                 data=payload,
                 headers={"Content-Type": "application/json", "X-API-Key": key},
                 method="POST")
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                pass  # Éxito silencioso
-        except Exception:
-            pass  # No interrumpir el flujo si la nube no responde
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resultado = _json.loads(resp.read())
+                if resultado.get("ok"):
+                    self.root.after(0, lambda: self._on_subida_ok(resultado))
+                else:
+                    self.root.after(0, lambda: self._on_subida_error(str(resultado)))
+        except Exception as e:
+            self.root.after(0, lambda: self._on_subida_error(str(e)))
+
+    def _mostrar_info_movil(self):
+        """Muestra la ventana con QR y URL para que los celulares entren a Railway."""
+        win = tk.Toplevel(self.root)
+        win.title("App Móvil — Picking")
+        win.geometry("480x420")
+        win.resizable(False, False)
+        win.config(bg=C["bg_dark"])
+        win.grab_set()
+
+        # Header
+        hdr = tk.Frame(win, bg=C["success"], pady=14)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="📱  App Móvil de Picking",
+                 font=("Segoe UI Black", 13), bg=C["success"], fg="white").pack()
+        tk.Label(hdr, text="Los operarios abren esta URL en sus celulares",
+                 font=("Segoe UI", 9), bg=C["success"], fg="#D1FAE5").pack(pady=(2,0))
+
+        body = tk.Frame(win, bg=C["bg_dark"], padx=28, pady=20)
+        body.pack(fill="both", expand=True)
+
+        url_movil = RAILWAY_URL.rstrip("/") + "/movil"
+
+        # URL grande y copiable
+        tk.Label(body, text="URL para los celulares:",
+                 font=("Segoe UI", 9, "bold"), bg=C["bg_dark"],
+                 fg=C["text_mid"]).pack(anchor="w")
+
+        url_frame = tk.Frame(body, bg=C["accent"], padx=2, pady=2)
+        url_frame.pack(fill="x", pady=(6,0))
+        url_in = tk.Frame(url_frame, bg=C["card"])
+        url_in.pack(fill="x")
+        lbl_url = tk.Label(url_in, text=url_movil,
+                           font=("Consolas", 11, "bold"),
+                           bg=C["card"], fg=C["success"],
+                           anchor="w", padx=10, pady=8)
+        lbl_url.pack(fill="x")
+
+        # Botón copiar
+        def _copiar():
+            win.clipboard_clear()
+            win.clipboard_append(url_movil)
+            btn_copiar.config(text="✅ Copiado!", bg=C["success"])
+            win.after(2000, lambda: btn_copiar.config(text="📋 Copiar URL", bg=C["accent"]))
+
+        btn_copiar = tk.Button(body, text="📋 Copiar URL",
+                               font=("Segoe UI Semibold", 10),
+                               bg=C["accent"], fg="white",
+                               activebackground=C["accent2"], activeforeground="white",
+                               relief="flat", cursor="hand2", padx=14, pady=7, bd=0,
+                               command=_copiar)
+        btn_copiar.pack(fill="x", pady=(8,0))
+
+        # Estado del lote
+        tk.Frame(body, bg=C["border"], height=1).pack(fill="x", pady=(16,12))
+
+        self.lbl_railway_status = tk.Label(
+            body, text="🔄  Verificando estado en Railway...",
+            font=("Segoe UI", 9), bg=C["bg_dark"], fg=C["text_mid"],
+            wraplength=400, justify="left")
+        self.lbl_railway_status.pack(anchor="w")
+
+        # Botón subir/actualizar lote
+        def _subir_ahora():
+            if not self.pedidos:
+                messagebox.showwarning(
+                    "Sin lote", "Cargá un PDF o generá un lote ML primero.",
+                    parent=win)
+                return
+            btn_subir.config(text="⏳ Subiendo...", state="disabled")
+            self._subir_a_nube_async_con_callback(
+                lambda ok, msg: _on_resultado(ok, msg))
+
+        def _on_resultado(ok, msg):
+            if ok:
+                btn_subir.config(
+                    text="✅ Lote enviado a Railway",
+                    bg=C["success"], state="normal")
+                self.lbl_railway_status.config(
+                    text=f"✅ Lote activo en Railway — {len(self.pedidos)} pedidos cargados.\n"
+                         f"Los celulares verán la lista en segundos.",
+                    fg=C["success"])
+            else:
+                btn_subir.config(text="❌ Error — Reintentar", bg=C["danger"], state="normal")
+                self.lbl_railway_status.config(
+                    text=f"❌ Error al conectar con Railway:\n{msg}",
+                    fg=C["danger"])
+
+        btn_subir = tk.Button(body, text="🚀  Enviar lote a Railway (celulares)",
+                              font=("Segoe UI Semibold", 10),
+                              bg="#7C3AED", fg="white",
+                              activebackground=C["accent2"], activeforeground="white",
+                              relief="flat", cursor="hand2", padx=14, pady=7, bd=0,
+                              command=_subir_ahora)
+        btn_subir.pack(fill="x", pady=(8,0))
+
+        # Instrucciones
+        tk.Label(body,
+                 text="Instrucciones para el operario:\n"
+                      "1. Abrir Chrome en el celular\n"
+                      "2. Escribir la URL de arriba\n"
+                      "3. Escanear con el lector integrado del teléfono",
+                 font=("Segoe UI", 8), bg=C["bg_dark"], fg=C["text_lo"],
+                 justify="left").pack(anchor="w", pady=(12,0))
+
+        # Verificar estado Railway al abrir
+        self._verificar_estado_railway_en_ventana()
+
+    def _verificar_estado_railway_en_ventana(self):
+        """Consulta Railway y actualiza lbl_railway_status si existe."""
+        import threading, urllib.request, json as _j
+        def _w():
+            try:
+                url = RAILWAY_URL.rstrip("/") + "/api/estado"
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    d = _j.loads(r.read())
+                cargado   = d.get("cargado", False)
+                total_skus = d.get("total_skus", 0)
+                total_uds  = d.get("total_uds", 0)
+                ts         = d.get("ultima_actualizacion", "")
+                if cargado:
+                    txt = (f"✅ Railway tiene un lote activo:\n"
+                           f"   {total_skus} SKUs · {total_uds} unidades · actualizado {ts}\n"
+                           f"   Los celulares ya pueden ver la lista.")
+                    col = C["success"]
+                else:
+                    txt = ("⚠  Railway NO tiene lote activo todavía.\n"
+                           "   Presioná '🚀 Enviar lote a Railway' para que los celulares vean la lista.")
+                    col = C["warning"]
+                def _update():
+                    if hasattr(self, 'lbl_railway_status') and \
+                       self.lbl_railway_status.winfo_exists():
+                        self.lbl_railway_status.config(text=txt, fg=col)
+                self.root.after(0, _update)
+            except Exception as e:
+                def _err():
+                    if hasattr(self, 'lbl_railway_status') and \
+                       self.lbl_railway_status.winfo_exists():
+                        self.lbl_railway_status.config(
+                            text=f"❌ No se pudo conectar a Railway:\n{e}",
+                            fg=C["danger"])
+                self.root.after(0, _err)
+        threading.Thread(target=_w, daemon=True).start()
+
+    def _subir_a_nube_async_con_callback(self, callback):
+        """Sube a Railway y llama callback(ok, msg) al terminar."""
+        import threading
+        def _w():
+            try:
+                import urllib.request, json as _json
+                url     = RAILWAY_URL.rstrip("/")
+                key     = self.config.get("clave_nube", "everest2024").strip()
+                payload = _json.dumps(self._construir_payload_nube()).encode("utf-8")
+                req = urllib.request.Request(
+                    url + "/api/subir_estado",
+                    data=payload,
+                    headers={"Content-Type": "application/json", "X-API-Key": key},
+                    method="POST")
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    resultado = _json.loads(resp.read())
+                ok  = resultado.get("ok", False)
+                msg = resultado.get("msg", "")
+                self.root.after(0, lambda: callback(ok, msg))
+                if ok:
+                    self.root.after(0, lambda: self._on_subida_ok(resultado))
+            except Exception as e:
+                self.root.after(0, lambda: callback(False, str(e)))
+        threading.Thread(target=_w, daemon=True).start()
+
+    def _on_subida_ok(self, resultado):
+        msg = resultado.get("msg", "")
+        total = len(self.pedidos)
+        self.lbl_estado_pdf.config(
+            text=f"✅ {total} pedidos en Railway — celulares listos",
+            fg=C["success"])
+        self.root.after(5000, self._sincronizar_desde_nube)
+
+    def _on_subida_error(self, err):
+        # Silencioso — el error se muestra solo si el usuario abre la ventana
+        self.lbl_estado_pdf.config(
+            text=f"⚠  Lote cargado localmente (Railway sin conexión)",
+            fg=C["warning"])
 
     def _sincronizar_desde_nube(self):
-        """Polling: lee la colecta del servidor en la nube y sincroniza checkmarks."""
+        """Polling: lee la colecta del servidor Railway y sincroniza checkmarks."""
         import threading
         def _worker():
             try:
                 import urllib.request, json as _json
-                url = self.config.get("servidor_nube", "").strip().rstrip("/")
-                if not url:
-                    return
+                url = RAILWAY_URL.rstrip("/")
                 with urllib.request.urlopen(url + "/api/estado", timeout=5) as resp:
                     data = _json.loads(resp.read())
                 colecta = data.get("colecta", {})
@@ -3518,9 +4223,8 @@ try {{
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
-        # Re-programar el polling cada 5 segundos
-        if self.config.get("servidor_nube", "").strip():
-            self.root.after(5000, self._sincronizar_desde_nube)
+        # Re-programar cada 5 segundos
+        self.root.after(5000, self._sincronizar_desde_nube)
 
     def _html_app_movil(self):
         """HTML de la app móvil embebido. Intenta leer el archivo externo primero

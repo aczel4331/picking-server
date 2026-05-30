@@ -41,32 +41,28 @@ ML_REDIRECT   = os.environ.get(
 API_KEY = os.environ.get("PICKING_API_KEY", "everest2024")
 
 # ── Estado en memoria ─────────────────────────────────────────────────────────
-# tokens: { access_token, refresh_token, expires_at, user_id, nickname }
-_tokens = {}
-# pedidos ML: { order_id: { ...datos... } }
-_pedidos_ml = {}
-# estado picking (colecta/fase)
+# Multi-cuenta: { cuenta_id: { access_token, refresh_token, expires_at, user_id, nickname } }
+_cuentas        = {}   # { "cuenta_0": {...tokens...}, "cuenta_1": {...} }
+_tokens         = {}   # alias -> _cuentas["cuenta_0"] para compatibilidad
+_cuenta_activa  = "cuenta_0"
+# pedidos ML de todas las cuentas: { order_id: { ...datos..., "_cuenta": cuenta_id } }
+_pedidos_ml     = {}
+# estado picking
 _estado = {
     "fase": 1, "grupos": [], "colecta": {}, "colecta_completa": False,
     "total_skus": 0, "total_uds": 0, "ultima_actualizacion": "", "cargado": False,
 }
-# cache de etiquetas PDF (order_id → url)
-_etiquetas_cache = {}
-# timestamp último refresh automático
+_colectores          = {}
+_etiquetas_cache     = {}
 _ultimo_refresh_pedidos = None
-# Base de datos de SKUs: { SKU: {nombre, pasillo, estanteria} }
-_sku_db = {}
-# Archivo de persistencia de SKUs (Railway tiene disco efímero,
-# pero sirve dentro de una sesión; para persistencia real usar variable de entorno)
-_SKU_DB_ENV_KEY = "SKU_DB_JSON"   # Variable de entorno opcional para persistir
-
-
+_sku_db              = {}
+_SKU_DB_ENV_KEY      = "SKU_DB_JSON"
+_pkce_store          = {}   # { state: { verifier, cuenta_id } }
 def _ts():
     return datetime.now().strftime("%d/%m %H:%M:%S")
 
 
 def _cargar_sku_db():
-    """Carga la BD de SKUs desde variable de entorno si existe."""
     global _sku_db
     raw = os.environ.get(_SKU_DB_ENV_KEY, "")
     if raw:
@@ -75,13 +71,86 @@ def _cargar_sku_db():
         except Exception:
             _sku_db = {}
 
-
 def _sku_info(sku):
-    """Devuelve {nombre, pasillo, estanteria} para un SKU, o defaults vacíos."""
     return _sku_db.get(sku.upper(), {"nombre": "", "pasillo": "", "estanteria": ""})
 
-
 _cargar_sku_db()
+
+
+# ─── Helpers multi-cuenta ────────────────────────────────────────────────────
+
+def _tokens_de(cuenta_id):
+    """Devuelve el dict de tokens de una cuenta, o {} si no existe."""
+    return _cuentas.get(cuenta_id, {})
+
+def _token_valido_cuenta(cuenta_id=None):
+    """True si la cuenta tiene un token activo."""
+    cid = cuenta_id or _cuenta_activa
+    tok = _cuentas.get(cid, {})
+    if not tok.get("access_token"):
+        return False
+    exp = tok.get("expires_at")
+    if exp and datetime.now() >= exp - timedelta(seconds=300):
+        _renovar_token_cuenta(cid)
+    return bool(_cuentas.get(cid, {}).get("access_token"))
+
+def _token_valido():
+    """Compatibilidad: verifica la cuenta_0."""
+    return _token_valido_cuenta("cuenta_0")
+
+def _renovar_token_cuenta(cuenta_id):
+    tok = _cuentas.get(cuenta_id, {})
+    if not tok.get("refresh_token"):
+        return
+    try:
+        r = requests.post(
+            "https://api.mercadolibre.com/oauth/token",
+            headers={"Accept": "application/json",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type":    "refresh_token",
+                "client_id":     ML_APP_ID,
+                "client_secret": ML_SECRET_KEY,
+                "refresh_token": tok["refresh_token"],
+            }, timeout=10)
+        if r.status_code == 200:
+            d = r.json()
+            tok["access_token"]  = d["access_token"]
+            tok["refresh_token"] = d.get("refresh_token", tok["refresh_token"])
+            tok["expires_at"]    = datetime.now() + timedelta(seconds=d.get("expires_in", 21600))
+            _cuentas[cuenta_id]  = tok
+    except Exception:
+        pass
+
+def _renovar_token():
+    _renovar_token_cuenta("cuenta_0")
+
+def _ml_get_cuenta(ruta, cuenta_id, params=None):
+    """GET a la API ML usando los tokens de una cuenta específica."""
+    tok = _cuentas.get(cuenta_id, {})
+    at  = tok.get("access_token", "")
+    r   = requests.get(
+        ML_API_URL + ruta,
+        headers={"Authorization": f"Bearer {at}"},
+        params=params or {}, timeout=12)
+    return r
+
+def _ml_get(ruta, params=None):
+    """GET usando la cuenta_0 (compatibilidad)."""
+    return _ml_get_cuenta(ruta, "cuenta_0", params)
+
+def _cuentas_info():
+    """Lista de cuentas conectadas con info básica."""
+    return [
+        {
+            "cuenta_id": cid,
+            "nickname":  tok.get("nickname", cid),
+            "user_id":   tok.get("user_id", ""),
+            "activa":    bool(tok.get("access_token")),
+        }
+        for cid, tok in _cuentas.items()
+        if tok.get("access_token")
+    ]
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HELPERS ML
@@ -127,7 +196,125 @@ def _ml_get(path, params=None):
     return r
 
 
+def _ml_get_all_orders_cuenta(cuenta_id):
+    """Trae pedidos de una cuenta específica."""
+    tok = _cuentas.get(cuenta_id, {})
+    uid = tok.get("user_id")
+    if not uid:
+        return {}
+    pedidos = {}
+    offset  = 0
+    limit   = 50
+    while True:
+        r = _ml_get_cuenta("/orders/search", cuenta_id, params={
+            "seller": uid, "order.status": "paid",
+            "offset": offset, "limit": limit, "sort": "date_desc",
+        })
+        if r.status_code != 200:
+            break
+        data    = r.json()
+        results = data.get("results", [])
+        if not results:
+            break
+        for order in results:
+            oid   = str(order["id"])
+            items = []
+            for it in order.get("order_items", []):
+                item_data = it.get("item", {})
+                var_attrs = item_data.get("variation_attributes", [])
+                sku = ""
+                for attr in var_attrs:
+                    if attr.get("name","").lower() in ("sku","seller_sku"):
+                        sku = str(attr.get("value_name","")).strip(); break
+                if not sku:
+                    sku = str(item_data.get("seller_sku") or
+                              item_data.get("seller_custom_field") or "").strip()
+                sku   = sku.upper() if sku else ""
+                color = next((a["value_name"] for a in var_attrs
+                              if "color" in a.get("name","").lower()), "")
+                talle = next((a["value_name"] for a in var_attrs
+                              if a.get("name","").lower() in ("talle","size","talha","talla")), "")
+                items.append({
+                    "item_id":    item_data.get("id",""),
+                    "titulo":     item_data.get("title",""),
+                    "sku":        sku,
+                    "cantidad":   it.get("quantity", 1),
+                    "color":      color,
+                    "talle":      talle,
+                    "unit_price": it.get("unit_price", 0),
+                })
+            ship = order.get("shipping") or {}
+            pedidos[oid] = {
+                "order_id":     oid,
+                "pack_id":      str(order.get("pack_id","")) if order.get("pack_id") else "",
+                "fecha":        order.get("date_created","")[:10],
+                "fecha_cierre": order.get("date_closed","")[:10],
+                "comprador":    (order.get("buyer") or {}).get("nickname","")
+                                or str((order.get("buyer") or {}).get("id","")),
+                "total":        order.get("total_amount", 0),
+                "moneda":       order.get("currency_id","UYU"),
+                "items":        items,
+                "shipping_id":  str(ship.get("id","")) if ship.get("id") else "",
+                "logistica":    "",
+                "estado_envio": "",
+                "impreso":      False,
+                "tags":         order.get("tags", []),
+                "_cuenta":      cuenta_id,
+                "_nickname":    tok.get("nickname", cuenta_id),
+            }
+        total  = data.get("paging",{}).get("total",0)
+        offset += limit
+        if offset >= total:
+            break
+    return pedidos
+
+
+def _enriquecer_skus_cuenta(pedidos, cuenta_id):
+    """Enriquece SKUs y estado de envío usando los tokens de una cuenta."""
+    item_ids_sin_sku = {}
+    for ped in pedidos.values():
+        for it in ped["items"]:
+            if not it["sku"] and it["item_id"]:
+                item_ids_sin_sku[it["item_id"]] = True
+    sku_map  = {}
+    ids_list = list(item_ids_sin_sku.keys())
+    for i in range(0, len(ids_list), 20):
+        chunk = ids_list[i:i+20]
+        r = _ml_get_cuenta("/items", cuenta_id, params={"ids": ",".join(chunk)})
+        if r.status_code == 200:
+            for entry in r.json():
+                body = entry.get("body", {})
+                iid  = body.get("id","")
+                sku  = str(body.get("seller_sku") or body.get("seller_custom_field") or "").strip().upper()
+                if iid and sku:
+                    sku_map[iid] = sku
+    for ped in pedidos.values():
+        for it in ped["items"]:
+            if not it["sku"] and it["item_id"] in sku_map:
+                it["sku"] = sku_map[it["item_id"]]
+        if ped.get("shipping_id"):
+            try:
+                rs = _ml_get_cuenta(f"/shipments/{ped['shipping_id']}", cuenta_id)
+                if rs.status_code == 200:
+                    sd = rs.json()
+                    ped["logistica"]    = sd.get("logistic_type","")
+                    ped["estado_envio"] = sd.get("status","")
+            except Exception:
+                pass
+    return pedidos
+
+
 def _ml_get_all_orders():
+    """Compatibilidad: trae pedidos de cuenta_0."""
+    return _ml_get_all_orders_cuenta("cuenta_0")
+
+
+def _enriquecer_skus(pedidos):
+    """Compatibilidad: usa cuenta_0."""
+    return _enriquecer_skus_cuenta(pedidos, "cuenta_0")
+
+
+
     """
     Trae todos los pedidos pagados del vendedor usando /orders/search.
     SKU segun jerarquia oficial: variation seller_sku > variation seller_custom_field
@@ -253,30 +440,44 @@ def _enriquecer_skus(pedidos):
     return pedidos
 
 
-def _refresh_pedidos_worker():
-    """Trae pedidos en background thread."""
-    global _pedidos_ml, _ultimo_refresh_pedidos
-    if not _token_valido():
+def _refresh_pedidos_worker_cuenta(cuenta_id):
+    """Trae pedidos de UNA cuenta especifica en background."""
+    global _ultimo_refresh_pedidos
+    if not _token_valido_cuenta(cuenta_id):
         return
     try:
-        pedidos = _ml_get_all_orders()
-        pedidos = _enriquecer_skus(pedidos)
+        pedidos = _ml_get_all_orders_cuenta(cuenta_id)
+        pedidos = _enriquecer_skus_cuenta(pedidos, cuenta_id)
+        # Marcar cada pedido con su cuenta
+        for p in pedidos.values():
+            p["_cuenta"] = cuenta_id
         with _lock:
-            # Preservar flag 'impreso' de pedidos ya existentes
+            # Eliminar pedidos viejos de esta cuenta
+            to_del = [oid for oid, p in _pedidos_ml.items()
+                      if p.get("_cuenta") == cuenta_id]
+            for oid in to_del:
+                del _pedidos_ml[oid]
+            # Preservar flag impreso
             for oid, p in pedidos.items():
                 if oid in _pedidos_ml:
                     p["impreso"] = _pedidos_ml[oid].get("impreso", False)
-            _pedidos_ml = pedidos
+            _pedidos_ml.update(pedidos)
             _ultimo_refresh_pedidos = datetime.now()
     except Exception as e:
-        print(f"Error refresh pedidos: {e}")
+        print(f"Error refresh cuenta {cuenta_id}: {e}")
+
+
+def _refresh_pedidos_worker():
+    """Compatibilidad: refresca todas las cuentas."""
+    for cid in list(_cuentas.keys()):
+        _refresh_pedidos_worker_cuenta(cid)
 
 
 def _auto_refresh_loop():
-    """Hilo que refresca pedidos cada 5 minutos automáticamente."""
+    """Refresca pedidos de todas las cuentas cada 5 minutos."""
     while True:
-        time.sleep(300)  # 5 minutos
-        if _token_valido() and _pedidos_ml:
+        time.sleep(300)
+        if _cuentas:
             _refresh_pedidos_worker()
 
 
@@ -290,7 +491,7 @@ threading.Thread(target=_auto_refresh_loop, daemon=True).start()
 def requiere_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not _token_valido():
+        if not _cuentas:  # Al menos una cuenta conectada
             if request.path.startswith("/api/"):
                 return jsonify({"ok": False, "msg": "No autenticado con ML", "login": "/auth/login"}), 401
             return redirect("/auth/login")
@@ -327,11 +528,11 @@ def _generar_pkce():
 
 @app.route("/auth/login")
 def auth_login():
+    cuenta_id = request.args.get("cuenta", "cuenta_0")
     import secrets
-    state    = secrets.token_urlsafe(16)
+    state     = secrets.token_urlsafe(16)
     verifier, challenge = _generar_pkce()
-    _pkce_store[state] = verifier   # guardar para el callback
-
+    _pkce_store[state]  = {"verifier": verifier, "cuenta_id": cuenta_id}
     url = (
         f"{ML_AUTH_URL}/authorization"
         f"?response_type=code"
@@ -354,12 +555,12 @@ def auth_callback():
     if error or not code:
         return _html_error(
             f"Error de autorizacion: {error or 'sin codigo'}",
-            f"Redirect URI configurado: <code>{ML_REDIRECT}</code>"
-        )
+            f"Redirect URI: <code>{ML_REDIRECT}</code>")
 
-    verifier = _pkce_store.pop(state, None)
+    entry      = _pkce_store.pop(state, None) or {}
+    verifier   = entry.get("verifier") if isinstance(entry, dict) else entry
+    cuenta_id  = entry.get("cuenta_id", "cuenta_0") if isinstance(entry, dict) else "cuenta_0"
 
-    # Construir payload — con o sin code_verifier según PKCE
     payload = {
         "grant_type":    "authorization_code",
         "client_id":     ML_APP_ID,
@@ -373,13 +574,9 @@ def auth_callback():
     try:
         r = requests.post(
             "https://api.mercadolibre.com/oauth/token",
-            headers={
-                "Accept":       "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            data=payload,
-            timeout=15
-        )
+            headers={"Accept": "application/json",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            data=payload, timeout=15)
 
         if r.status_code != 200:
             try:
@@ -388,79 +585,85 @@ def auth_callback():
                 err_detail = r.text
             return _html_error(
                 f"Error obteniendo token ({r.status_code})",
-                f"<pre style='background:#0F172A;padding:12px;border-radius:6px;"
-                f"color:#94A3B8;white-space:pre-wrap;font-size:12px'>{err_detail}</pre>"
-                f"<p style='color:#475569;font-size:12px'>"
-                f"App ID: {ML_APP_ID} | PKCE: {'SI' if verifier else 'NO'}</p>"
-            )
+                f"<pre style='background:#0F172A;padding:12px;border-radius:4px;"
+                f"color:#94A3B8;white-space:pre-wrap'>{err_detail}</pre>"
+                f"<small style='color:#475569'>App ID: {ML_APP_ID} | PKCE: {'SI' if verifier else 'NO'}</small>")
 
-        d = r.json()
-        _tokens["access_token"]  = d["access_token"]
-        _tokens["refresh_token"] = d.get("refresh_token", "")
-        _tokens["expires_at"]    = datetime.now() + timedelta(
-            seconds=d.get("expires_in", 21600))
+        d   = r.json()
+        tok = {
+            "access_token":  d["access_token"],
+            "refresh_token": d.get("refresh_token", ""),
+            "expires_at":    datetime.now() + timedelta(seconds=d.get("expires_in", 21600)),
+        }
+        me_r = requests.get(ML_API_URL + "/users/me",
+                            headers={"Authorization": f"Bearer {tok['access_token']}"},
+                            timeout=8)
+        if me_r.status_code == 200:
+            me = me_r.json()
+            tok["user_id"]  = str(me.get("id", ""))
+            tok["nickname"] = me.get("nickname", cuenta_id)
+        else:
+            tok["user_id"]  = ""
+            tok["nickname"] = cuenta_id
 
-        # Obtener datos del vendedor
-        me = _ml_get("/users/me").json()
-        _tokens["user_id"]  = str(me.get("id", ""))
-        _tokens["nickname"] = me.get("nickname", "")
+        _cuentas[cuenta_id] = tok
+        if cuenta_id == "cuenta_0":
+            _tokens.update(tok)
 
-        # Traer pedidos en background
-        threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
+        threading.Thread(
+            target=_refresh_pedidos_worker_cuenta,
+            args=(cuenta_id,), daemon=True).start()
 
         return _html_ok(
-            f"Conectado como <b>{_tokens['nickname']}</b>",
-            "Cerrá esta pestaña y volvé a la app de picking."
-        )
+            f"Conectado como <b>{tok['nickname']}</b>",
+            f"Cuenta registrada como <b>{cuenta_id}</b>. Podés cerrar esta pestaña.")
 
     except Exception as e:
         return _html_error("Error inesperado", str(e))
 
 
-def _html_error(titulo, detalle=""):
-    return f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-    <title>Error ML</title></head>
-    <body style="font-family:Arial,sans-serif;background:#0F172A;color:#F1F5F9;
-    padding:40px;max-width:700px;margin:auto">
-    <div style="background:#1E293B;border:1px solid #EF4444;border-radius:12px;padding:32px">
-    <h2 style="color:#EF4444;margin:0 0 16px">❌ {titulo}</h2>
-    <div style="color:#94A3B8">{detalle}</div>
-    <a href="/auth/login" style="display:inline-block;margin-top:24px;background:#3B82F6;
-    color:white;padding:10px 24px;border-radius:8px;text-decoration:none;font-weight:bold">
-    🔄 Reintentar</a></div></body></html>"""
-
-
-def _html_ok(titulo, subtitulo=""):
-    return f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-    <title>Conectado ML</title></head>
-    <body style="font-family:Arial,sans-serif;background:#0F172A;color:#F1F5F9;
-    padding:40px;max-width:600px;margin:auto">
-    <div style="background:#1E293B;border:1px solid #10B981;border-radius:12px;padding:32px;
-    text-align:center">
-    <div style="font-size:52px;margin-bottom:16px">✅</div>
-    <h2 style="color:#10B981;margin:0 0 12px">{titulo}</h2>
-    <p style="color:#94A3B8">{subtitulo}</p>
-    <a href="/" style="display:inline-block;margin-top:24px;background:#10B981;
-    color:white;padding:10px 24px;border-radius:8px;text-decoration:none;font-weight:bold">
-    Ir al panel →</a></div></body></html>"""
-
-
 @app.route("/auth/logout")
 def auth_logout():
-    _tokens.clear()
-    return redirect("/auth/login")
+    cuenta_id = request.args.get("cuenta", "cuenta_0")
+    if cuenta_id in _cuentas:
+        del _cuentas[cuenta_id]
+        to_del = [oid for oid, p in list(_pedidos_ml.items())
+                  if p.get("_cuenta") == cuenta_id]
+        for oid in to_del:
+            _pedidos_ml.pop(oid, None)
+    if cuenta_id == "cuenta_0":
+        _tokens.clear()
+    return redirect("/")
 
 
 @app.route("/auth/status")
 def auth_status():
     return jsonify({
-        "autenticado":    _token_valido(),
-        "nickname":       _tokens.get("nickname", ""),
-        "user_id":        _tokens.get("user_id", ""),
-        "pedidos":        len(_pedidos_ml),
+        "autenticado": bool(_cuentas),
+        "nickname":    _cuentas.get("cuenta_0", {}).get("nickname", ""),
+        "user_id":     _cuentas.get("cuenta_0", {}).get("user_id", ""),
+        "pedidos":     len(_pedidos_ml),
+        "cuentas":     _cuentas_info(),
         "ultimo_refresh": _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S")
-                          if _ultimo_refresh_pedidos else "—",
+                          if _ultimo_refresh_pedidos else "-",
     })
+
+
+@app.route("/api/cuentas")
+def api_cuentas():
+    return jsonify({"ok": True, "cuentas": _cuentas_info()})
+
+
+@app.route("/api/cuentas/<cuenta_id>/logout", methods=["POST"])
+@requiere_auth
+def api_cuenta_logout(cuenta_id):
+    if cuenta_id in _cuentas:
+        del _cuentas[cuenta_id]
+        to_del = [oid for oid, p in list(_pedidos_ml.items())
+                  if p.get("_cuenta") == cuenta_id]
+        for oid in to_del:
+            _pedidos_ml.pop(oid, None)
+    return jsonify({"ok": True})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1676,173 +1879,382 @@ HTML_MOVIL = r"""<!DOCTYPE html>
 <meta name="theme-color" content="#1E293B">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Picking</title>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<title>Picking · Fase 1</title>
 <style>
-:root{--bg:#0F172A;--panel:#1E293B;--card:#162032;--border:#334155;--accent:#3B82F6;--accent2:#6366F1;--success:#10B981;--warning:#F59E0B;--danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F}
+:root{--bg:#0F172A;--panel:#1E293B;--card:#162032;--border:#334155;
+  --accent:#3B82F6;--accent2:#6366F1;--success:#10B981;
+  --warning:#F59E0B;--danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
-.topbar{background:var(--panel);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;border-bottom:1px solid var(--border)}
-.t-title{font-size:14px;font-weight:800}.t-sub{font-size:10px;color:var(--mid)}
-.badge{background:var(--accent);color:#fff;font-size:12px;font-weight:700;padding:4px 10px;border-radius:20px}
+body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;
+  min-height:100vh;display:flex;flex-direction:column}
+
+/* TOPBAR */
+.topbar{background:var(--panel);padding:10px 14px;display:flex;align-items:center;
+  justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0}
+.t-left{display:flex;align-items:center;gap:8px}
+.t-icon{font-size:20px}
+.t-title{font-size:15px;font-weight:800}
+.t-sub{font-size:10px;color:var(--mid)}
+.badge{background:var(--accent);color:#fff;font-size:13px;font-weight:800;
+  padding:5px 12px;border-radius:20px}
 .badge.done{background:var(--success)}
-.scan-box{padding:12px 14px;background:var(--panel);border-bottom:1px solid var(--border)}
-.scan-lbl{font-size:10px;font-weight:700;color:var(--lo);letter-spacing:.08em;margin-bottom:6px}
-.input-row{display:flex;gap:8px}
-#sku{flex:1;background:var(--card);border:2px solid var(--accent);color:var(--hi);font-size:16px;font-family:monospace;font-weight:700;padding:10px 14px;border-radius:10px;outline:none;text-align:center;text-transform:uppercase}
-.btn-cam{background:var(--accent);border:none;border-radius:10px;color:#fff;font-size:22px;width:48px;height:48px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
-.btn-cam.on{background:var(--danger)}
-#fb{margin-top:8px;min-height:36px;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
-#fb.ok{background:rgba(16,185,129,.15);color:var(--success)}
-#fb.warn{background:rgba(245,158,11,.15);color:var(--warning)}
-#fb.err{background:rgba(239,68,68,.15);color:var(--danger)}
+.badge.warn{background:var(--warning);color:#000}
+
+/* BANNER COMPLETADO */
+#ban{display:none;background:var(--success);color:#fff;text-align:center;
+  padding:14px;font-size:16px;font-weight:800;letter-spacing:.04em;flex-shrink:0}
+#ban.show{display:block}
+
+/* CAJA DE ESCANEO */
+.scan-box{padding:10px 12px;background:var(--panel);border-bottom:1px solid var(--border);
+  flex-shrink:0}
+#sku{width:100%;background:var(--card);border:2px solid var(--accent);color:var(--hi);
+  font-size:20px;font-family:monospace;font-weight:700;padding:12px 14px;
+  border-radius:10px;outline:none;text-align:center;text-transform:uppercase;
+  caret-color:var(--accent)}
+#sku:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.25)}
+
+/* FEEDBACK — grande y claro para el depósito */
+#fb{margin-top:8px;min-height:48px;border-radius:10px;padding:10px 14px;
+  font-size:15px;font-weight:700;display:flex;align-items:center;gap:10px;
+  transition:background .15s}
+#fb.ok{background:rgba(16,185,129,.18);color:var(--success)}
+#fb.warn{background:rgba(245,158,11,.18);color:var(--warning)}
+#fb.err{background:rgba(239,68,68,.18);color:var(--danger)}
 #fb.neu{color:var(--mid)}
-#cam-wrap{display:none;background:#000;position:relative}
-#cam-wrap.open{display:block}
-#vid{width:100%;max-height:220px;object-fit:cover;display:block}
-.cam-over{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
-.cam-rect{width:60%;height:55px;border:2px solid var(--accent);border-radius:6px;box-shadow:0 0 0 9999px rgba(0,0,0,.45)}
-.content{padding:10px 10px 90px}
+
+/* LISTA POR PASILLO */
+.content{flex:1;overflow-y:auto;padding:8px 8px 80px}
 .grupo{margin-bottom:10px;border-radius:10px;overflow:hidden;border:1px solid var(--border)}
-.g-hdr{background:var(--bar);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
+.g-hdr{background:var(--bar);padding:10px 14px;display:flex;align-items:center;
+  justify-content:space-between;cursor:pointer;user-select:none}
+.g-left{display:flex;align-items:center;gap:8px}
 .g-name{font-size:13px;font-weight:800;color:var(--accent);text-transform:uppercase}
 .g-stats{font-size:10px;color:var(--mid)}
-.g-prog{font-size:13px;font-weight:700}
-.g-prog.done{color:var(--success)}.g-prog.pend{color:var(--accent)}
+.g-prog{font-size:14px;font-weight:800}
+.g-prog.done{color:var(--success)}
+.g-prog.pend{color:var(--accent)}
 .g-items{background:var(--card)}
 .g-items.col{display:none}
-.item{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border)}
-.item:last-child{border-bottom:none}.item.done{opacity:.5}
-.chk{font-size:20px;flex-shrink:0;width:26px;text-align:center}
-.chk.ok{color:var(--success)}.chk.pend{color:var(--lo)}
+
+/* ITEM DE SKU */
+.item{display:flex;align-items:center;gap:10px;padding:12px 14px;
+  border-bottom:1px solid var(--border)}
+.item:last-child{border-bottom:none}
+.item.done{opacity:.45}
+.item.recien{animation:flash_ok .6s ease}
+@keyframes flash_ok{0%,100%{background:transparent}50%{background:rgba(16,185,129,.25)}}
+
+.chk{font-size:22px;flex-shrink:0;width:28px;text-align:center}
+.chk.ok{color:var(--success)}
+.chk.pend{color:var(--lo)}
 .ibody{flex:1;min-width:0}
-.iname{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.irow{display:flex;align-items:center;gap:8px;margin-top:2px}
-.isku{font-family:monospace;font-size:11px;color:var(--mid)}
-.icnt{font-size:12px;font-weight:700}
-.icnt.ok{color:var(--success)}.icnt.pend{color:var(--accent)}
-.iest{font-size:10px;color:var(--accent2);margin-top:2px}
-#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--panel);border:1px solid var(--border);color:var(--hi);padding:12px 22px;border-radius:30px;font-size:14px;font-weight:600;z-index:999;transition:transform .3s,opacity .3s;opacity:0;white-space:nowrap}
+.iname{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.irow{display:flex;align-items:center;gap:10px;margin-top:3px}
+.isku{font-family:monospace;font-size:12px;color:var(--mid)}
+.icnt{font-size:14px;font-weight:800}
+.icnt.ok{color:var(--success)}
+.icnt.pend{color:var(--accent)}
+.iest{font-size:11px;color:var(--accent2);margin-top:2px}
+
+/* FLASH OVERLAY */
+#flash{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .12s;z-index:200}
+#flash.ok{background:rgba(16,185,129,.25)}
+#flash.err{background:rgba(239,68,68,.25)}
+
+/* FAB */
+.fab{position:fixed;bottom:20px;right:16px;background:var(--accent);color:#fff;border:none;
+  border-radius:50%;width:56px;height:56px;font-size:24px;cursor:pointer;
+  box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
+  justify-content:center;z-index:50;transition:transform .15s}
+.fab:active{transform:scale(.9)}
+.spin{animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* TOAST */
+#toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(60px);
+  background:var(--panel);border:1px solid var(--border);color:var(--hi);
+  padding:12px 24px;border-radius:30px;font-size:14px;font-weight:700;z-index:999;
+  transition:transform .25s,opacity .25s;opacity:0;white-space:nowrap;
+  box-shadow:0 4px 20px rgba(0,0,0,.4)}
 #toast.show{transform:translateX(-50%) translateY(0);opacity:1}
 #toast.ok{border-color:var(--success);color:var(--success)}
 #toast.err{border-color:var(--danger);color:var(--danger)}
-#flash{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .15s;z-index:200}
-#flash.ok{background:rgba(16,185,129,.2)}#flash.err{background:rgba(239,68,68,.2)}
-.fab{position:fixed;bottom:20px;right:20px;background:var(--accent);color:#fff;border:none;border-radius:50%;width:52px;height:52px;font-size:22px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:50}
-.spin{animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
-#ban{display:none;background:var(--success);color:#fff;text-align:center;padding:12px;font-size:14px;font-weight:800}
-#ban.show{display:block}
+
+/* EMPTY */
 .empty{text-align:center;padding:60px 20px;color:var(--lo)}
+.empty-i{font-size:52px;margin-bottom:12px}
+.empty-t{font-size:15px;line-height:1.5}
 </style>
 </head>
 <body>
 <div id="flash"></div>
+
+<!-- TOPBAR -->
 <div class="topbar">
-  <div style="display:flex;align-items:center;gap:10px">
-    <span style="font-size:20px">⬡</span>
-    <div><div class="t-title">PICKING · FASE 1</div><div class="t-sub">Colecta en depósito</div></div>
+  <div class="t-left">
+    <span class="t-icon">⬡</span>
+    <div>
+      <div class="t-title">PICKING · FASE 1</div>
+      <div class="t-sub" id="t-sub">Colecta en depósito</div>
+    </div>
   </div>
   <div id="badge" class="badge">— / —</div>
 </div>
-<div id="ban">🎉 ¡COLECTA COMPLETA!</div>
+
+<!-- BANNER COMPLETADO -->
+<div id="ban">🎉 ¡COLECTA COMPLETA! Avisá al supervisor.</div>
+
+<!-- ESCANEO -->
 <div class="scan-box">
-  <div class="scan-lbl">ESCANEAR CÓDIGO</div>
-  <div class="input-row">
-    <input id="sku" type="text" inputmode="text" autocomplete="off" autocorrect="off"
-           autocapitalize="characters" spellcheck="false" placeholder="Escaneá o escribí">
-    <button class="btn-cam" id="btn-cam">📷</button>
-  </div>
+  <input id="sku" type="text" inputmode="none"
+         autocomplete="off" autocorrect="off"
+         autocapitalize="characters" spellcheck="false"
+         placeholder="Apuntá el lector y escaneá">
   <div id="fb" class="neu">Listo para escanear</div>
 </div>
-<div id="cam-wrap">
-  <video id="vid" autoplay playsinline muted></video>
-  <div class="cam-over"><div class="cam-rect"></div></div>
-</div>
+
+<!-- LISTA -->
 <div class="content" id="content">
-  <div class="empty"><div style="font-size:48px">📦</div><div>Cargando…</div></div>
+  <div class="empty">
+    <div class="empty-i">📦</div>
+    <div class="empty-t">Cargando…</div>
+  </div>
 </div>
-<button class="fab" id="fab">🔄</button>
+
+<button class="fab" id="fab" title="Actualizar">🔄</button>
 <div id="toast"></div>
+
 <script>
-let E=null,camOn=false,stream=null,bd=null,loop=null,last=null;
-const $=id=>document.getElementById(id);
-async function load(){try{const r=await fetch('/api/estado');E=await r.json();render();}catch(e){fb('err','❌ Sin conexión');}}
-async function loadQ(){try{const r=await fetch('/api/estado');E=await r.json();render(true);}catch(e){}}
-function render(q=false){
-  if(!E||!E.cargado){$('content').innerHTML='<div class="empty"><div style="font-size:48px">📋</div><div>Esperando lote del supervisor…</div></div>';return;}
-  const gs=E.grupos||[],col=E.colecta||{};
-  let tot=0,done=0;gs.forEach(g=>g.items.forEach(it=>{tot++;if((col[it.sku]||0)>=it.req)done++;}));
-  const b=$('badge');b.textContent=`${done}/${tot}`;b.className=done===tot?'badge done':'badge';
-  $('ban').className=E.colecta_completa?'show':'';
-  const prev=new Set();document.querySelectorAll('.grupo').forEach(el=>{if(el.querySelector('.g-items.col'))prev.add(el.dataset.p);});
-  $('content').innerHTML=gs.map(g=>{
-    const p=g.pasillo||'Sin pasillo',its=g.items;
-    const d=its.filter(it=>(col[it.sku]||0)>=it.req).length;
-    return`<div class="grupo" data-p="${p}">
-<div class="g-hdr" onclick="tog(this)">
-  <div><div class="g-name">📦 ${p}</div><div class="g-stats">${its.length} SKUs</div></div>
-  <div class="g-prog ${d===its.length?'done':'pend'}">${d}/${its.length}</div>
-</div>
-<div class="g-items ${prev.has(p)?'col':''}">${its.map(it=>{
-  const c=col[it.sku]||0,ok=c>=it.req;
-  return`<div class="item ${ok?'done':''}">
-<div class="chk ${ok?'ok':'pend'}">${ok?'✔':'○'}</div>
-<div class="ibody">
-  <div class="iname">${it.nombre||it.sku}</div>
-  <div class="irow"><span class="isku">${it.sku}</span><span class="icnt ${ok?'ok':'pend'}">${c}/${it.req}</span></div>
-  ${it.estanteria?`<div class="iest">🗂 ${it.estanteria}</div>`:''}
-</div></div>`;}).join('')}</div></div>`;}).join('');
+const $ = id => document.getElementById(id);
+let E = null, last = null;
+
+// ── CARGA ──────────────────────────────────────────────────────────────────
+async function load() {
+  try {
+    const r = await fetch('/api/estado');
+    E = await r.json();
+    render();
+  } catch(e) {
+    fb('err', '❌ Sin conexión al servidor');
+  }
 }
-function tog(h){h.nextElementSibling.classList.toggle('col');}
-async function scan(raw){
-  const sku=raw.trim().toUpperCase();if(!sku||sku.length<2)return;
-  if(last===sku)return;last=sku;setTimeout(()=>last=null,150);
-  try{
-    const r=await fetch('/api/escanear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sku})});
-    const d=await r.json();
-    if(!d.ok){flash('err');vib([200,80,200]);fb('err',`❌ ${d.msg}`);}
-    else if(d.tipo==='ya_completo'){fb('warn',`⚠ ${d.nombre||sku} ya completo`);}
-    else{
-      flash('ok');vib([60]);
-      fb('ok',d.tipo==='completo'?`✔ ${d.nombre||sku} ¡Listo!`:`${d.nombre||sku} ${d.collected}/${d.req}`);
-      if(!E.colecta)E.colecta={};E.colecta[sku]=d.collected;
-      if(d.todo_completo){E.colecta_completa=true;toast('🎉 ¡Colecta completa!','ok');}
+
+async function loadQ() {
+  try {
+    const r = await fetch('/api/estado');
+    E = await r.json();
+    render(true);
+  } catch(e) {}
+}
+
+// ── RENDER ─────────────────────────────────────────────────────────────────
+function render(quiet = false) {
+  if (!E) return;
+  const gs  = E.grupos  || [];
+  const col = E.colecta || {};
+
+  if (!gs.length || !E.cargado) {
+    $('content').innerHTML = `<div class="empty">
+      <div class="empty-i">📋</div>
+      <div class="empty-t">Esperando lote del supervisor…<br>
+      <small style="color:var(--lo)">Cuando el supervisor genere el lote<br>aparecerá aquí automáticamente.</small>
+      </div></div>`;
+    $('badge').textContent = '— / —';
+    $('badge').className   = 'badge';
+    $('t-sub').textContent = 'Esperando lote…';
+    return;
+  }
+
+  // Totales
+  let tot = 0, done = 0, uds_done = 0, uds_tot = 0;
+  gs.forEach(g => g.items.forEach(it => {
+    const c = col[it.sku] || 0;
+    tot++;
+    uds_tot += it.req;
+    uds_done += Math.min(c, it.req);
+    if (c >= it.req) done++;
+  }));
+
+  const b = $('badge');
+  b.textContent = `${done} / ${tot}`;
+  b.className   = done === tot ? 'badge done' : (done > 0 ? 'badge warn' : 'badge');
+  $('t-sub').textContent = `${uds_done} / ${uds_tot} unidades`;
+  $('ban').className = E.colecta_completa ? 'show' : '';
+
+  // Recordar grupos colapsados
+  const colaps = new Set();
+  document.querySelectorAll('.grupo').forEach(el => {
+    if (el.querySelector('.g-items.col')) colaps.add(el.dataset.p);
+  });
+
+  $('content').innerHTML = gs.map(g => {
+    const p    = g.pasillo || 'Sin pasillo';
+    const its  = g.items;
+    const d    = its.filter(it => (col[it.sku] || 0) >= it.req).length;
+    const gDone = d === its.length;
+    const cl   = colaps.has(p) ? 'col' : '';
+
+    return `<div class="grupo" data-p="${p}">
+      <div class="g-hdr" onclick="tog(this)">
+        <div class="g-left">
+          <span style="font-size:18px">📦</span>
+          <div>
+            <div class="g-name">${p}</div>
+            <div class="g-stats">${its.length} SKU${its.length>1?'s':''} · ${its.reduce((s,i)=>s+i.req,0)} ud.</div>
+          </div>
+        </div>
+        <div class="g-prog ${gDone?'done':'pend'}">${d}/${its.length}</div>
+      </div>
+      <div class="g-items ${cl}">
+        ${its.map(it => {
+          const c   = col[it.sku] || 0;
+          const ok  = c >= it.req;
+          return `<div class="item ${ok?'done':''}" id="item-${it.sku}">
+            <div class="chk ${ok?'ok':'pend'}">${ok ? '✔' : '○'}</div>
+            <div class="ibody">
+              <div class="iname">${it.nombre || it.sku}</div>
+              <div class="irow">
+                <span class="isku">${it.sku}</span>
+                <span class="icnt ${ok?'ok':'pend'}">${c} / ${it.req}</span>
+              </div>
+              ${it.estanteria ? `<div class="iest">🗂 ${it.estanteria}</div>` : ''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function tog(h) { h.nextElementSibling.classList.toggle('col'); }
+
+// ── ESCANEO ────────────────────────────────────────────────────────────────
+async function scan(raw) {
+  const sku = raw.trim().toUpperCase();
+  if (!sku || sku.length < 2) return;
+
+  // Anti-doble lectura 200ms
+  if (last === sku) return;
+  last = sku;
+  setTimeout(() => last = null, 200);
+
+  try {
+    const r = await fetch('/api/escanear', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ sku })
+    });
+    const d = await r.json();
+
+    if (!d.ok) {
+      flash('err'); vib([200, 80, 200]);
+      fb('err', `❌ ${d.msg}`);
+    } else if (d.tipo === 'ya_completo') {
+      vib([80]);
+      fb('warn', `⚠ ${d.nombre || sku} — ya estaba completo`);
+    } else {
+      flash('ok'); vib([60]);
+      const txt = d.tipo === 'completo'
+        ? `✔  ${d.nombre || sku}  —  ¡Completo! (${d.req}/${d.req})`
+        : `${d.nombre || sku}  ${d.collected}/${d.req}`;
+      fb('ok', txt);
+
+      if (!E.colecta) E.colecta = {};
+      E.colecta[sku] = d.collected;
+
+      if (d.todo_completo) {
+        E.colecta_completa = true;
+        toast('🎉 ¡Colecta completa!', 'ok');
+      }
+
       render(true);
+
+      // Resaltar el item escaneado y hacer scroll
+      const el = document.getElementById(`item-${sku}`);
+      if (el) {
+        el.classList.add('recien');
+        setTimeout(() => el.classList.remove('recien'), 700);
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
     }
-  }catch(e){fb('err','❌ Error');}
+  } catch(e) {
+    fb('err', '❌ Error de conexión');
+  }
 }
-function fb(t,m){const el=$('fb');el.className=t;el.textContent=m;}
-function toast(m,t=''){const el=$('toast');el.textContent=m;el.className='show '+t;setTimeout(()=>el.className='',2800);}
-function flash(t){const el=$('flash');el.className=t;el.style.opacity='1';setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.className='',300);},160);}
-function vib(p){if(navigator.vibrate)navigator.vibrate(p);}
-async function camTog(){camOn?camStop():camStart();}
-async function camStart(){
-  try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-    $('vid').srcObject=stream;$('cam-wrap').classList.add('open');$('btn-cam').classList.add('on');$('btn-cam').textContent='⏹';camOn=true;
-    if('BarcodeDetector' in window){bd=new BarcodeDetector({formats:['code_128','code_39','ean_13','ean_8','qr_code','upc_a','upc_e','itf']});loop=requestAnimationFrame(detect);}
-    else fb('warn','⚠ Usá el lector físico.');
-  }catch(e){fb('err','❌ '+e.message);}
+
+// ── HELPERS ────────────────────────────────────────────────────────────────
+function fb(t, m) {
+  const el = $('fb');
+  el.className = t;
+  el.textContent = m;
 }
-async function detect(){
-  if(!camOn||!bd)return;
-  const v=$('vid');
-  if(v.readyState===v.HAVE_ENOUGH_DATA){try{const bs=await bd.detect(v);if(bs.length){scan(bs[0].rawValue);await new Promise(r=>setTimeout(r,1500));}}catch(e){}}
-  if(camOn)loop=requestAnimationFrame(detect);
+
+function toast(m, t = '') {
+  const el = $('toast');
+  el.textContent = m;
+  el.className   = 'show ' + t;
+  setTimeout(() => el.className = '', 3000);
 }
-function camStop(){
-  if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;
-  if(loop){cancelAnimationFrame(loop);loop=null;}
-  $('cam-wrap').classList.remove('open');$('btn-cam').classList.remove('on');$('btn-cam').textContent='📷';camOn=false;
+
+function flash(t) {
+  const el = $('flash');
+  el.className   = t;
+  el.style.opacity = '1';
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => el.className = '', 300);
+  }, 180);
 }
-document.addEventListener('DOMContentLoaded',()=>{
+
+function vib(p) { if (navigator.vibrate) navigator.vibrate(p); }
+
+// ── INIT ───────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
   load();
-  const inp=$('sku');
-  inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();const v=inp.value.trim();if(v){scan(v);inp.value='';}}}); 
-  inp.addEventListener('input',()=>{clearTimeout(window._t);window._t=setTimeout(()=>{const v=inp.value.trim();if(v.length>=4){scan(v);inp.value='';}},400);});
-  $('btn-cam').addEventListener('click',camTog);
-  $('fab').addEventListener('click',()=>{$('fab').classList.add('spin');load().finally(()=>setTimeout(()=>$('fab').classList.remove('spin'),500));});
-  document.addEventListener('click',e=>{if(!e.target.closest('#cam-wrap')&&!e.target.closest('#btn-cam'))inp.focus();});
-  inp.focus();setInterval(loadQ,6000);
+
+  const inp = $('sku');
+
+  // Enter → procesar (lector físico/integrado manda Enter al final)
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = inp.value.trim();
+      if (v) { scan(v); inp.value = ''; }
+    }
+  });
+
+  // Fallback: si el lector no manda Enter, esperar pausa de 300ms
+  inp.addEventListener('input', () => {
+    clearTimeout(window._t);
+    window._t = setTimeout(() => {
+      const v = inp.value.trim();
+      // Solo dispara si tiene >=4 chars y no recibió Enter
+      if (v.length >= 4) { scan(v); inp.value = ''; }
+    }, 300);
+  });
+
+  // Mantener el foco siempre en el input (lector físico necesita foco)
+  document.addEventListener('click', e => {
+    inp.focus();
+  });
+
+  // Foco inicial
+  inp.focus();
+
+  // Refresh manual
+  $('fab').addEventListener('click', () => {
+    $('fab').classList.add('spin');
+    load().finally(() => setTimeout(() => $('fab').classList.remove('spin'), 500));
+  });
+
+  // Auto-refresh cada 5 segundos para ver cambios del supervisor
+  setInterval(loadQ, 5000);
+
+  // Mantener foco cada 2 segundos (por si el SO lo quita)
+  setInterval(() => inp.focus(), 2000);
 });
 </script>
 </body>
