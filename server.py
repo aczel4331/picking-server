@@ -129,8 +129,9 @@ def _ml_get(path, params=None):
 
 def _ml_get_all_orders():
     """
-    Trae todos los pedidos pagados y pendientes de envío del vendedor.
-    Pagina automáticamente hasta traer todos.
+    Trae todos los pedidos pagados del vendedor usando /orders/search.
+    SKU segun jerarquia oficial: variation seller_sku > variation seller_custom_field
+    > item seller_sku > item seller_custom_field.
     """
     uid     = _tokens.get("user_id")
     pedidos = {}
@@ -138,12 +139,12 @@ def _ml_get_all_orders():
     limit   = 50
 
     while True:
-        r = _ml_get(f"/orders/search", params={
-            "seller": uid,
+        r = _ml_get("/orders/search", params={
+            "seller":       uid,
             "order.status": "paid",
-            "offset": offset,
-            "limit":  limit,
-            "sort":   "date_desc",
+            "offset":       offset,
+            "limit":        limit,
+            "sort":         "date_desc",
         })
         if r.status_code != 200:
             break
@@ -156,40 +157,53 @@ def _ml_get_all_orders():
             oid   = str(order["id"])
             items = []
             for it in order.get("order_items", []):
-                item = it.get("item", {})
-                var  = it.get("item", {}).get("variation_attributes", [])
-                sku  = ""
-                # Intentar obtener SKU del seller_custom_field o variation
-                if it.get("item", {}).get("seller_custom_field"):
-                    sku = str(it["item"]["seller_custom_field"])
-                attrs = var if var else []
-                color = next((a["value_name"] for a in attrs if "color" in a.get("name","").lower()), "")
-                talle = next((a["value_name"] for a in attrs if a.get("name","").lower() in ("talle","size","talha")), "")
+                item_data = it.get("item", {})
+                var_attrs = item_data.get("variation_attributes", [])
+
+                # Jerarquia SKU segun documentacion oficial ML
+                sku = ""
+                for attr in var_attrs:
+                    if attr.get("name","").lower() in ("sku","seller_sku"):
+                        sku = str(attr.get("value_name","")).strip(); break
+                if not sku:
+                    sku = str(item_data.get("seller_sku") or
+                              item_data.get("seller_custom_field") or "").strip()
+                sku = sku.upper() if sku else ""
+
+                color = next((a["value_name"] for a in var_attrs
+                              if "color" in a.get("name","").lower()), "")
+                talle = next((a["value_name"] for a in var_attrs
+                              if a.get("name","").lower() in
+                              ("talle","size","talha","talla")), "")
                 items.append({
-                    "item_id":   item.get("id",""),
-                    "titulo":    item.get("title",""),
-                    "sku":       sku,
-                    "cantidad":  it.get("quantity", 1),
-                    "color":     color,
-                    "talle":     talle,
+                    "item_id":    item_data.get("id",""),
+                    "titulo":     item_data.get("title",""),
+                    "sku":        sku,
+                    "cantidad":   it.get("quantity", 1),
+                    "color":      color,
+                    "talle":      talle,
+                    "unit_price": it.get("unit_price", 0),
                 })
 
-            ship = order.get("shipping", {})
+            ship = order.get("shipping") or {}
             pedidos[oid] = {
-                "order_id":    oid,
-                "fecha":       order.get("date_created","")[:10],
-                "comprador":   order.get("buyer",{}).get("nickname",""),
-                "estado":      order.get("order_items",[{}])[0].get("item",{}).get("title","")[:40] if order.get("order_items") else "",
-                "total":       order.get("total_amount", 0),
-                "moneda":      order.get("currency_id",""),
-                "items":       items,
-                "shipping_id": str(ship.get("id","")) if ship.get("id") else "",
-                "logistica":   ship.get("logistic_type",""),
-                "estado_envio": ship.get("status",""),
-                "impreso":     False,
+                "order_id":     oid,
+                "pack_id":      str(order.get("pack_id","")) if order.get("pack_id") else "",
+                "fecha":        order.get("date_created","")[:10],
+                "fecha_cierre": order.get("date_closed","")[:10],
+                "comprador":    (order.get("buyer") or {}).get("nickname","")
+                                or str((order.get("buyer") or {}).get("id","")),
+                "total":        order.get("total_amount", 0),
+                "moneda":       order.get("currency_id","UYU"),
+                "items":        items,
+                "shipping_id":  str(ship.get("id","")) if ship.get("id") else "",
+                "logistica":    "",
+                "estado_envio": "",
+                "impreso":      False,
+                "tags":         order.get("tags", []),
             }
 
-        total = data.get("paging", {}).get("total", 0)
+        total  = data.get("paging",{}).get("total",0)
         offset += limit
         if offset >= total:
             break
@@ -199,18 +213,17 @@ def _ml_get_all_orders():
 
 def _enriquecer_skus(pedidos):
     """
-    Para items sin SKU, hace un GET al item para obtener el seller_custom_field.
-    Agrupa los requests para no saturar la API.
+    Para items sin SKU hace GET /items?ids=... (multiget de 20).
+    Tambien obtiene estado de envio.
     """
-    item_ids_sin_sku = set()
-    for p in pedidos.values():
-        for it in p["items"]:
+    item_ids_sin_sku = {}
+    for ped in pedidos.values():
+        for it in ped["items"]:
             if not it["sku"] and it["item_id"]:
-                item_ids_sin_sku.add(it["item_id"])
+                item_ids_sin_sku[it["item_id"]] = True
 
-    sku_map = {}
-    ids_list = list(item_ids_sin_sku)
-    # ML permite multiget de hasta 20 items
+    sku_map  = {}
+    ids_list = list(item_ids_sin_sku.keys())
     for i in range(0, len(ids_list), 20):
         chunk = ids_list[i:i+20]
         r = _ml_get("/items", params={"ids": ",".join(chunk)})
@@ -218,16 +231,24 @@ def _enriquecer_skus(pedidos):
             for entry in r.json():
                 body = entry.get("body", {})
                 iid  = body.get("id","")
-                sku  = (body.get("seller_custom_field") or
-                        body.get("seller_sku") or "")
+                sku  = str(body.get("seller_sku") or
+                           body.get("seller_custom_field") or "").strip().upper()
                 if iid and sku:
-                    sku_map[iid] = str(sku).upper()
+                    sku_map[iid] = sku
 
-    # Aplicar al dict de pedidos
-    for p in pedidos.values():
-        for it in p["items"]:
+    for ped in pedidos.values():
+        for it in ped["items"]:
             if not it["sku"] and it["item_id"] in sku_map:
                 it["sku"] = sku_map[it["item_id"]]
+        if ped.get("shipping_id"):
+            try:
+                rs = _ml_get(f"/shipments/{ped['shipping_id']}")
+                if rs.status_code == 200:
+                    sd = rs.json()
+                    ped["logistica"]    = sd.get("logistic_type","")
+                    ped["estado_envio"] = sd.get("status","")
+            except Exception:
+                pass
 
     return pedidos
 
@@ -287,16 +308,40 @@ def requiere_api_key(f):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# AUTH ROUTES
+# AUTH ROUTES  — OAuth2 con PKCE (requerido por ML cuando está activado)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# Almacena el code_verifier temporalmente hasta que llegue el callback
+_pkce_store = {}   # { state: code_verifier }
+
+
+def _generar_pkce():
+    """Genera code_verifier y code_challenge (S256) según spec RFC 7636."""
+    import hashlib, base64, secrets
+    verifier  = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode()
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b'=').decode()
+    return verifier, challenge
+
 
 @app.route("/auth/login")
 def auth_login():
-    url = (f"{ML_AUTH_URL}/authorization"
-           f"?response_type=code"
-           f"&client_id={ML_APP_ID}"
-           f"&redirect_uri={ML_REDIRECT}"
-           f"&scope=read+write+offline_access")
+    import secrets
+    state    = secrets.token_urlsafe(16)
+    verifier, challenge = _generar_pkce()
+    _pkce_store[state] = verifier   # guardar para el callback
+
+    url = (
+        f"{ML_AUTH_URL}/authorization"
+        f"?response_type=code"
+        f"&client_id={ML_APP_ID}"
+        f"&redirect_uri={ML_REDIRECT}"
+        f"&scope=read%20write%20offline_access"
+        f"&state={state}"
+        f"&code_challenge={challenge}"
+        f"&code_challenge_method=S256"
+    )
     return redirect(url)
 
 
@@ -304,29 +349,35 @@ def auth_login():
 def auth_callback():
     code  = request.args.get("code")
     error = request.args.get("error")
+    state = request.args.get("state", "")
+
     if error or not code:
-        return f"""<html><body style="font-family:Arial;padding:40px;background:#0F172A;color:#F1F5F9">
-            <h2 style="color:#EF4444">Error de autorizacion: {error or 'sin codigo'}</h2>
-            <p style="color:#94A3B8">Esto puede pasar si el Redirect URI en ML Developers no coincide exactamente.</p>
-            <p style="color:#94A3B8">Verificá que en tu app ML el Redirect URI sea exactamente:<br>
-            <code style="background:#1E293B;padding:8px;border-radius:4px;color:#3B82F6">
-            {ML_REDIRECT}</code></p>
-            <a href="/auth/login" style="background:#3B82F6;color:white;padding:10px 20px;
-            border-radius:6px;text-decoration:none;display:inline-block;margin-top:16px">
-            Reintentar</a></body></html>"""
+        return _html_error(
+            f"Error de autorizacion: {error or 'sin codigo'}",
+            f"Redirect URI configurado: <code>{ML_REDIRECT}</code>"
+        )
+
+    verifier = _pkce_store.pop(state, None)
+
+    # Construir payload — con o sin code_verifier según PKCE
+    payload = {
+        "grant_type":    "authorization_code",
+        "client_id":     ML_APP_ID,
+        "client_secret": ML_SECRET_KEY,
+        "code":          code,
+        "redirect_uri":  ML_REDIRECT,
+    }
+    if verifier:
+        payload["code_verifier"] = verifier
 
     try:
         r = requests.post(
             "https://api.mercadolibre.com/oauth/token",
-            headers={"Accept": "application/json",
-                     "Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type":    "authorization_code",
-                "client_id":     ML_APP_ID,
-                "client_secret": ML_SECRET_KEY,
-                "code":          code,
-                "redirect_uri":  ML_REDIRECT,
+            headers={
+                "Accept":       "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
             },
+            data=payload,
             timeout=15
         )
 
@@ -335,40 +386,63 @@ def auth_callback():
                 err_detail = json.dumps(r.json(), indent=2, ensure_ascii=False)
             except Exception:
                 err_detail = r.text
-            return f"""<html><body style="font-family:Arial;padding:40px;
-                background:#0F172A;color:#F1F5F9">
-                <h2 style="color:#EF4444">Error obteniendo token ({r.status_code})</h2>
-                <pre style="background:#1E293B;padding:16px;border-radius:6px;
-                color:#94A3B8;white-space:pre-wrap;font-size:13px">{err_detail}</pre>
-                <p style="color:#475569;font-size:12px">
-                App ID: {ML_APP_ID[:8]}...&nbsp;|&nbsp;
-                Redirect URI: {ML_REDIRECT}</p>
-                <a href="/auth/login" style="background:#3B82F6;color:white;
-                padding:10px 20px;border-radius:6px;text-decoration:none;
-                display:inline-block;margin-top:16px">Reintentar</a>
-                </body></html>"""
+            return _html_error(
+                f"Error obteniendo token ({r.status_code})",
+                f"<pre style='background:#0F172A;padding:12px;border-radius:6px;"
+                f"color:#94A3B8;white-space:pre-wrap;font-size:12px'>{err_detail}</pre>"
+                f"<p style='color:#475569;font-size:12px'>"
+                f"App ID: {ML_APP_ID} | PKCE: {'SI' if verifier else 'NO'}</p>"
+            )
 
         d = r.json()
         _tokens["access_token"]  = d["access_token"]
         _tokens["refresh_token"] = d.get("refresh_token", "")
-        _tokens["expires_at"]    = datetime.now() + timedelta(seconds=d.get("expires_in", 21600))
+        _tokens["expires_at"]    = datetime.now() + timedelta(
+            seconds=d.get("expires_in", 21600))
 
-        # Obtener datos del usuario
+        # Obtener datos del vendedor
         me = _ml_get("/users/me").json()
-        _tokens["user_id"]  = str(me.get("id",""))
-        _tokens["nickname"] = me.get("nickname","")
+        _tokens["user_id"]  = str(me.get("id", ""))
+        _tokens["nickname"] = me.get("nickname", "")
 
         # Traer pedidos en background
         threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
 
-        return redirect("/")
+        return _html_ok(
+            f"Conectado como <b>{_tokens['nickname']}</b>",
+            "Cerrá esta pestaña y volvé a la app de picking."
+        )
+
     except Exception as e:
-        return f"""<html><body style="font-family:Arial;padding:40px;background:#0F172A;color:#F1F5F9">
-            <h2 style="color:#EF4444">Error inesperado</h2>
-            <p style="color:#94A3B8">{e}</p>
-            <a href="/auth/login" style="background:#3B82F6;color:white;padding:10px 20px;
-            border-radius:6px;text-decoration:none;display:inline-block;margin-top:16px">
-            Reintentar</a></body></html>"""
+        return _html_error("Error inesperado", str(e))
+
+
+def _html_error(titulo, detalle=""):
+    return f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+    <title>Error ML</title></head>
+    <body style="font-family:Arial,sans-serif;background:#0F172A;color:#F1F5F9;
+    padding:40px;max-width:700px;margin:auto">
+    <div style="background:#1E293B;border:1px solid #EF4444;border-radius:12px;padding:32px">
+    <h2 style="color:#EF4444;margin:0 0 16px">❌ {titulo}</h2>
+    <div style="color:#94A3B8">{detalle}</div>
+    <a href="/auth/login" style="display:inline-block;margin-top:24px;background:#3B82F6;
+    color:white;padding:10px 24px;border-radius:8px;text-decoration:none;font-weight:bold">
+    🔄 Reintentar</a></div></body></html>"""
+
+
+def _html_ok(titulo, subtitulo=""):
+    return f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+    <title>Conectado ML</title></head>
+    <body style="font-family:Arial,sans-serif;background:#0F172A;color:#F1F5F9;
+    padding:40px;max-width:600px;margin:auto">
+    <div style="background:#1E293B;border:1px solid #10B981;border-radius:12px;padding:32px;
+    text-align:center">
+    <div style="font-size:52px;margin-bottom:16px">✅</div>
+    <h2 style="color:#10B981;margin:0 0 12px">{titulo}</h2>
+    <p style="color:#94A3B8">{subtitulo}</p>
+    <a href="/" style="display:inline-block;margin-top:24px;background:#10B981;
+    color:white;padding:10px 24px;border-radius:8px;text-decoration:none;font-weight:bold">
+    Ir al panel →</a></div></body></html>"""
 
 
 @app.route("/auth/logout")
@@ -380,11 +454,12 @@ def auth_logout():
 @app.route("/auth/status")
 def auth_status():
     return jsonify({
-        "autenticado": _token_valido(),
-        "nickname":    _tokens.get("nickname",""),
-        "user_id":     _tokens.get("user_id",""),
-        "pedidos":     len(_pedidos_ml),
-        "ultimo_refresh": _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S") if _ultimo_refresh_pedidos else "—",
+        "autenticado":    _token_valido(),
+        "nickname":       _tokens.get("nickname", ""),
+        "user_id":        _tokens.get("user_id", ""),
+        "pedidos":        len(_pedidos_ml),
+        "ultimo_refresh": _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S")
+                          if _ultimo_refresh_pedidos else "—",
     })
 
 
@@ -461,6 +536,24 @@ def ping():
         "skus":       _estado["total_skus"],
         "autenticado": _token_valido(),
         "pedidos_ml": len(_pedidos_ml),
+    })
+
+
+@app.route("/api/debug_config")
+def debug_config():
+    """Muestra la config exacta que lee el servidor — solo para diagnosticar."""
+    app_id = os.environ.get("ML_APP_ID", "NO_DEFINIDO")
+    secret = os.environ.get("ML_SECRET_KEY", "NO_DEFINIDO")
+    return jsonify({
+        "ML_APP_ID":        app_id,
+        "ML_APP_ID_len":    len(app_id),
+        "ML_APP_ID_repr":   repr(app_id),
+        "ML_SECRET_len":    len(secret),
+        "ML_SECRET_first4": secret[:4] if secret else "",
+        "ML_SECRET_last4":  secret[-4:] if secret else "",
+        "ML_SECRET_repr":   repr(secret[:5]) + "...",
+        "ML_REDIRECT":      ML_REDIRECT,
+        "PICKING_API_KEY":  API_KEY,
     })
 
 

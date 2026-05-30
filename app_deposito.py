@@ -395,7 +395,68 @@ class VentanaConfiguracion(tk.Toplevel):
             command=lambda: self._toggle_entry(self.entry_clave_nube, self.btn_toggle_clave))
         self.btn_toggle_clave.pack(side="left")
 
+        # ── MERCADOLIBRE ──────────────────────────────────────────────────────
+        sep()
+        lbl_sec("MERCADOLIBRE")
+        lbl_sub("Conecta tu cuenta para descargar pedidos y etiquetas automaticamente.")
+
+        ml_frame = tk.Frame(body, bg=C["bg_dark"])
+        ml_frame.pack(fill="x", pady=(8,0))
+
+        self.lbl_ml_estado_cfg = tk.Label(
+            ml_frame, text="",
+            font=("Segoe UI", 9), bg=C["bg_dark"], fg=C["text_lo"])
+        self.lbl_ml_estado_cfg.pack(anchor="w", pady=(0,6))
+
+        btn_ml_row = tk.Frame(body, bg=C["bg_dark"])
+        btn_ml_row.pack(fill="x", pady=(0,4))
+
+        tk.Button(btn_ml_row, text="Conectar con MercadoLibre",
+                  font=("Segoe UI Semibold", 10),
+                  bg="#CA8A04", fg="black",
+                  activebackground="#EAD700", activeforeground="black",
+                  relief="flat", cursor="hand2", padx=16, pady=7, bd=0,
+                  command=self._cfg_conectar_ml).pack(side="left")
+
+        tk.Button(btn_ml_row, text="Verificar conexion",
+                  font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"],
+                  activebackground=C["border"], activeforeground=C["text_hi"],
+                  relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
+                  command=self._cfg_verificar_ml).pack(side="left", padx=(8,0))
+
+        # Verificar estado al abrir
+        self.after(300, self._cfg_verificar_ml)
+
         tk.Frame(body, bg=C["bg_dark"], height=16).pack()
+
+    def _cfg_conectar_ml(self):
+        import webbrowser
+        url = RAILWAY_URL.rstrip("/") + "/auth/login"
+        webbrowser.open(url)
+        self.lbl_ml_estado_cfg.config(
+            text="Se abrio el navegador. Autorica la app en ML y volvé aqui.",
+            fg=C["warning"])
+        # Reverificar después de 10 segundos
+        self.after(10000, self._cfg_verificar_ml)
+
+    def _cfg_verificar_ml(self):
+        import threading, urllib.request, json as _j
+        def _worker():
+            try:
+                url = RAILWAY_URL.rstrip("/") + "/auth/status"
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    d = _j.loads(r.read())
+                if d.get("autenticado"):
+                    txt = f"Conectado como {d.get('nickname','')}  |  {d.get('pedidos',0)} pedidos"
+                    col = C["success"]
+                else:
+                    txt = "No conectado a MercadoLibre"
+                    col = C["warning"]
+                self.after(0, lambda: self.lbl_ml_estado_cfg.config(text=txt, fg=col))
+            except Exception:
+                self.after(0, lambda: self.lbl_ml_estado_cfg.config(
+                    text="No se pudo verificar (servidor Railway inactivo?)", fg=C["danger"]))
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _resumir_ruta(self, ruta):
         if not ruta:
