@@ -501,9 +501,16 @@ def requiere_auth(f):
 def requiere_api_key(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        k = request.headers.get("X-API-Key") or request.args.get("key")
-        if k != API_KEY:
-            return jsonify({"ok": False, "msg": "Clave inválida"}), 401
+        k = (request.headers.get("X-API-Key") or
+             request.args.get("key") or
+             request.args.get("api_key") or "")
+        k = k.strip()
+        # Acepta la key de Railway O el fallback hardcodeado
+        if k not in (API_KEY, "everest2024", "everest2025"):
+            return jsonify({
+                "ok":  False,
+                "msg": f"Clave invalida. Recibida: '{k[:8]}...' Esperada: '{API_KEY[:4]}...'"
+            }), 401
         return f(*args, **kwargs)
     return decorated
 
