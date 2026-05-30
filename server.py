@@ -554,7 +554,39 @@ def debug_config():
         "ML_SECRET_repr":   repr(secret[:5]) + "...",
         "ML_REDIRECT":      ML_REDIRECT,
         "PICKING_API_KEY":  API_KEY,
+        "ML_AUTH_URL":      ML_AUTH_URL,
     })
+
+
+@app.route("/api/test_credentials")
+def test_credentials():
+    """
+    Prueba las credenciales ML directamente con Client Credentials grant.
+    No necesita flujo OAuth. Acceder a:
+    https://picking-server-production.up.railway.app/api/test_credentials
+    """
+    try:
+        r = requests.post(
+            "https://api.mercadolibre.com/oauth/token",
+            headers={
+                "Accept":       "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={
+                "grant_type":    "client_credentials",
+                "client_id":     ML_APP_ID,
+                "client_secret": ML_SECRET_KEY,
+            },
+            timeout=10
+        )
+        return jsonify({
+            "status":    r.status_code,
+            "app_id_usado": ML_APP_ID,
+            "respuesta": r.json() if r.headers.get("content-type","").startswith("application/json") else r.text,
+            "credenciales_ok": r.status_code == 200,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 
 @app.route("/api/subir_estado", methods=["POST"])
