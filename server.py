@@ -740,115 +740,109 @@ def api_refresh():
 
 @app.route("/api/etiqueta/<order_id>")
 def api_etiqueta(order_id):
-    """
-    Proxy de etiqueta ML — sirve el PDF directo sin marcar como impresa.
-    Si no está disponible muestra una página HTML con el estado real del envío.
-    """
+    """Proxy de etiqueta ML - sirve PDF directo sin marcar como impresa en ML."""
+
+    # Buscar pedido en memoria
     with _lock:
-        pedido = _pedidos_ml.get(order_id)
+        snap = dict(_pedidos_ml)
+
+    pedido   = snap.get(order_id)
+    real_oid = order_id
+    if not pedido and len(order_id) >= 8:
+        sufijo = order_id[-8:]
+        for k, v in snap.items():
+            if k.endswith(sufijo) or k[:8] == order_id[:8]:
+                pedido   = v
+                real_oid = k
+                break
 
     if not pedido:
-        return _html_error("Pedido no encontrado",
-                           f"El pedido #{order_id} no está en la lista actual. "
-                           "Actualizá los pedidos e intentá de nuevo."), 404
+        return _html_error(
+            "Pedido no encontrado",
+            f"El pedido #{order_id} no esta en la lista. "
+            f"Hay {len(snap)} pedidos en memoria.<br>"
+            "Actualizá los pedidos e intentá de nuevo."), 404
 
     shipping_id = pedido.get("shipping_id", "")
     comprador   = pedido.get("comprador", "")
     items_txt   = " | ".join(
         f"{it.get('sku','?')} x{it.get('cantidad',1)}"
-        for it in pedido.get("items",[])[:3])
+        for it in pedido.get("items", [])[:3])
 
     if not shipping_id:
         return _html_error(
-            f"Pedido #{order_id} sin envío ML",
+            f"Pedido #{real_oid} sin envio ML",
             f"<b>Comprador:</b> {comprador}<br>"
             f"<b>Productos:</b> {items_txt}<br><br>"
-            f"Este pedido no tiene envío de MercadoLibre asignado.<br>"
-            f"Puede ser un pedido de tipo <b>'acordar con vendedor'</b>."), 200
+            "Este pedido no tiene envio de ML asignado. "
+            "Puede ser un pedido de tipo 'acordar con vendedor'."), 200
 
-    # Obtener token
     cuenta_id = pedido.get("_cuenta", "cuenta_0")
-    tok = _cuentas.get(cuenta_id, {})
-    at  = tok.get("access_token", "")
+    tok       = _cuentas.get(cuenta_id, {})
+    at        = tok.get("access_token", "")
 
     if not at:
         return _html_error("Token ML no disponible",
-                           "Reconectá la cuenta MercadoLibre en la configuración."), 401
+                           "Reconecta la cuenta MercadoLibre."), 401
 
-    # Intentar obtener el PDF — GET puro, nunca POST
-    for response_type in ["pdf2", "pdf"]:
-        r = requests.get(
-            f"{ML_API_URL}/shipment_labels",
-            headers={"Authorization": f"Bearer {at}"},
-            params={"shipment_ids": shipping_id, "response_type": response_type},
-            timeout=15)
+    # GET puro - nunca POST - no marca como impresa
+    pdf_content = None
+    last_status = 0
+    for rtype in ["pdf2", "pdf"]:
+        try:
+            r = requests.get(
+                f"{ML_API_URL}/shipment_labels",
+                headers={"Authorization": f"Bearer {at}"},
+                params={"shipment_ids": shipping_id, "response_type": rtype},
+                timeout=15)
+            last_status = r.status_code
+            if r.status_code == 200 and len(r.content) > 200:
+                pdf_content = r.content
+                break
+        except Exception:
+            continue
 
-        if r.status_code == 200:
-            content_type = r.headers.get("Content-Type", "")
-            if "pdf" in content_type or len(r.content) > 100:
-                return Response(
-                    r.content,
-                    status=200,
-                    mimetype="application/pdf",
-                    headers={
-                        "Content-Disposition":
-                            f"inline; filename=etiqueta_{shipping_id}.pdf",
-                        "Content-Type": "application/pdf",
-                    })
+    if pdf_content:
+        return Response(
+            pdf_content, status=200, mimetype="application/pdf",
+            headers={"Content-Disposition": f"inline; filename=etiqueta_{shipping_id}.pdf",
+                     "Content-Type": "application/pdf"})
 
-    # PDF no disponible — consultar estado real del envío
-    estado      = "desconocido"
-    substatus   = ""
-    logistic    = ""
-    estado_msg  = ""
+    # PDF no disponible - consultar estado real
+    estado = substatus = logistic = ""
     try:
-        r_info = requests.get(
-            f"{ML_API_URL}/shipments/{shipping_id}",
-            headers={"Authorization": f"Bearer {at}"},
-            timeout=8)
-        if r_info.status_code == 200:
-            sd         = r_info.json()
-            estado     = sd.get("status", "desconocido")
-            substatus  = sd.get("substatus", "")
-            logistic   = sd.get("logistic_type", "") or \
-                         (sd.get("logistic") or {}).get("type", "")
+        ri = requests.get(f"{ML_API_URL}/shipments/{shipping_id}",
+                          headers={"Authorization": f"Bearer {at}"}, timeout=8)
+        if ri.status_code == 200:
+            sd        = ri.json()
+            estado    = sd.get("status", "")
+            substatus = sd.get("substatus", "")
+            logistic  = sd.get("logistic_type","") or (sd.get("logistic") or {}).get("type","")
     except Exception:
         pass
 
-    # Mensajes claros según el estado
-    ESTADOS = {
-        "delivered":      ("✅ Pedido entregado",
-                           "Este pedido ya fue entregado al comprador. "
-                           "La etiqueta no está disponible para pedidos entregados."),
-        "shipped":        ("🚚 En camino",
-                           "El pedido está en camino. La etiqueta ya fue generada anteriormente."),
-        "not_delivered":  ("❌ No entregado",
-                           "El pedido no pudo ser entregado."),
-        "cancelled":      ("🚫 Cancelado",
-                           "El envío fue cancelado."),
-        "ready_to_ship":  ("📦 Listo para enviar",
-                           "El envío está listo pero la etiqueta no pudo descargarse. "
-                           "Intentá de nuevo en unos segundos."),
-        "handling":       ("⏳ En preparación",
-                           "El envío está siendo preparado. "
-                           "La etiqueta estará disponible cuando pase a 'ready_to_ship'."),
-        "pending":        ("⏳ Pendiente",
-                           "El envío está pendiente de procesamiento por ML."),
+    MSGS = {
+        "delivered":    ("Pedido ya entregado",
+                         "Este pedido fue entregado. La etiqueta ya no esta disponible en ML."),
+        "shipped":      ("Pedido en camino",
+                         "El pedido esta en camino. La etiqueta fue usada anteriormente."),
+        "cancelled":    ("Cancelado", "El envio fue cancelado."),
+        "ready_to_ship":("Listo para enviar",
+                         "Intenta de nuevo en unos segundos."),
+        "handling":     ("En preparacion",
+                         "La etiqueta estara disponible cuando pase a ready_to_ship."),
+        "pending":      ("Pendiente", "El envio esta pendiente de procesamiento por ML."),
     }
-    titulo_est, desc_est = ESTADOS.get(
-        estado,
-        ("ℹ️ Sin etiqueta disponible",
-         f"Estado actual del envío: <b>{estado}</b> / {substatus}"))
-
+    tit, desc = MSGS.get(estado, ("Sin etiqueta disponible",
+                                   f"Estado: {estado or 'desconocido'} / {substatus}"))
     return _html_error(
-        titulo_est,
-        f"<b>Pedido:</b> #{order_id} — {comprador}<br>"
+        tit,
+        f"<b>Pedido:</b> #{real_oid} - {comprador}<br>"
         f"<b>Productos:</b> {items_txt}<br>"
         f"<b>Shipping ID:</b> {shipping_id}<br>"
-        f"<b>Logística:</b> {logistic or 'no disponible'}<br>"
-        f"<b>Estado:</b> {estado} / {substatus or '—'}<br><br>"
-        f"{desc_est}"
-    ), 200
+        f"<b>Logistica:</b> {logistic or 'no disponible'}<br>"
+        f"<b>Estado ML:</b> {estado} / {substatus or '-'}<br>"
+        f"<b>HTTP labels:</b> {last_status}<br><br>{desc}"), 200
 
 
 @app.route("/api/pedidos/marcar_impreso/<order_id>", methods=["POST"])
