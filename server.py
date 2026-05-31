@@ -2355,11 +2355,25 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 
 <!-- ESCANEO -->
 <div class="scan-box">
-  <input id="sku" type="text" inputmode="none"
-         autocomplete="off" autocorrect="off"
-         autocapitalize="characters" spellcheck="false"
-         placeholder="Apuntá el lector y escaneá">
-  <div id="fb" class="neu">Listo para escanear</div>
+  <div style="display:flex;gap:8px;margin-bottom:8px">
+    <input id="sku" type="text" inputmode="text"
+           autocomplete="off" autocorrect="off"
+           autocapitalize="characters" spellcheck="false"
+           placeholder="Escaneá o escribí el SKU"
+           style="flex:1">
+    <button id="btn-confirmar"
+            style="background:var(--success);color:#fff;border:none;border-radius:10px;
+            padding:0 18px;font-size:20px;font-weight:800;cursor:pointer;flex-shrink:0"
+            onclick="confirmarManual()">✓</button>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <div id="fb" class="neu" style="flex:1">Listo para escanear</div>
+    <button id="btn-teclado"
+            onclick="toggleTeclado()"
+            style="background:var(--panel);border:1px solid var(--border);color:var(--mid);
+            border-radius:8px;padding:5px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
+            title="Abrir/cerrar teclado">⌨</button>
+  </div>
 </div>
 
 <!-- LISTA -->
@@ -2558,12 +2572,42 @@ function flash(t) {
 function vib(p) { if (navigator.vibrate) navigator.vibrate(p); }
 
 // ── INIT ───────────────────────────────────────────────────────────────────
+let _tecladoVisible = false;
+
+function confirmarManual() {
+  const inp = $('sku');
+  const v   = inp.value.trim();
+  if (v) { scan(v); inp.value = ''; inp.focus(); }
+  else   { inp.focus(); }
+}
+
+function toggleTeclado() {
+  const inp = $('sku');
+  const btn = $('btn-teclado');
+  _tecladoVisible = !_tecladoVisible;
+  if (_tecladoVisible) {
+    inp.setAttribute('inputmode', 'text');
+    inp.focus(); inp.click();
+    btn.style.background = 'var(--accent)';
+    btn.style.color      = '#fff';
+    btn.title            = 'Cerrar teclado';
+    fb('neu', 'Escribí el SKU y tocá ✓');
+  } else {
+    inp.setAttribute('inputmode', 'none');
+    inp.blur();
+    setTimeout(() => inp.focus(), 80);
+    btn.style.background = 'var(--panel)';
+    btn.style.color      = 'var(--mid)';
+    btn.title            = 'Abrir teclado';
+    fb('neu', 'Listo para escanear');
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   load();
-
   const inp = $('sku');
 
-  // Enter → procesar (lector físico/integrado manda Enter al final)
+  // Enter → procesar
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -2572,35 +2616,35 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Fallback: si el lector no manda Enter, esperar pausa de 300ms
+  // Fallback 300ms (para lectores sin Enter)
   inp.addEventListener('input', () => {
     clearTimeout(window._t);
     window._t = setTimeout(() => {
       const v = inp.value.trim();
-      // Solo dispara si tiene >=4 chars y no recibió Enter
-      if (v.length >= 4) { scan(v); inp.value = ''; }
+      if (v.length >= 4 && !_tecladoVisible) { scan(v); inp.value = ''; }
     }, 300);
   });
 
-  // Mantener el foco siempre en el input (lector físico necesita foco)
+  // Clic en contenido → foco (excepto botones de teclado y confirmar)
   document.addEventListener('click', e => {
-    inp.focus();
+    if (!e.target.closest('#btn-teclado') &&
+        !e.target.closest('#btn-confirmar') &&
+        !e.target.closest('.g-hdr')) {
+      if (!_tecladoVisible) inp.focus();
+    }
   });
 
-  // Foco inicial
   inp.focus();
 
-  // Refresh manual
   $('fab').addEventListener('click', () => {
     $('fab').classList.add('spin');
     load().finally(() => setTimeout(() => $('fab').classList.remove('spin'), 500));
   });
 
-  // Auto-refresh cada 5 segundos para ver cambios del supervisor
   setInterval(loadQ, 5000);
 
-  // Mantener foco cada 2 segundos (por si el SO lo quita)
-  setInterval(() => inp.focus(), 2000);
+  // Mantener foco cada 2s SOLO si el teclado manual no está activo
+  setInterval(() => { if (!_tecladoVisible) inp.focus(); }, 2000);
 });
 </script>
 </body>
