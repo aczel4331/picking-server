@@ -196,19 +196,39 @@ def _ml_get(path, params=None):
     return r
 
 
-def _ml_get_all_orders_cuenta(cuenta_id):
-    """Trae pedidos de una cuenta específica."""
+def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
+    """
+    Trae pedidos pagados de una cuenta.
+    fecha_desde / fecha_hasta: strings ISO 'YYYY-MM-DD' (default: últimos 7 días).
+    """
     tok = _cuentas.get(cuenta_id, {})
     uid = tok.get("user_id")
     if not uid:
         return {}
+
+    # Por defecto: últimos 7 días
+    if not fecha_desde:
+        fecha_desde = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00.000-00:00")
+    else:
+        fecha_desde = f"{fecha_desde}T00:00:00.000-00:00"
+
+    if not fecha_hasta:
+        fecha_hasta = datetime.now().strftime("%Y-%m-%dT23:59:59.000-00:00")
+    else:
+        fecha_hasta = f"{fecha_hasta}T23:59:59.000-00:00"
+
     pedidos = {}
     offset  = 0
     limit   = 50
     while True:
         r = _ml_get_cuenta("/orders/search", cuenta_id, params={
-            "seller": uid, "order.status": "paid",
-            "offset": offset, "limit": limit, "sort": "date_desc",
+            "seller":                   uid,
+            "order.status":             "paid",
+            "order.date_created.from":  fecha_desde,
+            "order.date_created.to":    fecha_hasta,
+            "offset":                   offset,
+            "limit":                    limit,
+            "sort":                     "date_desc",
         })
         if r.status_code != 200:
             break
@@ -297,8 +317,13 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                 rs = _ml_get_cuenta(f"/shipments/{ped['shipping_id']}", cuenta_id)
                 if rs.status_code == 200:
                     sd = rs.json()
-                    ped["logistica"]    = sd.get("logistic_type","")
-                    ped["estado_envio"] = sd.get("status","")
+                    # Nuevo formato ML: logistic.type
+                    log_new = (sd.get("logistic") or {}).get("type", "")
+                    # Formato antiguo: logistic_type directo
+                    log_old = sd.get("logistic_type", "")
+                    ped["logistica"]    = log_new or log_old
+                    ped["estado_envio"] = sd.get("status", "")
+                    ped["substatus"]    = sd.get("substatus", "")
             except Exception:
                 pass
     return pedidos
@@ -440,24 +465,21 @@ def _enriquecer_skus(pedidos):
     return pedidos
 
 
-def _refresh_pedidos_worker_cuenta(cuenta_id):
-    """Trae pedidos de UNA cuenta especifica en background."""
+def _refresh_pedidos_worker_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
+    """Trae pedidos de UNA cuenta en background, con filtro de fecha."""
     global _ultimo_refresh_pedidos
     if not _token_valido_cuenta(cuenta_id):
         return
     try:
-        pedidos = _ml_get_all_orders_cuenta(cuenta_id)
+        pedidos = _ml_get_all_orders_cuenta(cuenta_id, fecha_desde, fecha_hasta)
         pedidos = _enriquecer_skus_cuenta(pedidos, cuenta_id)
-        # Marcar cada pedido con su cuenta
         for p in pedidos.values():
             p["_cuenta"] = cuenta_id
         with _lock:
-            # Eliminar pedidos viejos de esta cuenta
             to_del = [oid for oid, p in _pedidos_ml.items()
                       if p.get("_cuenta") == cuenta_id]
             for oid in to_del:
                 del _pedidos_ml[oid]
-            # Preservar flag impreso
             for oid, p in pedidos.items():
                 if oid in _pedidos_ml:
                     p["impreso"] = _pedidos_ml[oid].get("impreso", False)
@@ -678,60 +700,165 @@ def api_cuenta_logout(cuenta_id):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/pedidos")
-@requiere_auth
 def api_pedidos():
+    """Devuelve los pedidos en memoria. No requiere OAuth."""
+    if not _cuentas:
+        return jsonify({"ok": False, "msg": "login", "pedidos": []}), 200
     with _lock:
         return jsonify({
             "ok":      True,
             "pedidos": list(_pedidos_ml.values()),
             "total":   len(_pedidos_ml),
-            "ts":      _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S") if _ultimo_refresh_pedidos else "—",
+            "ts":      _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S")
+                       if _ultimo_refresh_pedidos else "—",
         })
 
 
 @app.route("/api/pedidos/refresh", methods=["POST"])
-@requiere_auth
 def api_refresh():
-    threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
-    return jsonify({"ok": True, "msg": "Actualizando pedidos en segundo plano…"})
+    """
+    Refresca pedidos. No requiere OAuth — usa X-API-Key o funciona si hay cuentas activas.
+    Body JSON opcional: { "fecha_desde": "YYYY-MM-DD", "fecha_hasta": "YYYY-MM-DD" }
+    """
+    if not _cuentas:
+        return jsonify({"ok": False, "msg": "No hay cuentas ML conectadas"}), 400
+
+    body    = request.get_json(silent=True) or {}
+    f_desde = body.get("fecha_desde")
+    f_hasta = body.get("fecha_hasta")
+
+    for cid in list(_cuentas.keys()):
+        threading.Thread(
+            target=_refresh_pedidos_worker_cuenta,
+            args=(cid, f_desde, f_hasta), daemon=True).start()
+
+    return jsonify({
+        "ok":  True,
+        "msg": f"Actualizando pedidos ({f_desde or 'ultimos 7 dias'} a {f_hasta or 'hoy'})"
+    })
 
 
 @app.route("/api/etiqueta/<order_id>")
-@requiere_auth
 def api_etiqueta(order_id):
-    """Devuelve la URL del PDF de etiqueta para un pedido."""
+    """
+    Proxy de etiqueta ML — sirve el PDF directo sin marcar como impresa.
+    Si no está disponible muestra una página HTML con el estado real del envío.
+    """
     with _lock:
         pedido = _pedidos_ml.get(order_id)
+
     if not pedido:
-        return jsonify({"ok": False, "msg": "Pedido no encontrado"}), 404
+        return _html_error("Pedido no encontrado",
+                           f"El pedido #{order_id} no está en la lista actual. "
+                           "Actualizá los pedidos e intentá de nuevo."), 404
 
-    shipping_id = pedido.get("shipping_id")
+    shipping_id = pedido.get("shipping_id", "")
+    comprador   = pedido.get("comprador", "")
+    items_txt   = " | ".join(
+        f"{it.get('sku','?')} x{it.get('cantidad',1)}"
+        for it in pedido.get("items",[])[:3])
+
     if not shipping_id:
-        return jsonify({"ok": False, "msg": "Este pedido no tiene envío"}), 400
+        return _html_error(
+            f"Pedido #{order_id} sin envío ML",
+            f"<b>Comprador:</b> {comprador}<br>"
+            f"<b>Productos:</b> {items_txt}<br><br>"
+            f"Este pedido no tiene envío de MercadoLibre asignado.<br>"
+            f"Puede ser un pedido de tipo <b>'acordar con vendedor'</b>."), 200
 
-    # Obtener label de ML
-    r = _ml_get(f"/shipments/{shipping_id}/labels",
-                params={"response_type": "zpl2", "caller.id": _tokens.get("user_id","")})
+    # Obtener token
+    cuenta_id = pedido.get("_cuenta", "cuenta_0")
+    tok = _cuentas.get(cuenta_id, {})
+    at  = tok.get("access_token", "")
 
-    # ML también permite PDF directo
-    r_pdf = _ml_get(f"/shipments/{shipping_id}/labels",
-                    params={"response_type": "pdf2"})
+    if not at:
+        return _html_error("Token ML no disponible",
+                           "Reconectá la cuenta MercadoLibre en la configuración."), 401
 
-    if r_pdf.status_code == 200:
-        # Devolver URL directa al PDF de ML
-        label_url = f"{ML_API_URL}/shipments/{shipping_id}/labels?response_type=pdf2&access_token={_tokens['access_token']}"
-        return jsonify({"ok": True, "url": label_url, "shipping_id": shipping_id})
+    # Intentar obtener el PDF — GET puro, nunca POST
+    for response_type in ["pdf2", "pdf"]:
+        r = requests.get(
+            f"{ML_API_URL}/shipment_labels",
+            headers={"Authorization": f"Bearer {at}"},
+            params={"shipment_ids": shipping_id, "response_type": response_type},
+            timeout=15)
 
-    return jsonify({"ok": False, "msg": f"No se pudo obtener etiqueta (status {r_pdf.status_code})"}), 400
+        if r.status_code == 200:
+            content_type = r.headers.get("Content-Type", "")
+            if "pdf" in content_type or len(r.content) > 100:
+                return Response(
+                    r.content,
+                    status=200,
+                    mimetype="application/pdf",
+                    headers={
+                        "Content-Disposition":
+                            f"inline; filename=etiqueta_{shipping_id}.pdf",
+                        "Content-Type": "application/pdf",
+                    })
+
+    # PDF no disponible — consultar estado real del envío
+    estado      = "desconocido"
+    substatus   = ""
+    logistic    = ""
+    estado_msg  = ""
+    try:
+        r_info = requests.get(
+            f"{ML_API_URL}/shipments/{shipping_id}",
+            headers={"Authorization": f"Bearer {at}"},
+            timeout=8)
+        if r_info.status_code == 200:
+            sd         = r_info.json()
+            estado     = sd.get("status", "desconocido")
+            substatus  = sd.get("substatus", "")
+            logistic   = sd.get("logistic_type", "") or \
+                         (sd.get("logistic") or {}).get("type", "")
+    except Exception:
+        pass
+
+    # Mensajes claros según el estado
+    ESTADOS = {
+        "delivered":      ("✅ Pedido entregado",
+                           "Este pedido ya fue entregado al comprador. "
+                           "La etiqueta no está disponible para pedidos entregados."),
+        "shipped":        ("🚚 En camino",
+                           "El pedido está en camino. La etiqueta ya fue generada anteriormente."),
+        "not_delivered":  ("❌ No entregado",
+                           "El pedido no pudo ser entregado."),
+        "cancelled":      ("🚫 Cancelado",
+                           "El envío fue cancelado."),
+        "ready_to_ship":  ("📦 Listo para enviar",
+                           "El envío está listo pero la etiqueta no pudo descargarse. "
+                           "Intentá de nuevo en unos segundos."),
+        "handling":       ("⏳ En preparación",
+                           "El envío está siendo preparado. "
+                           "La etiqueta estará disponible cuando pase a 'ready_to_ship'."),
+        "pending":        ("⏳ Pendiente",
+                           "El envío está pendiente de procesamiento por ML."),
+    }
+    titulo_est, desc_est = ESTADOS.get(
+        estado,
+        ("ℹ️ Sin etiqueta disponible",
+         f"Estado actual del envío: <b>{estado}</b> / {substatus}"))
+
+    return _html_error(
+        titulo_est,
+        f"<b>Pedido:</b> #{order_id} — {comprador}<br>"
+        f"<b>Productos:</b> {items_txt}<br>"
+        f"<b>Shipping ID:</b> {shipping_id}<br>"
+        f"<b>Logística:</b> {logistic or 'no disponible'}<br>"
+        f"<b>Estado:</b> {estado} / {substatus or '—'}<br><br>"
+        f"{desc_est}"
+    ), 200
 
 
 @app.route("/api/pedidos/marcar_impreso/<order_id>", methods=["POST"])
 @requiere_auth
 def marcar_impreso(order_id):
+    """Marca el pedido como procesado SOLO en nuestro sistema interno, nunca en ML."""
     with _lock:
         if order_id in _pedidos_ml:
             _pedidos_ml[order_id]["impreso"] = True
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "nota": "Marcado solo localmente, sin afectar ML"})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -749,8 +876,30 @@ def ping():
     })
 
 
-@app.route("/api/debug_config")
-def debug_config():
+@app.route("/api/debug_logistica")
+def debug_logistica():
+    """Muestra los valores de logistica de los primeros 20 pedidos para diagnosticar."""
+    sample = []
+    for oid, p in list(_pedidos_ml.items())[:20]:
+        sample.append({
+            "order_id":    oid,
+            "shipping_id": p.get("shipping_id",""),
+            "logistica":   p.get("logistica","(vacio)"),
+            "estado_envio": p.get("estado_envio",""),
+            "tags":        p.get("tags",[]),
+        })
+    tipos = {}
+    for p in _pedidos_ml.values():
+        log = p.get("logistica","(vacio)") or "(vacio)"
+        tipos[log] = tipos.get(log, 0) + 1
+    return jsonify({
+        "total_pedidos": len(_pedidos_ml),
+        "tipos_encontrados": tipos,
+        "muestra": sample
+    })
+
+
+
     """Muestra la config exacta que lee el servidor — solo para diagnosticar."""
     app_id = os.environ.get("ML_APP_ID", "NO_DEFINIDO")
     secret = os.environ.get("ML_SECRET_KEY", "NO_DEFINIDO")
@@ -1037,6 +1186,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .btn-danger{background:var(--danger);color:#fff}
 .btn-ghost{background:var(--card);color:var(--mid);border:1px solid var(--border)}
 .btn-ghost:hover{background:var(--border)}
+.btn-ghost.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .btn-ml{background:var(--ml);color:#000}
 .btn-ml:hover{background:#EAD700}
 .btn:disabled{opacity:.4;cursor:not-allowed}
@@ -1176,6 +1326,45 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 
   <!-- ═══════════════════════════════════════ TAB PEDIDOS ══════════════════ -->
   <div class="tab-panel active" id="tab-pedidos">
+
+    <!-- Filtros de fecha -->
+    <div class="toolbar" style="background:var(--panel);border-bottom:1px solid var(--border);
+         padding:8px 14px;gap:10px;flex-wrap:wrap">
+      <span style="font-size:11px;font-weight:700;color:var(--lo);letter-spacing:.06em">
+        PERIODO
+      </span>
+      <!-- Botones rápidos -->
+      <div style="display:flex;gap:4px">
+        <button class="btn btn-ghost fecha-rapida active" data-dias="0"
+                onclick="setFechaRapida(0,this)">Hoy</button>
+        <button class="btn btn-ghost fecha-rapida" data-dias="1"
+                onclick="setFechaRapida(1,this)">Ayer</button>
+        <button class="btn btn-ghost fecha-rapida" data-dias="7"
+                onclick="setFechaRapida(7,this)">7 días</button>
+        <button class="btn btn-ghost fecha-rapida" data-dias="14"
+                onclick="setFechaRapida(14,this)">14 días</button>
+        <button class="btn btn-ghost fecha-rapida" data-dias="30"
+                onclick="setFechaRapida(30,this)">30 días</button>
+      </div>
+      <!-- Rango personalizado -->
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--lo)">Desde</span>
+        <input type="date" id="fecha-desde"
+               style="background:var(--card);border:1px solid var(--border);
+               color:var(--hi);padding:4px 8px;border-radius:6px;font-size:12px">
+        <span style="font-size:11px;color:var(--lo)">Hasta</span>
+        <input type="date" id="fecha-hasta"
+               style="background:var(--card);border:1px solid var(--border);
+               color:var(--hi);padding:4px 8px;border-radius:6px;font-size:12px">
+        <button class="btn btn-ml" onclick="buscarConFecha()"
+                style="padding:4px 12px;font-size:12px">
+          Buscar
+        </button>
+      </div>
+      <div class="spacer"></div>
+      <span id="lbl-periodo" style="font-size:11px;color:var(--accent)"></span>
+    </div>
+
     <div class="toolbar">
       <input class="search-input" type="text" id="search-pedidos"
              placeholder="🔍 Buscar por comprador, SKU, producto…"
@@ -1196,9 +1385,8 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
             <th>Pedido</th>
             <th>Fecha</th>
             <th>Comprador</th>
-            <th>Productos / SKUs</th>
-            <th>Total</th>
-            <th>Envío</th>
+            <th style="width:40%">SKU · Nombre del Producto</th>
+            <th>Estado Envío</th>
             <th>Acciones</th>
           </tr>
         </thead>
@@ -1422,17 +1610,98 @@ async function cargarPedidosQuiet() {
     if (d.ok) { PEDIDOS = {}; d.pedidos.forEach(p => PEDIDOS[p.order_id] = p); renderPedidos(); }
   } catch(e) {}
 }
+// ── Filtros de fecha ──────────────────────────────────────────────────────
+let FECHA_DESDE = null;
+let FECHA_HASTA = null;
+
+function hoy() {
+  return new Date().toISOString().slice(0,10);
+}
+
+function diasAtras(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0,10);
+}
+
+function setFechaRapida(dias, btn) {
+  // Resaltar botón activo
+  document.querySelectorAll('.fecha-rapida').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  if (dias === 0) {
+    FECHA_DESDE = hoy();
+    FECHA_HASTA = hoy();
+  } else if (dias === 1) {
+    FECHA_DESDE = diasAtras(1);
+    FECHA_HASTA = diasAtras(1);
+  } else {
+    FECHA_DESDE = diasAtras(dias);
+    FECHA_HASTA = hoy();
+  }
+
+  document.getElementById('fecha-desde').value = FECHA_DESDE;
+  document.getElementById('fecha-hasta').value  = FECHA_HASTA;
+  actualizarLblPeriodo();
+  refreshPedidos();
+}
+
+function buscarConFecha() {
+  FECHA_DESDE = document.getElementById('fecha-desde').value || null;
+  FECHA_HASTA = document.getElementById('fecha-hasta').value || null;
+  // Quitar resaltado de botones rápidos
+  document.querySelectorAll('.fecha-rapida').forEach(b => b.classList.remove('active'));
+  actualizarLblPeriodo();
+  refreshPedidos();
+}
+
+function actualizarLblPeriodo() {
+  const lbl = document.getElementById('lbl-periodo');
+  if (!lbl) return;
+  if (FECHA_DESDE === FECHA_HASTA && FECHA_DESDE === hoy()) {
+    lbl.textContent = 'Mostrando: Hoy';
+  } else if (FECHA_DESDE && FECHA_HASTA) {
+    lbl.textContent = `Mostrando: ${FECHA_DESDE} → ${FECHA_HASTA}`;
+  } else {
+    lbl.textContent = '';
+  }
+}
+
 async function refreshPedidos() {
   const btn = document.getElementById('btn-refresh');
   btn.innerHTML = '<span class="spin">🔄</span> Actualizando…';
-  btn.disabled = true;
-  await fetch('/api/pedidos/refresh', {method:'POST'});
+  btn.disabled  = true;
+
+  // Enviar filtros de fecha al servidor
+  const body = {};
+  if (FECHA_DESDE) body.fecha_desde = FECHA_DESDE;
+  if (FECHA_HASTA) body.fecha_hasta = FECHA_HASTA;
+
+  await fetch('/api/pedidos/refresh', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
   await new Promise(r => setTimeout(r, 3000));
   await cargarPedidos();
   btn.innerHTML = '🔄 Actualizar';
-  btn.disabled = false;
-  toast('Pedidos actualizados', 'ok');
+  btn.disabled  = false;
+  actualizarLblPeriodo();
+  toast(`Pedidos actualizados${FECHA_DESDE ? ' ('+FECHA_DESDE+')' : ''}`, 'ok');
 }
+
+// Inicializar fechas al cargar: mostrar hoy por defecto
+document.addEventListener('DOMContentLoaded', () => {
+  FECHA_DESDE = diasAtras(7);
+  FECHA_HASTA = hoy();
+  document.getElementById('fecha-desde').value = FECHA_DESDE;
+  document.getElementById('fecha-hasta').value  = FECHA_HASTA;
+  // Marcar "7 días" como activo por defecto
+  const btn7 = document.querySelector('.fecha-rapida[data-dias="7"]');
+  if (btn7) btn7.classList.add('active');
+  document.querySelector('.fecha-rapida[data-dias="0"]').classList.remove('active');
+  actualizarLblPeriodo();
+});
 
 function renderPedidos(filtro='') {
   const tbody = document.getElementById('tbody-pedidos');
@@ -1455,20 +1724,26 @@ function renderPedidos(filtro='') {
   }
 
   tbody.innerHTML = peds.map(p => {
-    const skus = p.items.map(it =>
-      `<span class="sku-chip">${it.sku||'?'}</span> ${it.titulo.substring(0,25)}… ×${it.cantidad}`
-    ).join('<br>');
-    const envChip = p.estado_envio ?
-      `<span class="estado-chip estado-ready">${p.estado_envio}</span>` : '—';
-    const btnEtiq = p.shipping_id ?
-      `<button class="btn btn-ml" style="font-size:11px;padding:4px 10px"
-        onclick="verEtiqueta('${p.order_id}')">🏷️ Etiqueta</button>` : '';
+    // SKU + nombre del producto — mostrar todos los items del pedido
+    const skus = p.items.map(it => {
+      const sku  = it.sku  ? `<span class="sku-chip">${it.sku}</span>` : '';
+      const nom  = it.titulo ? `<span style="color:var(--hi)">${it.titulo.substring(0,32)}</span>` : '';
+      const qty  = `<span style="color:var(--accent);font-size:11px"> ×${it.cantidad}</span>`;
+      return `<div style="margin-bottom:3px">${sku} ${nom}${qty}</div>`;
+    }).join('');
+
+    const envChip = p.estado_envio
+      ? `<span class="estado-chip estado-ready">${p.estado_envio}</span>` : '—';
+
+    // Botón etiqueta — siempre visible, con aviso si no tiene shipping_id
+    const btnEtiq = `<button class="btn btn-ml" style="font-size:11px;padding:4px 10px"
+      onclick="verEtiqueta('${p.order_id}')">🏷️ Etiqueta</button>`;
+
     return `<tr class="${p.impreso?'impreso':''}">
       <td><b style="color:var(--accent)">#${p.order_id}</b></td>
       <td style="color:var(--mid);font-size:12px">${p.fecha}</td>
       <td style="font-weight:600">${p.comprador}</td>
       <td>${skus}</td>
-      <td style="color:var(--success);font-weight:700">${p.moneda} ${p.total}</td>
       <td>${envChip}</td>
       <td style="white-space:nowrap">${btnEtiq}</td>
     </tr>`;
@@ -1485,29 +1760,99 @@ function filtrarPedidos() {
 async function verEtiqueta(orderId) {
   const p = PEDIDOS[orderId];
   document.getElementById('modal-etiqueta-body').innerHTML =
-    `<div>📦 Pedido #${orderId} — ${p.comprador}<br>
-     <span class="spin">⏳</span> Obteniendo etiqueta…</div>`;
+    `<div style="margin-bottom:12px">
+       <b>#${orderId}</b> — ${p.comprador}<br>
+       <span style="font-size:12px;color:var(--mid)">
+         ${p.items.map(it=>`${it.sku||'?'} · ${it.titulo.substring(0,30)}`).join(' | ')}
+       </span>
+     </div>
+     <div style="display:flex;align-items:center;gap:8px;color:var(--mid)">
+       <span class="spin">⏳</span> Obteniendo etiqueta…
+     </div>`;
   document.getElementById('modal-etiqueta').classList.add('open');
+  document.getElementById('btn-abrir-etiqueta').style.display = 'none';
   etiquetaUrlActual = '';
+
+  try {
+    const r = await fetch(`/api/etiqueta/${orderId}`);
+    const ct = r.headers.get('Content-Type') || '';
+
+    if (ct.includes('application/pdf')) {
+      // PDF directo del proxy — mostrar inline
+      const blob = await r.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      etiquetaUrlActual = blobUrl;
+      const p2 = PEDIDOS[orderId];
+      document.getElementById('modal-etiqueta-body').innerHTML =
+        `<div style="margin-bottom:10px">
+           <b>#${orderId}</b> — ${p2.comprador}<br>
+           <span style="font-size:11px;color:var(--mid)">
+             ${p2.items.map(it=>`${it.sku||'?'} · ${it.titulo.substring(0,28)}`).join(' | ')}
+           </span>
+         </div>
+         <div style="background:var(--bar);border-radius:6px;padding:8px 12px;
+              font-size:11px;color:var(--success);margin-bottom:10px">
+           ✅ Etiqueta lista — NO marcada como impresa en MercadoLibre
+         </div>
+         <iframe src="${blobUrl}" style="width:100%;height:400px;border:none;
+         border-radius:8px;background:#fff"></iframe>`;
+      document.getElementById('btn-abrir-etiqueta').style.display = '';
+    } else {
+      // JSON — puede ser error con diagnóstico
+      const d = await r.json();
+      const estado  = d.estado     ? `<br><b>Estado envío:</b> ${d.estado} / ${d.substatus||'—'}` : '';
+      const logType = d.logistic_type ? `<br><b>Logística:</b> ${d.logistic_type}` : '';
+      const hint    = d.hint
+        ? `<div style="margin-top:10px;padding:10px;background:var(--bar);
+           border-radius:6px;font-size:12px;color:var(--mid)">${d.hint}</div>` : '';
+      document.getElementById('modal-etiqueta-body').innerHTML =
+        `<div style="color:var(--danger);margin-bottom:8px">❌ ${d.msg}</div>
+         <div style="font-size:12px;color:var(--mid)">${estado}${logType}</div>
+         ${hint}`;
+    }
+  } catch(e) {
+    document.getElementById('modal-etiqueta-body').innerHTML =
+      `<div style="color:var(--danger)">❌ Error de conexión: ${e.message}</div>`;
+  }
+}
+function abrirEtiqueta() { if (etiquetaUrlActual) window.open(etiquetaUrlActual,'_blank'); }
+function cerrarModal(id) { document.getElementById(id).classList.remove('open'); }
 
   const r = await fetch(`/api/etiqueta/${orderId}`);
   const d = await r.json();
-  if (d.ok) {
-    etiquetaUrlActual = d.url;
+  if (d.ok !== undefined && !d.ok) {
+    // Error con diagnóstico mejorado
+    const estado   = d.estado    ? `<br><b>Estado envío:</b> ${d.estado} / ${d.substatus||'—'}` : '';
+    const logType  = d.logistic_type ? `<br><b>Logística:</b> ${d.logistic_type}` : '';
+    const hint     = d.hint ? `<div style="margin-top:10px;padding:10px;background:var(--bar);
+      border-radius:6px;font-size:12px;color:var(--mid)">${d.hint}</div>` : '';
     document.getElementById('modal-etiqueta-body').innerHTML =
-      `<div style="margin-bottom:8px">📦 <b>#${orderId}</b> — ${p.comprador}</div>
-       <iframe src="${d.url}" style="width:100%;height:400px;border:none;border-radius:8px;
-       background:#fff"></iframe>`;
-    await fetch(`/api/pedidos/marcar_impreso/${orderId}`, {method:'POST'});
-    PEDIDOS[orderId].impreso = true;
-    renderPedidos(document.getElementById('search-pedidos').value);
+      `<div style="color:var(--danger);margin-bottom:8px">❌ ${d.msg}</div>
+       <div style="font-size:12px;color:var(--mid)">${estado}${logType}</div>
+       ${hint}`;
+    document.getElementById('btn-abrir-etiqueta').style.display = 'none';
   } else {
+    // Éxito — el proxy devuelve el PDF directamente
+    // Usar la URL del proxy que ya tiene el token embebido en el servidor
+    const pdfUrl = `/api/etiqueta/${orderId}`;
+    etiquetaUrlActual = pdfUrl;
+    const p = PEDIDOS[orderId];
     document.getElementById('modal-etiqueta-body').innerHTML =
-      `<div style="color:var(--danger)">❌ ${d.msg}</div>
-       <div style="color:var(--mid);font-size:12px;margin-top:8px">
-       Verificá que el pedido tenga envío activo en ML.</div>`;
+      `<div style="margin-bottom:10px">
+         <b>#${orderId}</b> — ${p.comprador}<br>
+         <span style="font-size:11px;color:var(--mid)">
+           ${p.items.map(it=>`${it.sku||'?'} · ${it.titulo.substring(0,28)}`).join(' | ')}
+         </span>
+       </div>
+       <div style="background:var(--bar);border-radius:6px;padding:8px 12px;
+            font-size:11px;color:var(--mid);margin-bottom:10px">
+         ✅ La etiqueta NO se marca como impresa en MercadoLibre
+       </div>
+       <iframe src="${pdfUrl}" style="width:100%;height:400px;border:none;
+       border-radius:8px;background:#fff"></iframe>`;
+    document.getElementById('btn-abrir-etiqueta').style.display = '';
+    // NO llamar a marcar_impreso
   }
-}
 function abrirEtiqueta() { if (etiquetaUrlActual) window.open(etiquetaUrlActual,'_blank'); }
 function cerrarModal(id) { document.getElementById(id).classList.remove('open'); }
 
