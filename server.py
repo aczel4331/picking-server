@@ -40,14 +40,20 @@ ML_REDIRECT   = os.environ.get(
 # ── Clave interna (sync con app_deposito.py) ──────────────────────────────────
 API_KEY = os.environ.get("PICKING_API_KEY", "everest2024")
 
+# ── Clave Railway API para persistir tokens ───────────────────────────────────
+# Railway permite actualizar variables de entorno via su API REST
+RAILWAY_API_TOKEN = os.environ.get("RAILWAY_API_TOKEN", "")
+RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID", "")
+RAILWAY_SERVICE_ID = os.environ.get("RAILWAY_SERVICE_ID", "")
+RAILWAY_ENV_ID     = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")
+# Nombre de la variable donde guardamos los tokens
+ML_TOKENS_ENV_KEY  = "ML_TOKENS_JSON"
+
 # ── Estado en memoria ─────────────────────────────────────────────────────────
-# Multi-cuenta: { cuenta_id: { access_token, refresh_token, expires_at, user_id, nickname } }
-_cuentas        = {}   # { "cuenta_0": {...tokens...}, "cuenta_1": {...} }
-_tokens         = {}   # alias -> _cuentas["cuenta_0"] para compatibilidad
+_cuentas        = {}
+_tokens         = {}
 _cuenta_activa  = "cuenta_0"
-# pedidos ML de todas las cuentas: { order_id: { ...datos..., "_cuenta": cuenta_id } }
 _pedidos_ml     = {}
-# estado picking
 _estado = {
     "fase": 1, "grupos": [], "colecta": {}, "colecta_completa": False,
     "total_skus": 0, "total_uds": 0, "ultima_actualizacion": "", "cargado": False,
@@ -57,25 +63,166 @@ _etiquetas_cache     = {}
 _ultimo_refresh_pedidos = None
 _sku_db              = {}
 _SKU_DB_ENV_KEY      = "SKU_DB_JSON"
-_pkce_store          = {}   # { state: { verifier, cuenta_id } }
+_pkce_store          = {}
+
+
 def _ts():
     return datetime.now().strftime("%d/%m %H:%M:%S")
 
 
-def _cargar_sku_db():
-    global _sku_db
-    raw = os.environ.get(_SKU_DB_ENV_KEY, "")
-    if raw:
-        try:
-            _sku_db = json.loads(raw)
-        except Exception:
-            _sku_db = {}
+# ── Persistencia de tokens ─────────────────────────────────────────────────────
 
-def _sku_info(sku):
-    return _sku_db.get(sku.upper(), {"nombre": "", "pasillo": "", "estanteria": ""})
+def _cargar_tokens_persistidos():
+    """
+    Carga los tokens guardados en la variable de entorno ML_TOKENS_JSON.
+    Esto permite que el servidor sobreviva reinicios de Railway sin perder
+    la sesion de MercadoLibre.
+    """
+    global _cuentas, _tokens
+    raw = os.environ.get(ML_TOKENS_ENV_KEY, "").strip()
+    if not raw:
+        return
+    try:
+        data = json.loads(raw)
+        for cid, tok in data.items():
+            # Convertir expires_at de string ISO a datetime
+            if tok.get("expires_at") and isinstance(tok["expires_at"], str):
+                try:
+                    tok["expires_at"] = datetime.fromisoformat(tok["expires_at"])
+                except Exception:
+                    tok["expires_at"] = datetime.now() + timedelta(hours=1)
+            _cuentas[cid] = tok
+        if "cuenta_0" in _cuentas:
+            _tokens.update(_cuentas["cuenta_0"])
+        print(f"[TOKEN] Tokens cargados: {list(_cuentas.keys())}")
+    except Exception as e:
+        print(f"[TOKEN] Error cargando tokens: {e}")
 
-_cargar_sku_db()
 
+def _serializar_cuentas():
+    """Serializa _cuentas a JSON, convirtiendo datetime a ISO string."""
+    data = {}
+    for cid, tok in _cuentas.items():
+        t = dict(tok)
+        if isinstance(t.get("expires_at"), datetime):
+            t["expires_at"] = t["expires_at"].isoformat()
+        data[cid] = t
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _persistir_tokens_railway():
+    """
+    Guarda los tokens en Railway via la API GraphQL.
+    Solo funciona si RAILWAY_API_TOKEN, PROJECT_ID y ENVIRONMENT_ID
+    estan configurados en las variables de entorno.
+    """
+    if not RAILWAY_API_TOKEN or not RAILWAY_PROJECT_ID:
+        # Sin credenciales de Railway API, guardar en archivo local como fallback
+        _persistir_tokens_local()
+        return
+
+    try:
+        tokens_json = _serializar_cuentas()
+        # Railway GraphQL API para actualizar variables
+        query = """
+        mutation variableUpsert($input: VariableUpsertInput!) {
+          variableUpsert(input: $input)
+        }
+        """
+        variables = {
+            "input": {
+                "projectId":     RAILWAY_PROJECT_ID,
+                "environmentId": RAILWAY_ENV_ID,
+                "serviceId":     RAILWAY_SERVICE_ID,
+                "name":          ML_TOKENS_ENV_KEY,
+                "value":         tokens_json,
+            }
+        }
+        r = requests.post(
+            "https://backboard.railway.app/graphql/v2",
+            headers={
+                "Authorization": f"Bearer {RAILWAY_API_TOKEN}",
+                "Content-Type":  "application/json",
+            },
+            json={"query": query, "variables": variables},
+            timeout=10)
+        if r.status_code == 200 and not r.json().get("errors"):
+            print(f"[TOKEN] Tokens persistidos en Railway OK")
+        else:
+            print(f"[TOKEN] Error persistiendo en Railway: {r.text[:200]}")
+            _persistir_tokens_local()
+    except Exception as e:
+        print(f"[TOKEN] Error Railway API: {e}")
+        _persistir_tokens_local()
+
+
+def _persistir_tokens_local():
+    """Fallback: guarda tokens en un archivo local (para dev o si no hay Railway API)."""
+    try:
+        path = "/tmp/ml_tokens.json"
+        with open(path, "w") as f:
+            f.write(_serializar_cuentas())
+        print(f"[TOKEN] Tokens guardados localmente en {path}")
+    except Exception as e:
+        print(f"[TOKEN] Error guardando local: {e}")
+
+
+def _cargar_tokens_local():
+    """Carga tokens del archivo local (fallback)."""
+    global _cuentas, _tokens
+    try:
+        path = "/tmp/ml_tokens.json"
+        if os.path.exists(path):
+            with open(path) as f:
+                data = json.loads(f.read())
+            for cid, tok in data.items():
+                if tok.get("expires_at") and isinstance(tok["expires_at"], str):
+                    try:
+                        tok["expires_at"] = datetime.fromisoformat(tok["expires_at"])
+                    except Exception:
+                        tok["expires_at"] = datetime.now() + timedelta(hours=1)
+                _cuentas[cid] = tok
+            if "cuenta_0" in _cuentas:
+                _tokens.update(_cuentas["cuenta_0"])
+            print(f"[TOKEN] Tokens cargados desde archivo local: {list(_cuentas.keys())}")
+    except Exception as e:
+        print(f"[TOKEN] Error cargando local: {e}")
+
+
+def _guardar_tokens():
+    """Guarda tokens en Railway y/o archivo local."""
+    threading.Thread(target=_persistir_tokens_railway, daemon=True).start()
+
+
+
+
+# ── Cargar datos al iniciar el servidor ──────────────────────────────────────
+def _startup():
+    """Se llama al arrancar Railway — carga tokens y SKUs persistidos."""
+    _cargar_sku_db()
+    # Intentar cargar tokens de variable de entorno primero
+    _cargar_tokens_persistidos()
+    # Fallback: archivo /tmp (persiste entre reinicios normales, no entre redeploys)
+    if not _cuentas:
+        _cargar_tokens_local()
+    if _cuentas:
+        nicks = [t.get("nickname","?") for t in _cuentas.values()]
+        print(f"[STARTUP] Tokens cargados: {nicks}")
+        # Renovar tokens que esten por vencer y traer pedidos
+        for cid in list(_cuentas.keys()):
+            tok = _cuentas[cid]
+            exp = tok.get("expires_at")
+            if isinstance(exp, str):
+                try:
+                    tok["expires_at"] = datetime.fromisoformat(exp)
+                    _cuentas[cid] = tok
+                except Exception:
+                    pass
+        threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
+    else:
+        print("[STARTUP] Sin tokens guardados — hay que conectar ML manualmente")
+
+_startup()
 
 # ─── Helpers multi-cuenta ────────────────────────────────────────────────────
 
@@ -119,8 +266,15 @@ def _renovar_token_cuenta(cuenta_id):
             tok["refresh_token"] = d.get("refresh_token", tok["refresh_token"])
             tok["expires_at"]    = datetime.now() + timedelta(seconds=d.get("expires_in", 21600))
             _cuentas[cuenta_id]  = tok
-    except Exception:
-        pass
+            if cuenta_id == "cuenta_0":
+                _tokens.update(tok)
+            # Persistir tokens despues de cada renovacion
+            _guardar_tokens()
+            print(f"[TOKEN] Renovado OK para {cuenta_id}")
+        else:
+            print(f"[TOKEN] Error renovando {cuenta_id}: {r.status_code} {r.text[:100]}")
+    except Exception as e:
+        print(f"[TOKEN] Excepcion renovando {cuenta_id}: {e}")
 
 def _renovar_token():
     _renovar_token_cuenta("cuenta_0")
@@ -639,6 +793,10 @@ def auth_callback():
         if cuenta_id == "cuenta_0":
             _tokens.update(tok)
 
+        # Persistir tokens inmediatamente despues de conectar
+        _guardar_tokens()
+        print(f"[TOKEN] Conectado y persistido: {tok.get('nickname','?')} -> {cuenta_id}")
+
         threading.Thread(
             target=_refresh_pedidos_worker_cuenta,
             args=(cuenta_id,), daemon=True).start()
@@ -835,15 +993,66 @@ def api_etiqueta(order_id):
     }
     tit, desc = MSGS.get(estado, ("Sin etiqueta disponible",
                                    f"Estado: {estado or 'desconocido'} / {substatus}"))
+
+    # Boton de descarga directa si el estado es ready_to_ship
+    btn_alt = ""
+    if estado == "ready_to_ship" or not estado:
+        btn_alt = (
+            f'<br><br>'
+            f'<a href="/api/etiqueta/{real_oid}/descargar" target="_blank"'
+            f'   style="display:inline-block;background:#3B82F6;color:#fff;'
+            f'   padding:12px 24px;border-radius:8px;text-decoration:none;'
+            f'   font-weight:bold;font-size:15px;margin-top:8px">'
+            f'📥 Descargar etiqueta (metodo alternativo)</a>'
+            f'<br><small style="color:#6B7280;margin-top:8px;display:block">'
+            f'Si el boton abre el PDF, guardarlo con Ctrl+S o clic derecho → Guardar como.</small>'
+        )
+
     return _html_error(
         tit,
-        f"<b>Pedido:</b> #{real_oid} - {comprador}<br>"
+        f"<b>Pedido:</b> #{real_oid} — {comprador}<br>"
         f"<b>Productos:</b> {items_txt}<br>"
         f"<b>Shipping ID:</b> {shipping_id}<br>"
         f"<b>Logistica:</b> {logistic or 'no disponible'}<br>"
-        f"<b>Estado ML:</b> {estado} / {substatus or '-'}<br>"
-        f"<b>HTTP labels:</b> {last_status}<br><br>{desc}"), 200
+        f"<b>Estado ML:</b> {estado} / {substatus or '—'}<br>"
+        f"<b>Codigo HTTP:</b> {last_status}<br><br>{desc}{btn_alt}"), 200
 
+
+
+@app.route("/api/etiqueta/<order_id>/descargar")
+def api_etiqueta_descargar(order_id):
+    """
+    Endpoint alternativo: redirige a ML con el token en la URL
+    para forzar la descarga del PDF.
+    """
+    with _lock:
+        snap = dict(_pedidos_ml)
+
+    pedido = snap.get(order_id)
+    if not pedido and len(order_id) >= 8:
+        for k, v in snap.items():
+            if k.endswith(order_id[-8:]):
+                pedido = v; order_id = k; break
+
+    if not pedido:
+        return _html_error("Pedido no encontrado", f"#{order_id} no esta en memoria."), 404
+
+    shipping_id = pedido.get("shipping_id","")
+    if not shipping_id:
+        return _html_error("Sin envio", "Este pedido no tiene envio ML asignado."), 400
+
+    cuenta_id = pedido.get("_cuenta", "cuenta_0")
+    at = _cuentas.get(cuenta_id, {}).get("access_token","")
+    if not at:
+        return _html_error("Token no disponible", "Reconecta la cuenta ML."), 401
+
+    # URL directa a ML con el token — fuerza la descarga
+    url = (f"{ML_API_URL}/shipment_labels"
+           f"?shipment_ids={shipping_id}"
+           f"&response_type=pdf2"
+           f"&access_token={at}")
+    from flask import redirect as r2
+    return r2(url)
 
 @app.route("/api/pedidos/marcar_impreso/<order_id>", methods=["POST"])
 @requiere_auth
@@ -870,7 +1079,37 @@ def ping():
     })
 
 
-@app.route("/api/debug_logistica")
+@app.route("/api/token_status")
+def api_token_status():
+    """Muestra el estado de los tokens de todas las cuentas."""
+    result = []
+    for cid, tok in _cuentas.items():
+        exp = tok.get("expires_at")
+        if isinstance(exp, datetime):
+            diff = exp - datetime.now()
+            horas = diff.total_seconds() / 3600
+            estado_exp = f"Vence en {horas:.1f}h" if horas > 0 else "EXPIRADO"
+        else:
+            estado_exp = "Sin fecha"
+        result.append({
+            "cuenta_id":   cid,
+            "nickname":    tok.get("nickname", "?"),
+            "tiene_token": bool(tok.get("access_token")),
+            "tiene_refresh": bool(tok.get("refresh_token")),
+            "token_estado": estado_exp,
+            "user_id":     tok.get("user_id",""),
+        })
+    return jsonify({
+        "ok":           True,
+        "cuentas":      result,
+        "total":        len(result),
+        "railway_api":  bool(RAILWAY_API_TOKEN),
+        "tokens_json_guardado": bool(os.environ.get(ML_TOKENS_ENV_KEY)),
+        "ts":           _ts(),
+    })
+
+
+
 def debug_logistica():
     """Muestra los valores de logistica de los primeros 20 pedidos para diagnosticar."""
     sample = []
