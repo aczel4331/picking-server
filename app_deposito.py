@@ -535,18 +535,16 @@ class VentanaConfiguracion(tk.Toplevel):
 
             total_ped = d.get("pedidos", 0)
             self.lbl_ml_estado_cfg.config(
-                text=f"{len(cuentas)} cuenta(s) conectada(s)  ·  {total_ped} pedidos en Railway",
+                text=f"✅  {len(cuentas)} cuenta(s) conectada(s)  ·  {total_ped} pedidos en Railway",
                 fg=C["success"])
-
-            # Cambiar texto del botón a "Agregar otra cuenta"
             self.btn_cfg_agregar_ml.config(
                 text="+ Agregar otra cuenta ML",
                 bg=C["success"], fg="white",
                 activebackground="#059669")
         else:
             self.lbl_ml_estado_cfg.config(
-                text="No hay cuentas conectadas a MercadoLibre",
-                fg=C["warning"])
+                text="Sin cuentas conectadas — hacé clic en 'Conectar MercadoLibre'",
+                fg=C["text_mid"])
             self.btn_cfg_agregar_ml.config(
                 text="Conectar MercadoLibre",
                 bg="#CA8A04", fg="black",
@@ -565,11 +563,17 @@ class VentanaConfiguracion(tk.Toplevel):
                 "Desvincular todas las cuentas",
                 f"¿Desvincular TODAS las cuentas?\n\n"
                 f"Cuentas: {nicks}\n\n"
-                f"Se perderá la conexion con MercadoLibre hasta que vuelvas a conectar.",
+                f"Tendrás que volver a conectar MercadoLibre para traer pedidos.",
                 parent=self):
             return
+
         import threading, urllib.request
+        self.lbl_ml_estado_cfg.config(
+            text="Desvinculando cuentas...", fg=C["warning"])
+        self.btn_cfg_agregar_ml.config(state="disabled")
+
         def _w():
+            errores = []
             for c in cuentas:
                 try:
                     url = RAILWAY_URL.rstrip("/")
@@ -578,20 +582,53 @@ class VentanaConfiguracion(tk.Toplevel):
                         method="POST",
                         headers={"Content-Type": "application/json",
                                  "X-API-Key": "everest2024"})
-                    urllib.request.urlopen(req, timeout=6)
+                    urllib.request.urlopen(req, timeout=8)
+                except Exception as e:
+                    errores.append(str(e))
+
+            def _actualizar_ui():
+                try:
+                    if not self.winfo_exists():
+                        return
+                    # Limpiar chips de cuentas
+                    if hasattr(self, "frame_cuentas_cfg") and \
+                       self.frame_cuentas_cfg.winfo_exists():
+                        for w in self.frame_cuentas_cfg.winfo_children():
+                            w.destroy()
+                    # Actualizar estado
+                    self._cfg_cuentas_actuales = []
+                    self.lbl_ml_estado_cfg.config(
+                        text="✅ Todas las cuentas desvinculadas correctamente",
+                        fg=C["success"])
+                    self.btn_cfg_agregar_ml.config(
+                        text="Conectar MercadoLibre",
+                        bg="#CA8A04", fg="black",
+                        state="normal")
+                    # Actualizar también el botón principal del panel ML
+                    if hasattr(self.master, 'btn_ml_login'):
+                        self.master.btn_ml_login.config(
+                            text="Conectar MercadoLibre",
+                            bg="#CA8A04", fg="black")
                 except Exception:
                     pass
-            self.after(600, self._cfg_verificar_ml)
+
+            self.after(0, _actualizar_ui)
+
         threading.Thread(target=_w, daemon=True).start()
-        self.lbl_ml_estado_cfg.config(
-            text="Desvinculando cuentas...", fg=C["warning"])
-        """Desconecta una cuenta ML desde la ventana de configuración."""
+
+    def _cfg_desconectar_cuenta(self, cuenta_id, nick):
+        """Desconecta una cuenta ML específica desde la ventana de configuración."""
         if not messagebox.askyesno(
                 "Desconectar",
-                f"¿Desconectar la cuenta '{nick}'?",
+                f"¿Desconectar la cuenta '{nick}'?\n\n"
+                f"Podés volver a conectarla cuando quieras.",
                 parent=self):
             return
-        import threading, urllib.request, json as _j
+
+        import threading, urllib.request
+        self.lbl_ml_estado_cfg.config(
+            text=f"Desconectando {nick}...", fg=C["warning"])
+
         def _w():
             try:
                 url = RAILWAY_URL.rstrip("/")
@@ -600,10 +637,18 @@ class VentanaConfiguracion(tk.Toplevel):
                     method="POST",
                     headers={"Content-Type": "application/json",
                              "X-API-Key": "everest2024"})
-                urllib.request.urlopen(req, timeout=6)
+                urllib.request.urlopen(req, timeout=8)
             except Exception:
                 pass
-            self.after(500, self._cfg_verificar_ml)
+
+            def _actualizar():
+                try:
+                    if self.winfo_exists():
+                        self._cfg_verificar_ml()
+                except Exception:
+                    pass
+            self.after(500, _actualizar)
+
         threading.Thread(target=_w, daemon=True).start()
 
     def _resumir_ruta(self, ruta):

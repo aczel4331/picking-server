@@ -814,15 +814,19 @@ def api_cuentas():
 
 
 @app.route("/api/cuentas/<cuenta_id>/logout", methods=["POST"])
-@requiere_auth
+@requiere_api_key
 def api_cuenta_logout(cuenta_id):
-    if cuenta_id in _cuentas:
-        del _cuentas[cuenta_id]
-        to_del = [oid for oid, p in list(_pedidos_ml.items())
-                  if p.get("_cuenta") == cuenta_id]
-        for oid in to_del:
-            _pedidos_ml.pop(oid, None)
-    return jsonify({"ok": True})
+    """Desconecta una cuenta ML. Requiere API Key, no OAuth."""
+    with _lock:
+        if cuenta_id in _cuentas:
+            del _cuentas[cuenta_id]
+            to_del = [oid for oid, p in list(_pedidos_ml.items())
+                      if p.get("_cuenta") == cuenta_id]
+            for oid in to_del:
+                _pedidos_ml.pop(oid, None)
+    # Persistir el estado (sin la cuenta eliminada)
+    _guardar_tokens()
+    return jsonify({"ok": True, "msg": f"Cuenta {cuenta_id} desvinculada"})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
