@@ -1,6 +1,7 @@
 """
 server.py — Sistema de Picking integrado con MercadoLibre (Uruguay)
 ====================================================================
+VERSION: 2.1.0 — Auto-token + Persistencia Railway
 Deploy en Railway. Variables de entorno requeridas:
   ML_APP_ID      → App ID de tu aplicación ML
   ML_SECRET_KEY  → Secret Key de tu aplicación ML
@@ -11,8 +12,10 @@ Flujo OAuth2 ML:
   1. Usuario va a /auth/login  →  redirige a ML
   2. ML redirige a /auth/callback con ?code=XXX
   3. Se intercambia por access_token + refresh_token
-  4. Los tokens se guardan en sesión y se auto-renuevan
+  4. Los tokens se guardan y se auto-renuevan cada 6 horas
 """
+
+SERVER_VERSION = "2.1.0"
 
 import os, json, threading, time, requests
 from datetime import datetime, timedelta
@@ -1063,11 +1066,14 @@ def marcar_impreso(order_id):
 @app.route("/api/ping")
 def ping():
     return jsonify({
-        "ok": True, "ts": _ts(),
-        "cargado":    _estado["cargado"],
-        "skus":       _estado["total_skus"],
-        "autenticado": _token_valido(),
-        "pedidos_ml": len(_pedidos_ml),
+        "ok":          True,
+        "version":     SERVER_VERSION,
+        "ts":          _ts(),
+        "cargado":     _estado["cargado"],
+        "skus":        len(_sku_db),
+        "autenticado": bool(_cuentas),
+        "cuentas":     [t.get("nickname","?") for t in _cuentas.values()],
+        "pedidos_ml":  len(_pedidos_ml),
     })
 
 
