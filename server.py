@@ -196,34 +196,6 @@ def _guardar_tokens():
 
 
 
-# ── Cargar datos al iniciar el servidor ──────────────────────────────────────
-def _startup():
-    """Se llama al arrancar Railway — carga tokens y SKUs persistidos."""
-    _cargar_sku_db()
-    # Intentar cargar tokens de variable de entorno primero
-    _cargar_tokens_persistidos()
-    # Fallback: archivo /tmp (persiste entre reinicios normales, no entre redeploys)
-    if not _cuentas:
-        _cargar_tokens_local()
-    if _cuentas:
-        nicks = [t.get("nickname","?") for t in _cuentas.values()]
-        print(f"[STARTUP] Tokens cargados: {nicks}")
-        # Renovar tokens que esten por vencer y traer pedidos
-        for cid in list(_cuentas.keys()):
-            tok = _cuentas[cid]
-            exp = tok.get("expires_at")
-            if isinstance(exp, str):
-                try:
-                    tok["expires_at"] = datetime.fromisoformat(exp)
-                    _cuentas[cid] = tok
-                except Exception:
-                    pass
-        threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
-    else:
-        print("[STARTUP] Sin tokens guardados — hay que conectar ML manualmente")
-
-_startup()
-
 # ─── Helpers multi-cuenta ────────────────────────────────────────────────────
 
 def _tokens_de(cuenta_id):
@@ -1369,6 +1341,45 @@ def api_skus_limpiar():
 # ═══════════════════════════════════════════════════════════════════════════════
 # FRONTEND — página principal (requiere auth)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Inicializar al arrancar ───────────────────────────────────────────────────
+def _startup():
+    """
+    Inicializa el servidor al arrancar.
+    Carga tokens persistidos y SKUs para sobrevivir reinicios de Railway.
+    Se llama DESPUES de que todas las funciones esten definidas.
+    """
+    # Cargar base de datos de SKUs
+    _cargar_sku_db()
+
+    # Cargar tokens de ML desde variable de entorno (persiste entre redeploys)
+    _cargar_tokens_persistidos()
+
+    # Fallback: archivo /tmp (persiste entre reinicios normales)
+    if not _cuentas:
+        _cargar_tokens_local()
+
+    if _cuentas:
+        nicks = [t.get("nickname", "?") for t in _cuentas.values()]
+        print(f"[STARTUP] ✅ Tokens cargados para: {nicks}")
+        # Convertir expires_at de string a datetime si es necesario
+        for cid in list(_cuentas.keys()):
+            tok = _cuentas[cid]
+            exp = tok.get("expires_at")
+            if exp and isinstance(exp, str):
+                try:
+                    tok["expires_at"] = datetime.fromisoformat(exp)
+                    _cuentas[cid] = tok
+                except Exception:
+                    tok["expires_at"] = datetime.now() + timedelta(hours=1)
+                    _cuentas[cid] = tok
+        # Traer pedidos en background
+        threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
+    else:
+        print("[STARTUP] ⚠ Sin tokens guardados. Conectar ML desde la app.")
+
+_startup()
+
 
 @app.route("/")
 def index():
