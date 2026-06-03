@@ -118,59 +118,27 @@ def _serializar_cuentas():
 
 def _persistir_tokens_railway():
     """
-    Guarda los tokens en Railway via la API GraphQL.
-    Solo funciona si RAILWAY_API_TOKEN, PROJECT_ID y ENVIRONMENT_ID
-    estan configurados en las variables de entorno.
+    Guarda tokens en /tmp/ml_tokens.json.
+    Este archivo sobrevive reinicios normales de Railway.
+    Para redeploys, usar el endpoint /api/tokens_export para
+    copiar el JSON y pegarlo en la variable ML_TOKENS_JSON de Railway.
     """
-    if not RAILWAY_API_TOKEN or not RAILWAY_PROJECT_ID:
-        # Sin credenciales de Railway API, guardar en archivo local como fallback
-        _persistir_tokens_local()
-        return
-
-    try:
-        tokens_json = _serializar_cuentas()
-        # Railway GraphQL API para actualizar variables
-        query = """
-        mutation variableUpsert($input: VariableUpsertInput!) {
-          variableUpsert(input: $input)
-        }
-        """
-        variables = {
-            "input": {
-                "projectId":     RAILWAY_PROJECT_ID,
-                "environmentId": RAILWAY_ENV_ID,
-                "serviceId":     RAILWAY_SERVICE_ID,
-                "name":          ML_TOKENS_ENV_KEY,
-                "value":         tokens_json,
-            }
-        }
-        r = requests.post(
-            "https://backboard.railway.app/graphql/v2",
-            headers={
-                "Authorization": f"Bearer {RAILWAY_API_TOKEN}",
-                "Content-Type":  "application/json",
-            },
-            json={"query": query, "variables": variables},
-            timeout=10)
-        if r.status_code == 200 and not r.json().get("errors"):
-            print(f"[TOKEN] Tokens persistidos en Railway OK")
-        else:
-            print(f"[TOKEN] Error persistiendo en Railway: {r.text[:200]}")
-            _persistir_tokens_local()
-    except Exception as e:
-        print(f"[TOKEN] Error Railway API: {e}")
-        _persistir_tokens_local()
+    _persistir_tokens_local()
 
 
 def _persistir_tokens_local():
-    """Fallback: guarda tokens en un archivo local (para dev o si no hay Railway API)."""
+    """Guarda tokens en archivo /tmp — persiste entre reinicios normales."""
     try:
         path = "/tmp/ml_tokens.json"
+        data = _serializar_cuentas()
         with open(path, "w") as f:
-            f.write(_serializar_cuentas())
-        print(f"[TOKEN] Tokens guardados localmente en {path}")
+            f.write(data)
+        print(f"[TOKEN] Tokens guardados en {path}")
+        # Tambien actualizar os.environ para que _cargar_tokens_persistidos()
+        # los encuentre si se llama de nuevo en la misma sesion
+        os.environ[ML_TOKENS_ENV_KEY] = data
     except Exception as e:
-        print(f"[TOKEN] Error guardando local: {e}")
+        print(f"[TOKEN] Error guardando: {e}")
 
 
 def _cargar_tokens_local():
@@ -1524,7 +1492,51 @@ def ping():
     })
 
 
-@app.route("/api/token_status")
+@app.route("/api/tokens_export")
+@requiere_api_key
+def api_tokens_export():
+    """
+    Exporta los tokens actuales en formato listo para pegar
+    en la variable ML_TOKENS_JSON de Railway.
+    Usar despues de conectar ML para persistir entre redeploys.
+    """
+    if not _cuentas:
+        return jsonify({
+            "ok":  False,
+            "msg": "No hay cuentas conectadas. Conecta ML primero."
+        }), 400
+
+    tokens_json = _serializar_cuentas()
+    cuentas_info = []
+    for cid, tok in _cuentas.items():
+        exp = tok.get("expires_at")
+        if isinstance(exp, datetime):
+            horas = (exp - datetime.now()).total_seconds() / 3600
+            exp_str = f"vence en {horas:.1f}h"
+        else:
+            exp_str = "desconocido"
+        cuentas_info.append({
+            "cuenta_id": cid,
+            "nickname":  tok.get("nickname", "?"),
+            "expira":    exp_str,
+        })
+
+    return jsonify({
+        "ok":            True,
+        "instrucciones": [
+            "1. Copiar el valor de 'ML_TOKENS_JSON' de abajo",
+            "2. Ir a Railway → tu proyecto → picking-server → Variables",
+            "3. Crear o editar la variable 'ML_TOKENS_JSON'",
+            "4. Pegar el valor copiado",
+            "5. Listo — los tokens sobreviven redeploys"
+        ],
+        "variable_name":  "ML_TOKENS_JSON",
+        "ML_TOKENS_JSON": tokens_json,
+        "cuentas":        cuentas_info,
+    })
+
+
+
 def api_token_status():
     """Muestra el estado de los tokens de todas las cuentas."""
     result = []

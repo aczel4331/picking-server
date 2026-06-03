@@ -432,6 +432,12 @@ class VentanaConfiguracion(tk.Toplevel):
                   relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
                   command=self._cfg_verificar_ml).pack(side="left", padx=(8,0))
 
+        tk.Button(btn_ml_row, text="💾 Guardar tokens",
+                  font=FONT_SMALL, bg="#0891B2", fg="white",
+                  activebackground="#0E7490", activeforeground="white",
+                  relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
+                  command=self._cfg_exportar_tokens).pack(side="left", padx=(8,0))
+
         # Verificar estado al abrir
         self.after(300, self._cfg_verificar_ml)
 
@@ -610,7 +616,128 @@ class VentanaConfiguracion(tk.Toplevel):
 
         threading.Thread(target=_w, daemon=True).start()
 
-    def _cfg_desconectar_cuenta(self, cuenta_id, nick):
+    def _cfg_exportar_tokens(self):
+        """
+        Obtiene el JSON de tokens de Railway y abre una ventana para copiarlo.
+        El usuario lo pega en Railway Variables -> ML_TOKENS_JSON.
+        """
+        import threading, urllib.request, json as _j
+
+        def _worker():
+            try:
+                url = RAILWAY_URL.rstrip("/") + "/api/tokens_export"
+                req = urllib.request.Request(
+                    url, headers={"X-API-Key": "everest2024"})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    d = _j.loads(r.read())
+                self.after(0, lambda: self._cfg_mostrar_tokens(d))
+            except urllib.error.HTTPError as e:
+                body = e.read().decode() if e.fp else str(e)
+                self.after(0, lambda: messagebox.showerror(
+                    "Error", f"No se pudo obtener los tokens:\n{body[:200]}",
+                    parent=self))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror(
+                    "Error", f"No se pudo conectar:\n{e}", parent=self))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _cfg_mostrar_tokens(self, d):
+        """Muestra ventana con el JSON de tokens para copiar a Railway."""
+        if not d.get("ok"):
+            messagebox.showwarning(
+                "Sin tokens",
+                d.get("msg", "No hay cuentas conectadas."),
+                parent=self)
+            return
+
+        tokens_json = d.get("ML_TOKENS_JSON", "")
+        cuentas     = d.get("cuentas", [])
+
+        win = tk.Toplevel(self)
+        win.title("Guardar tokens en Railway")
+        win.geometry("620x480")
+        win.resizable(False, False)
+        win.config(bg=C["bg_dark"])
+        win.grab_set()
+
+        # Header
+        hdr = tk.Frame(win, bg="#0891B2", pady=12)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="💾  Guardar tokens ML en Railway",
+                 font=("Segoe UI Black", 12), bg="#0891B2",
+                 fg="white").pack()
+
+        body = tk.Frame(win, bg=C["bg_dark"], padx=20, pady=16)
+        body.pack(fill="both", expand=True)
+
+        # Cuentas conectadas
+        cuentas_txt = "  ·  ".join(
+            f"{c['nickname']} ({c['expira']})" for c in cuentas)
+        tk.Label(body, text=f"Cuentas: {cuentas_txt}",
+                 font=("Segoe UI Semibold", 9), bg=C["bg_dark"],
+                 fg=C["success"]).pack(anchor="w", pady=(0,10))
+
+        # Instrucciones
+        pasos = (
+            "1. Clic en 'Copiar JSON'\n"
+            "2. Ir a railway.app → tu proyecto → picking-server → Variables\n"
+            "3. Buscar o crear la variable  ML_TOKENS_JSON\n"
+            "4. Pegar el valor copiado\n"
+            "5. Guardar — listo, los tokens sobreviven cualquier redeploy"
+        )
+        tk.Label(body, text=pasos,
+                 font=("Segoe UI", 9), bg=C["bg_dark"],
+                 fg=C["text_mid"], justify="left").pack(anchor="w", pady=(0,10))
+
+        # JSON box
+        tk.Label(body, text="Valor para ML_TOKENS_JSON:",
+                 font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
+                 fg=C["text_lo"]).pack(anchor="w")
+
+        txt_frame = tk.Frame(body, bg=C["border"], padx=1, pady=1)
+        txt_frame.pack(fill="x", pady=(4,0))
+        txt = tk.Text(txt_frame, height=6, font=("Consolas", 8),
+                      bg=C["card"], fg=C["text_hi"], relief="flat",
+                      wrap="word", state="normal")
+        txt.insert("1.0", tokens_json)
+        txt.config(state="disabled")
+        txt.pack(fill="x")
+
+        # Botones
+        sep = tk.Frame(body, bg=C["border"], height=1)
+        sep.pack(fill="x", pady=(14,10))
+
+        btn_row = tk.Frame(body, bg=C["bg_dark"])
+        btn_row.pack(fill="x")
+
+        def _copiar():
+            win.clipboard_clear()
+            win.clipboard_append(tokens_json)
+            btn_copy.config(text="✅ Copiado!", bg=C["success"])
+            win.after(2000, lambda: btn_copy.config(
+                text="📋 Copiar JSON", bg="#0891B2"))
+
+        btn_copy = tk.Button(btn_row, text="📋 Copiar JSON",
+                             font=("Segoe UI Semibold", 10),
+                             bg="#0891B2", fg="white",
+                             activebackground="#0E7490",
+                             relief="flat", cursor="hand2",
+                             padx=16, pady=7, bd=0,
+                             command=_copiar)
+        btn_copy.pack(side="left")
+
+        tk.Button(btn_row, text="Abrir Railway Variables",
+                  font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"],
+                  activebackground=C["border"],
+                  relief="flat", cursor="hand2", padx=12, pady=5, bd=0,
+                  command=lambda: __import__("webbrowser").open(
+                      "https://railway.app")).pack(side="left", padx=(8,0))
+
+        tk.Button(btn_row, text="Cerrar",
+                  font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"],
+                  relief="flat", cursor="hand2", padx=12, pady=5, bd=0,
+                  command=win.destroy).pack(side="right")
         """Desconecta una cuenta ML específica desde la ventana de configuración."""
         if not messagebox.askyesno(
                 "Desconectar",
