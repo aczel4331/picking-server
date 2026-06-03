@@ -1019,6 +1019,20 @@ def api_refresh():
 @app.route("/api/etiqueta/<order_id>")
 def api_etiqueta(order_id):
     """Proxy de etiqueta ML - sirve PDF directo sin marcar como impresa en ML."""
+    try:
+        return _api_etiqueta_impl(order_id)
+    except Exception as e:
+        import traceback
+        print(f"[ETIQUETA] Error inesperado para {order_id}: {e}")
+        traceback.print_exc()
+        return _html_error(
+            "Error interno al obtener etiqueta",
+            f"Pedido #{order_id}<br><br>"
+            f"Error: {str(e)[:200]}<br><br>"
+            f"Intentá de nuevo en unos segundos o actualizá los pedidos."), 200
+
+
+def _api_etiqueta_impl(order_id):
 
     # ── 1. Servir desde cache si ya fue descargada via webhook ────────────────
     with _lock:
@@ -1159,38 +1173,39 @@ def api_etiqueta(order_id):
 
 @app.route("/api/etiqueta/<order_id>/descargar")
 def api_etiqueta_descargar(order_id):
-    """
-    Endpoint alternativo: redirige a ML con el token en la URL
-    para forzar la descarga del PDF.
-    """
-    with _lock:
-        snap = dict(_pedidos_ml)
+    """Descarga directa redirigiendo a ML con token en URL."""
+    try:
+        with _lock:
+            snap = dict(_pedidos_ml)
 
-    pedido = snap.get(order_id)
-    if not pedido and len(order_id) >= 8:
-        for k, v in snap.items():
-            if k.endswith(order_id[-8:]):
-                pedido = v; order_id = k; break
+        pedido = snap.get(order_id)
+        if not pedido and len(order_id) >= 8:
+            for k, v in snap.items():
+                if k.endswith(order_id[-8:]):
+                    pedido = v; order_id = k; break
 
-    if not pedido:
-        return _html_error("Pedido no encontrado", f"#{order_id} no esta en memoria."), 404
+        if not pedido:
+            return _html_error("Pedido no encontrado",
+                               f"#{order_id} no esta en memoria. Actualizá los pedidos."), 404
 
-    shipping_id = pedido.get("shipping_id","")
-    if not shipping_id:
-        return _html_error("Sin envio", "Este pedido no tiene envio ML asignado."), 400
+        shipping_id = pedido.get("shipping_id","")
+        if not shipping_id:
+            return _html_error("Sin envio ML",
+                               "Este pedido no tiene envio asignado."), 400
 
-    cuenta_id = pedido.get("_cuenta", "cuenta_0")
-    at = _cuentas.get(cuenta_id, {}).get("access_token","")
-    if not at:
-        return _html_error("Token no disponible", "Reconecta la cuenta ML."), 401
+        cuenta_id = pedido.get("_cuenta","cuenta_0")
+        at = _cuentas.get(cuenta_id,{}).get("access_token","")
+        if not at:
+            return _html_error("Token no disponible", "Reconectá la cuenta ML."), 401
 
-    # URL directa a ML con el token — fuerza la descarga
-    url = (f"{ML_API_URL}/shipment_labels"
-           f"?shipment_ids={shipping_id}"
-           f"&response_type=pdf2"
-           f"&access_token={at}")
-    from flask import redirect as r2
-    return r2(url)
+        url = (f"{ML_API_URL}/shipment_labels"
+               f"?shipment_ids={shipping_id}"
+               f"&response_type=pdf2"
+               f"&access_token={at}")
+        from flask import redirect as r2
+        return r2(url)
+    except Exception as e:
+        return _html_error("Error al descargar", str(e)[:200]), 200
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
