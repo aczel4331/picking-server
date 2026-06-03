@@ -432,12 +432,6 @@ class VentanaConfiguracion(tk.Toplevel):
                   relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
                   command=self._cfg_verificar_ml).pack(side="left", padx=(8,0))
 
-        tk.Button(btn_ml_row, text="Desvincular todo",
-                  font=FONT_SMALL, bg=C["danger"], fg="white",
-                  activebackground="#B91C1C", activeforeground="white",
-                  relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
-                  command=self._cfg_desvincular_todo).pack(side="right")
-
         # Verificar estado al abrir
         self.after(300, self._cfg_verificar_ml)
 
@@ -1317,19 +1311,22 @@ class AsistenteDepositoApp:
         tabs_bar.pack(fill="x", side="top")
         tabs_bar.pack_propagate(False)
 
-        self._tab_actual = tk.StringVar(value="picking")
-        def _tab(nombre, texto):
+        self._tab_actual = tk.StringVar(value="dashboard")
+        def _tab(nombre, texto, activo=False):
             btn = tk.Button(tabs_bar, text=texto,
                             font=("Segoe UI Semibold", 9),
-                            bg=C["accent"] if nombre=="picking" else C["panel"],
-                            fg="white" if nombre=="picking" else C["text_mid"],
+                            bg=C["accent"] if activo else C["panel"],
+                            fg="white" if activo else C["text_mid"],
                             activebackground=C["accent2"], activeforeground="white",
                             relief="flat", cursor="hand2", padx=18, pady=0, bd=0,
                             command=lambda n=nombre: self._switch_tab(n))
             btn.pack(side="left", fill="y")
             return btn
-        self._btn_tab_ml      = _tab("ml",      "📦  Pedidos ML")
-        self._btn_tab_picking = _tab("picking",  "🔍  Picking / Packing")
+
+        self._btn_tab_dash    = _tab("dashboard", "⬡  Inicio",          activo=True)
+        self._btn_tab_ml      = _tab("ml",        "📦  Pedidos ML",      activo=False)
+        self._btn_tab_picking = _tab("picking",   "🔍  Picking / Packing", activo=False)
+
         # Indicador de pedidos pendientes
         self.lbl_ml_badge = tk.Label(tabs_bar, text="",
                                      font=("Segoe UI", 8), bg=C["accent"],
@@ -1340,13 +1337,17 @@ class AsistenteDepositoApp:
         self.body_container = tk.Frame(self.root, bg=C["bg_dark"])
         self.body_container.pack(fill="both", expand=True)
 
+        # ── Panel Dashboard ───────────────────────────────────────────────
+        self.panel_dashboard = tk.Frame(self.body_container, bg=C["bg_dark"])
+        self.panel_dashboard.pack(fill="both", expand=True)  # visible por defecto
+        self._build_dashboard()
+
         # ── Panel ML ─────────────────────────────────────────────────────
         self.panel_ml = tk.Frame(self.body_container, bg=C["bg_dark"])
         self._build_ml_panel()
 
         # ── Panel Picking (3 columnas original) ──────────────────────────
         self.panel_picking = tk.Frame(self.body_container, bg=C["bg_dark"])
-        self.panel_picking.pack(fill="both", expand=True)  # visible por defecto
 
         body = self.panel_picking
 
@@ -1679,17 +1680,31 @@ class AsistenteDepositoApp:
         self.canvas_ml.yview_moveto(0)
 
     def _switch_tab(self, nombre):
-        """Alterna entre el panel ML y el panel de Picking."""
-        if nombre == "ml":
-            self.panel_picking.pack_forget()
+        """Alterna entre Dashboard, Pedidos ML y Picking/Packing."""
+        # Ocultar todos
+        for panel in [self.panel_dashboard, self.panel_ml, self.panel_picking]:
+            panel.pack_forget()
+
+        # Resetear todos los botones
+        for btn, tab in [
+            (self._btn_tab_dash,    "dashboard"),
+            (self._btn_tab_ml,      "ml"),
+            (self._btn_tab_picking, "picking"),
+        ]:
+            activo = (tab == nombre)
+            btn.config(
+                bg=C["accent"] if activo else C["panel"],
+                fg="white"     if activo else C["text_mid"])
+
+        # Mostrar el panel correcto
+        if nombre == "dashboard":
+            self.panel_dashboard.pack(fill="both", expand=True)
+            self._refresh_dashboard()
+        elif nombre == "ml":
             self.panel_ml.pack(fill="both", expand=True)
-            self._btn_tab_ml.config(bg=C["accent"], fg="white")
-            self._btn_tab_picking.config(bg=C["panel"], fg=C["text_mid"])
         else:
-            self.panel_ml.pack_forget()
             self.panel_picking.pack(fill="both", expand=True)
-            self._btn_tab_picking.config(bg=C["accent"], fg="white")
-            self._btn_tab_ml.config(bg=C["panel"], fg=C["text_mid"])
+            self.entrada_sku.focus()
 
     # ── Conexión ML ──────────────────────────────────────────────────────────
 
@@ -2285,6 +2300,192 @@ class AsistenteDepositoApp:
                 parent=self.root)
 
 
+    # =========================================================================
+    # DASHBOARD
+    # =========================================================================
+    def _build_dashboard(self):
+        p = self.panel_dashboard
+        canvas = tk.Canvas(p, bg=C["bg_dark"], highlightthickness=0)
+        sb = tk.Scrollbar(p, orient="vertical", command=canvas.yview)
+        self._dash_frame = tk.Frame(canvas, bg=C["bg_dark"])
+        win = canvas.create_window((0,0), window=self._dash_frame, anchor="nw")
+        canvas.configure(yscrollcommand=sb.set)
+        self._dash_frame.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+            lambda e: canvas.itemconfig(win, width=e.width))
+        canvas.bind("<MouseWheel>",
+            lambda e: canvas.yview_scroll(int(-1*(e.delta/120)),"units"))
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self._build_dashboard_content()
+
+    def _build_dashboard_content(self):
+        f = self._dash_frame
+        for w in f.winfo_children():
+            w.destroy()
+        pad = 24
+        from datetime import datetime as _dt
+        hora  = _dt.now().hour
+        hola  = "Buenos días" if hora < 12 else ("Buenas tardes" if hora < 19 else "Buenas noches")
+        fecha = _dt.now().strftime("%A %d de %B — %Y").capitalize()
+
+        # ── Saludo ─────────────────────────────────────────────────────────
+        top = tk.Frame(f, bg=C["bg_dark"])
+        top.pack(fill="x", padx=pad, pady=(22,4))
+        tk.Label(top, text=f"{hola}  —  Sistema de Picking",
+                 font=("Segoe UI Black", 17), bg=C["bg_dark"],
+                 fg=C["text_hi"]).pack(anchor="w")
+        tk.Label(top, text=fecha, font=("Segoe UI", 10),
+                 bg=C["bg_dark"], fg=C["text_mid"]).pack(anchor="w", pady=(3,0))
+        tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(14,18))
+
+        # ── Métricas ───────────────────────────────────────────────────────
+        total_ped  = len(self.pedidos)
+        impresas   = sum(1 for d in self.pedidos.values() if d.get("impreso"))
+        pendientes = total_ped - impresas
+        pct        = int(impresas / total_ped * 100) if total_ped else 0
+
+        total_ml   = len(self._ml_pedidos) if hasattr(self,"_ml_pedidos") else 0
+        ml_cuentas = len(self._ml_cuentas)  if hasattr(self,"_ml_cuentas")  else 0
+
+        total_req  = {}
+        for d in self.pedidos.values():
+            for s,q in d.get("skus_requeridos",{}).items():
+                total_req[s] = total_req.get(s,0) + q
+        col_total  = sum(total_req.values())
+        col_hecho  = sum(min(self.colecta_global.get(s,0),q) for s,q in total_req.items())
+        pct_col    = int(col_hecho/col_total*100) if col_total else 0
+
+        metricas = [
+            ("Lote actual",   str(total_ped),         "pedidos cargados",     C["accent"]),
+            ("Procesados",    str(impresas),           f"{pct}% completado",   C["success"]),
+            ("Pendientes",    str(pendientes),         "por imprimir",         C["warning"] if pendientes else C["success"]),
+            ("Colecta",       f"{pct_col}%",           f"{col_hecho}/{col_total} uds", C["accent2"]),
+            ("Pedidos ML",    str(total_ml),           f"{ml_cuentas} cuenta(s) ML",   "#0891B2"),
+            ("Servidor",      "Online" if RAILWAY_URL else "Sin URL",
+                              "Railway",               C["success"] if RAILWAY_URL else C["danger"]),
+        ]
+
+        cards_f = tk.Frame(f, bg=C["bg_dark"])
+        cards_f.pack(fill="x", padx=pad, pady=(0,18))
+        COLS = 3
+        for i,(tit, val, sub, color) in enumerate(metricas):
+            r, c = divmod(i, COLS)
+            card = tk.Frame(cards_f, bg=C["panel"])
+            card.grid(row=r, column=c, sticky="nsew", padx=7, pady=7)
+
+            accent_bar = tk.Frame(card, bg=color, width=4)
+            accent_bar.pack(side="left", fill="y")
+
+            inn = tk.Frame(card, bg=C["panel"], padx=14, pady=12)
+            inn.pack(fill="both", expand=True)
+
+            tk.Label(inn, text=tit, font=("Segoe UI", 9),
+                     bg=C["panel"], fg=C["text_mid"]).pack(anchor="w")
+            tk.Label(inn, text=val, font=("Segoe UI Black", 28),
+                     bg=C["panel"], fg=color).pack(anchor="w", pady=(2,1))
+            tk.Label(inn, text=sub, font=("Segoe UI", 9),
+                     bg=C["panel"], fg=C["text_lo"]).pack(anchor="w")
+        for c in range(COLS):
+            cards_f.columnconfigure(c, weight=1)
+
+        # ── Barra de progreso ──────────────────────────────────────────────
+        tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(0,14))
+        prog_f = tk.Frame(f, bg=C["panel"], padx=18, pady=14)
+        prog_f.pack(fill="x", padx=pad, pady=(0,14))
+
+        header_row = tk.Frame(prog_f, bg=C["panel"])
+        header_row.pack(fill="x")
+        tk.Label(header_row, text="Progreso del lote",
+                 font=("Segoe UI Semibold", 10), bg=C["panel"],
+                 fg=C["text_hi"]).pack(side="left")
+        tk.Label(header_row, text=f"{pct}%  ·  {impresas} de {total_ped}",
+                 font=("Segoe UI Semibold", 10), bg=C["panel"],
+                 fg=C["success"] if pct==100 else C["accent"]).pack(side="right")
+
+        bar_bg = tk.Frame(prog_f, bg=C["bar_bg"], height=12)
+        bar_bg.pack(fill="x", pady=(10,4))
+        bar_bg.pack_propagate(False)
+        def _draw(e=None):
+            w = bar_bg.winfo_width() or 600
+            for ww in bar_bg.winfo_children(): ww.destroy()
+            fill_w = max(2, int(w * pct / 100))
+            clr = C["bar_ok"] if pct==100 else C["bar_fg"]
+            tk.Frame(bar_bg, bg=clr, width=fill_w, height=12).pack(side="left")
+        bar_bg.bind("<Configure>", _draw)
+        self.root.after(120, _draw)
+
+        # ── Estado de conexiones ───────────────────────────────────────────
+        tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(0,14))
+        tk.Label(f, text="Conexiones activas", font=("Segoe UI Semibold", 10),
+                 bg=C["bg_dark"], fg=C["text_hi"]).pack(anchor="w", padx=pad, pady=(0,8))
+
+        conex_f = tk.Frame(f, bg=C["bg_dark"])
+        conex_f.pack(fill="x", padx=pad, pady=(0,14))
+
+        cuentas_list = self._ml_cuentas if hasattr(self,"_ml_cuentas") else {}
+        COLS_C = ["#7C3AED","#0891B2","#D97706","#DC2626","#059669"]
+        conexiones = [("🌐  Servidor Railway", RAILWAY_URL or "No configurado",
+                       C["success"] if RAILWAY_URL else C["danger"])]
+        if cuentas_list:
+            for i,(cid,nick) in enumerate(cuentas_list.items()):
+                conexiones.append((f"🛒  ML: {nick}", "Conectado", COLS_C[i%5]))
+        else:
+            conexiones.append(("🛒  MercadoLibre","Sin cuentas", C["warning"]))
+        imp = self.config.get("impresora","")
+        conexiones.append(("🖨   Impresora", imp or "No configurada",
+                           C["success"] if imp else C["warning"]))
+
+        for tit, detalle, color in conexiones:
+            row_f = tk.Frame(conex_f, bg=C["panel"], pady=6)
+            row_f.pack(fill="x", pady=2)
+            tk.Frame(row_f, bg=color, width=6, height=6).pack(side="left", padx=(10,8))
+            tk.Label(row_f, text=tit, font=("Segoe UI Semibold", 9),
+                     bg=C["panel"], fg=C["text_hi"],
+                     width=24, anchor="w").pack(side="left")
+            tk.Label(row_f, text=detalle, font=("Segoe UI", 9),
+                     bg=C["panel"], fg=C["text_mid"]).pack(side="left", padx=6)
+
+        # ── Acciones rápidas ───────────────────────────────────────────────
+        tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(0,14))
+        tk.Label(f, text="Acciones rápidas", font=("Segoe UI Semibold", 10),
+                 bg=C["bg_dark"], fg=C["text_hi"]).pack(anchor="w", padx=pad, pady=(0,10))
+
+        acc_f = tk.Frame(f, bg=C["bg_dark"])
+        acc_f.pack(fill="x", padx=pad, pady=(0,22))
+
+        for txt, accion, color in [
+            ("📦  Pedidos ML",   "ml",      C["accent"]),
+            ("🔍  Picking",      "picking", C["success"]),
+            ("📄  Cargar PDF",   "pdf",     "#7C3AED"),
+            ("⚙   Configuración","cfg",     C["text_lo"]),
+        ]:
+            def _cmd(a=accion):
+                if   a == "pdf": self._switch_tab("picking"); self.cargar_pdf()
+                elif a == "cfg": self.abrir_configuracion()
+                else:            self._switch_tab(a)
+            tk.Button(acc_f, text=txt,
+                      font=("Segoe UI Semibold", 10),
+                      bg=color, fg="white",
+                      activebackground=C["accent2"], activeforeground="white",
+                      relief="flat", cursor="hand2", padx=18, pady=10, bd=0,
+                      command=_cmd).pack(side="left", padx=(0,10))
+
+        # ── Timestamp ──────────────────────────────────────────────────────
+        tk.Label(f, text=f"Actualizado a las {_dt.now().strftime('%H:%M:%S')}",
+                 font=("Segoe UI", 8), bg=C["bg_dark"],
+                 fg=C["text_lo"]).pack(anchor="e", padx=pad, pady=(0,20))
+
+    def _refresh_dashboard(self):
+        try:
+            self._build_dashboard_content()
+        except Exception:
+            pass
+
+    # =========================================================================
+    # COLUMNA 1: FASE 1 (COLECTA EN DEPÓSITO)
+    # =========================================================================
     def _build_fase1(self):
         p = self.col_fase1
 
@@ -3166,7 +3367,59 @@ class AsistenteDepositoApp:
 
         self._bind_scroll_recursivo(self.frame_fase1)
 
-    def _on_scroll_fase1(self, event):
+    def _animar_exito(self):
+        """Flash verde en el panel de control al escanear correctamente."""
+        self.col_control.config(bg=C["success"])
+        self.root.after(120, lambda: self.col_control.config(bg=C["success"]))
+        self.root.after(240, lambda: self.col_control.config(bg=C["panel"]))
+
+    def _animar_error(self):
+        """Flash rojo en el panel de control al escanear un SKU incorrecto."""
+        self.col_control.config(bg=C["danger"])
+        self.root.after(120, lambda: self.col_control.config(bg=C["danger"]))
+        self.root.after(240, lambda: self.col_control.config(bg=C["panel"]))
+
+    def _animar_checkmark(self, sku):
+        """Animacion del checkmark en la lista Fase 1 al colectar un SKU."""
+        if not hasattr(self,"fase1_items") or sku not in self.fase1_items:
+            return
+        item = self.fase1_items[sku]
+        chk  = item.get("checkbox")
+        cnt  = item.get("lbl_cnt")
+        if not chk or not chk.winfo_exists():
+            return
+
+        def _pulse(step=0):
+            if not chk.winfo_exists():
+                return
+            colores = [C["success"], "#FFFFFF", C["success"], C["success"]]
+            if step < len(colores):
+                chk.config(fg=colores[step])
+                if cnt and cnt.winfo_exists():
+                    cnt.config(fg=colores[step])
+                self.root.after(90, lambda: _pulse(step+1))
+
+        _pulse()
+
+    def _animar_lote_completo(self):
+        """Animacion al completar todo el lote — parpadeo del contador."""
+        def _toggle(n=0, activo=True):
+            if n >= 8:
+                self.lbl_contador.config(fg=C["success"])
+                return
+            color = C["success"] if activo else C["warning"]
+            self.lbl_contador.config(fg=color)
+            self.root.after(180, lambda: _toggle(n+1, not activo))
+        _toggle()
+
+    def _animar_pedido_completo(self):
+        """Flash verde completo al terminar un pedido en Fase 2."""
+        self.col_control.config(bg=C["success"])
+        self.lbl_num_caja.config(fg="#FFFFFF")
+        def _restaurar():
+            self.col_control.config(bg=C["panel"])
+            self.lbl_num_caja.config(fg=C["success"])
+        self.root.after(400, _restaurar)
         self.canvas_fase1.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _bind_scroll_recursivo(self, widget):
@@ -3301,8 +3554,7 @@ class AsistenteDepositoApp:
             self.lbl_resultado.config(
                 text=f"⚠  '{sku}' no está en ningún pedido.", fg=C["danger"])
             self.lbl_num_caja.config(text="⚠", fg=C["danger"])
-            self.col_control.config(bg=C["danger"])
-            self.root.after(200, lambda: self.col_control.config(bg=C["panel"]))
+            self._animar_error()
             return
 
         required = total_req[sku]
@@ -3327,14 +3579,15 @@ class AsistenteDepositoApp:
                 text=f"✅  '{sku}' completado ({collected}/{required})",
                 fg=C["success"])
             self.lbl_num_caja.config(text="✔", fg=C["success"])
-            self.col_control.config(bg=C["success"])
-            self.root.after(250, lambda: self.col_control.config(bg=C["panel"]))
+            self._animar_exito()
+            self._animar_checkmark(sku)
         else:
             self.lbl_resultado.config(
                 text=f"SKU '{sku}': {collected}/{required} unidades",
                 fg=C["text_hi"])
             self.lbl_num_caja.config(
                 text=f"{collected}/{required}", fg=C["accent"])
+            self._animar_exito()
 
         # Auto-transición si toda la colecta está completa
         todo_completo = all(
@@ -3344,6 +3597,7 @@ class AsistenteDepositoApp:
             self.lbl_resultado.config(
                 text="✅  ¡Colecta completa! Pasando a Fase 2...", fg=C["success"])
             self.lbl_num_caja.config(text="✔✔", fg=C["success"])
+            self._animar_lote_completo()
             self.root.after(1200, self._ejecutar_transicion_fase2)
 
     def _actualizar_checkmarks_fase1(self, sku, total_req=None):
@@ -3487,6 +3741,7 @@ class AsistenteDepositoApp:
         self.lbl_resultado.config(
             text="✅  ¡Completa! Imprimiendo...",
             fg=C["success"])
+        self._animar_pedido_completo()
         self.mostrar_vista_previa(pn)
         self.root.update_idletasks()
 

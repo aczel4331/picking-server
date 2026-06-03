@@ -62,7 +62,10 @@ _estado = {
     "total_skus": 0, "total_uds": 0, "ultima_actualizacion": "", "cargado": False,
 }
 _colectores          = {}
+# Cache de etiquetas PDF: { order_id: { pdf: bytes, ts: str, shipping_id: str } }
 _etiquetas_cache     = {}
+# Cola de pedidos pendientes de descarga de etiqueta
+_cola_etiquetas      = []   # [ order_id, ... ]
 _ultimo_refresh_pedidos = None
 _sku_db              = {}
 _SKU_DB_ENV_KEY      = "SKU_DB_JSON"
@@ -197,6 +200,128 @@ def _guardar_tokens():
     threading.Thread(target=_persistir_tokens_railway, daemon=True).start()
 
 
+
+
+# ── Descarga automatica de etiquetas ─────────────────────────────────────────
+
+def _descargar_etiqueta_bg(order_id, reintentos=3):
+    """
+    Descarga el PDF de una etiqueta en background y lo guarda en cache.
+    Se llama automaticamente al recibir una nueva venta via webhook ML.
+    """
+    import time as _time
+
+    for intento in range(reintentos):
+        try:
+            with _lock:
+                pedido = _pedidos_ml.get(order_id)
+
+            if not pedido:
+                print(f"[ETIQUETA] Pedido {order_id} no encontrado, esperando...")
+                _time.sleep(5)
+                continue
+
+            shipping_id = pedido.get("shipping_id","")
+            if not shipping_id:
+                print(f"[ETIQUETA] Pedido {order_id} sin shipping_id aun, esperando...")
+                _time.sleep(8)
+                continue
+
+            cuenta_id = pedido.get("_cuenta", "cuenta_0")
+            at = _cuentas.get(cuenta_id, {}).get("access_token","")
+            if not at:
+                print(f"[ETIQUETA] Sin token para {cuenta_id}")
+                return
+
+            # Verificar estado del envio
+            r_ship = requests.get(
+                f"{ML_API_URL}/shipments/{shipping_id}",
+                headers={"Authorization": f"Bearer {at}"},
+                timeout=10)
+
+            if r_ship.status_code != 200:
+                print(f"[ETIQUETA] No se pudo obtener shipment {shipping_id}: {r_ship.status_code}")
+                _time.sleep(10)
+                continue
+
+            ship_data  = r_ship.json()
+            estado     = ship_data.get("status","")
+            substatus  = ship_data.get("substatus","")
+            logistic   = ship_data.get("logistic_type","") or                          (ship_data.get("logistic") or {}).get("type","")
+
+            # Actualizar logistica y estado en el pedido
+            with _lock:
+                if order_id in _pedidos_ml:
+                    _pedidos_ml[order_id]["logistica"]    = logistic
+                    _pedidos_ml[order_id]["estado_envio"] = estado
+
+            # Solo intentar descargar si esta en estado correcto
+            if estado not in ("ready_to_ship", "handling", "pending", ""):
+                print(f"[ETIQUETA] Pedido {order_id} en estado '{estado}' — no disponible aun")
+                if estado in ("delivered", "shipped", "cancelled", "not_delivered"):
+                    return  # No reintentar
+                _time.sleep(15)
+                continue
+
+            # Intentar descargar el PDF
+            pdf_content = None
+            for rtype in ["pdf2", "pdf"]:
+                r = requests.get(
+                    f"{ML_API_URL}/shipment_labels",
+                    headers={"Authorization": f"Bearer {at}"},
+                    params={"shipment_ids": shipping_id, "response_type": rtype},
+                    timeout=15)
+                if r.status_code == 200 and len(r.content) > 500:
+                    pdf_content = r.content
+                    print(f"[ETIQUETA] ✅ PDF descargado para {order_id} ({len(pdf_content)} bytes)")
+                    break
+
+            if pdf_content:
+                with _lock:
+                    _etiquetas_cache[order_id] = {
+                        "pdf":         pdf_content,
+                        "shipping_id": shipping_id,
+                        "logistica":   logistic,
+                        "estado":      estado,
+                        "ts":          datetime.now().strftime("%d/%m %H:%M:%S"),
+                        "intentos":    intento + 1,
+                    }
+                # Remover de la cola
+                if order_id in _cola_etiquetas:
+                    _cola_etiquetas.remove(order_id)
+                return  # Exito
+
+            print(f"[ETIQUETA] Intento {intento+1}/{reintentos} fallido para {order_id} (estado: {estado})")
+            _time.sleep(20 * (intento + 1))  # Espera creciente
+
+        except Exception as e:
+            print(f"[ETIQUETA] Error en intento {intento+1} para {order_id}: {e}")
+            _time.sleep(10)
+
+    print(f"[ETIQUETA] ❌ No se pudo descargar etiqueta para {order_id} despues de {reintentos} intentos")
+
+
+def _encolar_descarga_etiqueta(order_id):
+    """Encola la descarga de una etiqueta en un thread separado."""
+    if order_id not in _etiquetas_cache and order_id not in _cola_etiquetas:
+        _cola_etiquetas.append(order_id)
+        threading.Thread(
+            target=_descargar_etiqueta_bg,
+            args=(order_id,),
+            daemon=True).start()
+        print(f"[ETIQUETA] Encolada descarga para {order_id}")
+
+
+def _descargar_etiquetas_lote(order_ids):
+    """Descarga etiquetas de multiples pedidos en paralelo (max 5 simultaneos)."""
+    from concurrent.futures import ThreadPoolExecutor
+    ids_sin_cache = [oid for oid in order_ids if oid not in _etiquetas_cache]
+    if not ids_sin_cache:
+        print(f"[ETIQUETA] Todas las etiquetas ya estan en cache")
+        return
+    print(f"[ETIQUETA] Descargando {len(ids_sin_cache)} etiquetas en paralelo...")
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        ex.map(_descargar_etiqueta_bg, ids_sin_cache)
 
 
 # ─── Helpers multi-cuenta ────────────────────────────────────────────────────
@@ -630,6 +755,15 @@ def _refresh_pedidos_worker_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None
                     p["impreso"] = _pedidos_ml[oid].get("impreso", False)
             _pedidos_ml.update(pedidos)
             _ultimo_refresh_pedidos = datetime.now()
+        # Descargar etiquetas de pedidos ready_to_ship que no esten en cache
+        ready = [oid for oid, p in pedidos.items()
+                 if p.get("estado_envio") == "ready_to_ship"
+                 and oid not in _etiquetas_cache]
+        if ready:
+            print(f"[ETIQUETA] Auto-descargando {len(ready)} etiquetas ready_to_ship...")
+            threading.Thread(
+                target=_descargar_etiquetas_lote,
+                args=(ready,), daemon=True).start()
     except Exception as e:
         print(f"Error refresh cuenta {cuenta_id}: {e}")
 
@@ -648,7 +782,47 @@ def _auto_refresh_loop():
             _refresh_pedidos_worker()
 
 
-threading.Thread(target=_auto_refresh_loop, daemon=True).start()
+def _cache_cleanup_loop():
+    """
+    Limpieza periodica del cache de etiquetas cada hora.
+    Borra PDFs que llevan mas de 24 horas en cache.
+    Esto da tiempo suficiente para el picking/packing del dia
+    sin ocupar memoria indefinidamente.
+    """
+    while True:
+        time.sleep(3600)  # Revisar cada 1 hora
+        try:
+            ahora    = datetime.now()
+            borrados = 0
+            kb_total = 0
+            with _lock:
+                for oid in list(_etiquetas_cache.keys()):
+                    data = _etiquetas_cache[oid]
+                    if not data.get("pdf"):
+                        continue
+                    try:
+                        ts_str = data.get("ts","")
+                        if ts_str:
+                            ts     = datetime.strptime(ts_str, "%d/%m %H:%M:%S")
+                            ts     = ts.replace(year=ahora.year)
+                            horas  = (ahora - ts).total_seconds() / 3600
+                            if horas >= 24:
+                                kb = round(len(data["pdf"]) / 1024, 1)
+                                kb_total += kb
+                                data["pdf"]      = None
+                                data["expirado"] = True
+                                borrados        += 1
+                                print(f"[CACHE] Expirado: {oid} ({kb} KB, {horas:.1f}h)")
+                    except Exception:
+                        pass
+            if borrados:
+                print(f"[CACHE] Limpieza 24h: {borrados} PDFs eliminados ({kb_total:.1f} KB)")
+        except Exception as e:
+            print(f"[CACHE] Error en limpieza: {e}")
+
+
+threading.Thread(target=_auto_refresh_loop,   daemon=True).start()
+threading.Thread(target=_cache_cleanup_loop,  daemon=True).start()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -895,10 +1069,28 @@ def api_refresh():
 def api_etiqueta(order_id):
     """Proxy de etiqueta ML - sirve PDF directo sin marcar como impresa en ML."""
 
-    # Buscar pedido en memoria
+    # ── 1. Servir desde cache si ya fue descargada via webhook ────────────────
     with _lock:
-        snap = dict(_pedidos_ml)
+        cached = _etiquetas_cache.get(order_id)
+        snap   = dict(_pedidos_ml)
 
+    if cached and cached.get("pdf"):
+        print(f"[ETIQUETA] Sirviendo desde cache para {order_id}")
+        pdf_bytes = cached["pdf"]
+        shid      = cached.get("shipping_id","label")
+        ts        = cached.get("ts","")
+        return Response(
+            pdf_bytes,
+            status=200,
+            mimetype="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename=etiqueta_{shid}.pdf",
+                "Content-Type":        "application/pdf",
+                "X-Cache":             "HIT",
+                "X-Cached-At":         ts,
+            })
+
+    # ── 2. Buscar pedido en memoria ───────────────────────────────────────────
     pedido   = snap.get(order_id)
     real_oid = order_id
     if not pedido and len(order_id) >= 8:
@@ -1049,14 +1241,286 @@ def api_etiqueta_descargar(order_id):
     from flask import redirect as r2
     return r2(url)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WEBHOOK MERCADOLIBRE — Notificaciones en tiempo real
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/webhook/ml", methods=["POST", "GET"])
+def webhook_ml():
+    """
+    Recibe notificaciones de MercadoLibre cuando hay una nueva venta.
+    ML hace POST aqui con el topic y el resource_id.
+    Railway URL: https://picking-server-production.up.railway.app/webhook/ml
+
+    Configurar en ML Developers > Notificaciones:
+      URL: https://picking-server-production.up.railway.app/webhook/ml
+      Topicos: orders_v2, shipments
+    """
+    # ML hace GET para verificar la URL al configurar
+    if request.method == "GET":
+        return jsonify({"ok": True, "msg": "Webhook ML activo"}), 200
+
+    try:
+        data    = request.get_json(silent=True) or {}
+        topic   = data.get("topic", data.get("type", ""))
+        res_id  = data.get("resource", "")
+        user_id = str(data.get("user_id", ""))
+
+        print(f"[WEBHOOK] Recibido: topic={topic} resource={res_id} user={user_id}")
+
+        # Responder 200 inmediatamente (ML requiere respuesta rapida)
+        # El procesamiento se hace en background
+        if topic in ("orders_v2", "orders"):
+            # Extraer order_id del resource (formato: /orders/2000012345)
+            order_id = res_id.strip("/").split("/")[-1]
+            threading.Thread(
+                target=_procesar_notificacion_orden,
+                args=(order_id, user_id),
+                daemon=True).start()
+
+        elif topic == "shipments":
+            # Extraer shipment_id y buscar el order relacionado
+            shipment_id = res_id.strip("/").split("/")[-1]
+            threading.Thread(
+                target=_procesar_notificacion_shipment,
+                args=(shipment_id, user_id),
+                daemon=True).start()
+
+        return jsonify({"ok": True}), 200
+
+    except Exception as e:
+        print(f"[WEBHOOK] Error: {e}")
+        return jsonify({"ok": True}), 200  # Siempre 200 para que ML no reintente
+
+
+def _procesar_notificacion_orden(order_id, user_id):
+    """
+    Procesa una notificacion de orden nueva de ML.
+    1. Busca la cuenta que corresponde al user_id
+    2. Trae los datos de la orden
+    3. La agrega a _pedidos_ml
+    4. Descarga la etiqueta automaticamente
+    """
+    import time as _time
+    _time.sleep(2)  # Esperar que ML procese la orden completamente
+
+    # Encontrar la cuenta que corresponde a este user_id
+    cuenta_id = None
+    for cid, tok in _cuentas.items():
+        if str(tok.get("user_id","")) == str(user_id):
+            cuenta_id = cid
+            break
+
+    if not cuenta_id and _cuentas:
+        # Fallback: usar la primera cuenta disponible
+        cuenta_id = list(_cuentas.keys())[0]
+
+    if not cuenta_id:
+        print(f"[WEBHOOK] No hay cuentas conectadas para user_id={user_id}")
+        return
+
+    at = _cuentas.get(cuenta_id, {}).get("access_token","")
+    if not at:
+        print(f"[WEBHOOK] Sin token para cuenta {cuenta_id}")
+        return
+
+    try:
+        # Traer datos de la orden
+        r = requests.get(
+            f"{ML_API_URL}/orders/{order_id}",
+            headers={"Authorization": f"Bearer {at}"},
+            timeout=10)
+
+        if r.status_code != 200:
+            print(f"[WEBHOOK] Error trayendo orden {order_id}: {r.status_code}")
+            return
+
+        order = r.json()
+
+        # Solo procesar ordenes pagadas
+        if order.get("status") not in ("paid",):
+            print(f"[WEBHOOK] Orden {order_id} en estado '{order.get('status')}' — ignorada")
+            return
+
+        # Construir el pedido
+        items = []
+        for it in order.get("order_items", []):
+            item_data = it.get("item", {})
+            var_attrs = item_data.get("variation_attributes", [])
+            sku = ""
+            for attr in var_attrs:
+                if attr.get("name","").lower() in ("sku","seller_sku"):
+                    sku = str(attr.get("value_name","")).strip(); break
+            if not sku:
+                sku = str(item_data.get("seller_sku") or
+                          item_data.get("seller_custom_field") or "").strip()
+            sku = sku.upper() if sku else ""
+            items.append({
+                "item_id":    item_data.get("id",""),
+                "titulo":     item_data.get("title",""),
+                "sku":        sku,
+                "cantidad":   it.get("quantity", 1),
+                "unit_price": it.get("unit_price", 0),
+            })
+
+        ship     = order.get("shipping") or {}
+        ship_id  = str(ship.get("id","")) if ship.get("id") else ""
+        nick     = _cuentas.get(cuenta_id, {}).get("nickname", cuenta_id)
+
+        pedido = {
+            "order_id":     str(order_id),
+            "pack_id":      str(order.get("pack_id","")) if order.get("pack_id") else "",
+            "fecha":        order.get("date_created","")[:10],
+            "fecha_cierre": order.get("date_closed","")[:10],
+            "comprador":    (order.get("buyer") or {}).get("nickname",""),
+            "total":        order.get("total_amount", 0),
+            "moneda":       order.get("currency_id","UYU"),
+            "items":        items,
+            "shipping_id":  ship_id,
+            "logistica":    "",
+            "estado_envio": "",
+            "impreso":      False,
+            "tags":         order.get("tags", []),
+            "_cuenta":      cuenta_id,
+            "_nickname":    nick,
+            "_via_webhook": True,
+        }
+
+        with _lock:
+            _pedidos_ml[str(order_id)] = pedido
+
+        print(f"[WEBHOOK] ✅ Orden {order_id} agregada ({nick}) — {len(items)} items")
+
+        # Descargar etiqueta automaticamente si hay shipping_id
+        if ship_id:
+            _time.sleep(3)  # Esperar que ML genere la etiqueta
+            _encolar_descarga_etiqueta(str(order_id))
+        else:
+            print(f"[WEBHOOK] Orden {order_id} sin shipping_id aun")
+
+    except Exception as e:
+        print(f"[WEBHOOK] Error procesando orden {order_id}: {e}")
+
+
+def _procesar_notificacion_shipment(shipment_id, user_id):
+    """
+    Procesa una notificacion de cambio de estado de envio.
+    Si pasa a ready_to_ship, descarga la etiqueta.
+    """
+    import time as _time
+
+    # Buscar la cuenta
+    cuenta_id = None
+    for cid, tok in _cuentas.items():
+        if str(tok.get("user_id","")) == str(user_id):
+            cuenta_id = cid
+            break
+    if not cuenta_id and _cuentas:
+        cuenta_id = list(_cuentas.keys())[0]
+    if not cuenta_id:
+        return
+
+    at = _cuentas.get(cuenta_id, {}).get("access_token","")
+    if not at:
+        return
+
+    try:
+        r = requests.get(
+            f"{ML_API_URL}/shipments/{shipment_id}",
+            headers={"Authorization": f"Bearer {at}"},
+            timeout=10)
+
+        if r.status_code != 200:
+            return
+
+        ship_data  = r.json()
+        estado     = ship_data.get("status","")
+        order_id   = str(ship_data.get("order_id",""))
+        logistic   = ship_data.get("logistic_type","") or                      (ship_data.get("logistic") or {}).get("type","")
+
+        print(f"[WEBHOOK] Shipment {shipment_id} → estado={estado} order={order_id}")
+
+        # Actualizar estado en el pedido si existe
+        if order_id and order_id in _pedidos_ml:
+            with _lock:
+                _pedidos_ml[order_id]["estado_envio"] = estado
+                _pedidos_ml[order_id]["logistica"]    = logistic
+                _pedidos_ml[order_id]["shipping_id"]  = str(shipment_id)
+
+        # Si esta ready_to_ship → descargar etiqueta inmediatamente
+        if estado == "ready_to_ship" and order_id:
+            print(f"[WEBHOOK] Pedido {order_id} ready_to_ship — descargando etiqueta...")
+            _time.sleep(2)
+            _encolar_descarga_etiqueta(order_id)
+
+    except Exception as e:
+        print(f"[WEBHOOK] Error procesando shipment {shipment_id}: {e}")
+
+
+@app.route("/api/etiquetas_cache")
+def api_etiquetas_cache():
+    """Estado del cache de etiquetas — muestra memoria usada y liberada."""
+    with _lock:
+        resultado   = []
+        total_kb    = 0
+        pdfs_activos = 0
+        for oid, data in _etiquetas_cache.items():
+            ped  = _pedidos_ml.get(oid, {})
+            kb   = round(len(data.get("pdf") or b"") / 1024, 1)
+            total_kb += kb
+            tiene_pdf = data.get("pdf") is not None
+            if tiene_pdf:
+                pdfs_activos += 1
+            resultado.append({
+                "order_id":    oid,
+                "comprador":   ped.get("comprador",""),
+                "shipping_id": data.get("shipping_id",""),
+                "logistica":   data.get("logistica",""),
+                "estado":      data.get("estado",""),
+                "tiene_pdf":   tiene_pdf,
+                "tamanio_kb":  kb,
+                "guardado_en": data.get("ts",""),
+                "impreso":     data.get("impreso", False),
+                "impreso_en":  data.get("impreso_ts",""),
+            })
+    return jsonify({
+        "ok":              True,
+        "total_registros": len(_etiquetas_cache),
+        "pdfs_en_memoria": pdfs_activos,
+        "en_cola_descarga": len(_cola_etiquetas),
+        "memoria_total_kb": round(total_kb, 1),
+        "politica":        "PDF disponible por 24 horas — se borra al cumplir 24h o al marcar impreso",
+        "etiquetas":       resultado,
+    })
+
 @app.route("/api/pedidos/marcar_impreso/<order_id>", methods=["POST"])
 @requiere_auth
 def marcar_impreso(order_id):
-    """Marca el pedido como procesado SOLO en nuestro sistema interno, nunca en ML."""
+    """
+    Marca el pedido como impreso en nuestro sistema.
+    Borra el PDF del cache para liberar memoria.
+    """
     with _lock:
         if order_id in _pedidos_ml:
             _pedidos_ml[order_id]["impreso"] = True
-    return jsonify({"ok": True, "nota": "Marcado solo localmente, sin afectar ML"})
+
+        # Borrar PDF del cache para liberar memoria
+        borrado_kb = 0
+        if order_id in _etiquetas_cache:
+            pdf_size = len(_etiquetas_cache[order_id].get("pdf", b""))
+            borrado_kb = round(pdf_size / 1024, 1)
+            # Mantener metadata pero borrar el PDF binario
+            _etiquetas_cache[order_id]["pdf"]      = None
+            _etiquetas_cache[order_id]["impreso"]  = True
+            _etiquetas_cache[order_id]["impreso_ts"] = datetime.now().strftime("%d/%m %H:%M:%S")
+
+    print(f"[CACHE] PDF borrado para {order_id} ({borrado_kb} KB liberados)")
+    return jsonify({
+        "ok":          True,
+        "liberado_kb": borrado_kb,
+        "nota":        "PDF borrado del cache. El pedido fue marcado como impreso."
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2586,6 +3050,29 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 #flash.ok{background:rgba(16,185,129,.25)}
 #flash.err{background:rgba(239,68,68,.25)}
 
+/* CAMARA SCANNER */
+#cam-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:300;
+  display:none;flex-direction:column;align-items:center;justify-content:center}
+#cam-overlay.open{display:flex}
+#cam-wrap{position:relative;width:min(92vw,400px);border-radius:16px;overflow:hidden;
+  background:#000;border:2px solid var(--accent)}
+#cam-video{width:100%;display:block;max-height:65vh;object-fit:cover}
+#cam-guide{position:absolute;inset:0;pointer-events:none;display:flex;
+  align-items:center;justify-content:center}
+#cam-guide svg{width:72%;max-width:260px;opacity:.75}
+#cam-hint{margin-top:14px;font-size:13px;color:rgba(255,255,255,.7);text-align:center}
+#cam-result{margin-top:10px;font-size:15px;font-weight:700;color:var(--success);
+  min-height:22px;text-align:center}
+#btn-close-cam{margin-top:16px;padding:10px 32px;border-radius:30px;border:none;
+  background:var(--danger);color:#fff;font-size:15px;font-weight:700;cursor:pointer}
+#btn-cam{position:fixed;bottom:88px;right:16px;background:#7C3AED;color:#fff;border:none;
+  border-radius:50%;width:52px;height:52px;font-size:22px;cursor:pointer;
+  box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
+  justify-content:center;z-index:50;transition:transform .15s}
+#btn-cam:active{transform:scale(.9)}
+#cam-torch{margin-top:10px;padding:8px 20px;border-radius:20px;border:1px solid rgba(255,255,255,.3);
+  background:transparent;color:#fff;font-size:13px;cursor:pointer;display:none}
+
 /* FAB */
 .fab{position:fixed;bottom:20px;right:16px;background:var(--accent);color:#fff;border:none;
   border-radius:50%;width:56px;height:56px;font-size:24px;cursor:pointer;
@@ -2651,6 +3138,30 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
             title="Abrir/cerrar teclado">⌨</button>
   </div>
 </div>
+
+<!-- MODAL CAMARA -->
+<div id="cam-overlay">
+  <div id="cam-wrap">
+    <video id="cam-video" autoplay playsinline muted></video>
+    <div id="cam-guide">
+      <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1" y="1" width="198" height="198" rx="8" stroke="white" stroke-width="1.5" stroke-dasharray="6 4"/>
+        <path d="M1 40 L1 1 L40 1" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+        <path d="M160 1 L199 1 L199 40" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+        <path d="M1 160 L1 199 L40 199" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+        <path d="M160 199 L199 199 L199 160" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+        <line x1="1" y1="100" x2="199" y2="100" stroke="#3B82F6" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.6"/>
+      </svg>
+    </div>
+  </div>
+  <div id="cam-hint">Apuntá al código de barras</div>
+  <div id="cam-result"></div>
+  <button id="cam-torch" onclick="toggleTorch()">🔦 Linterna</button>
+  <button id="btn-close-cam" onclick="cerrarCamara()">✕ Cerrar</button>
+</div>
+
+<!-- Botón cámara flotante -->
+<button id="btn-cam" onclick="abrirCamara()" title="Escanear con cámara">📷</button>
 
 <!-- LISTA -->
 <div class="content" id="content">
@@ -2849,8 +3360,125 @@ function vib(p) { if (navigator.vibrate) navigator.vibrate(p); }
 
 // ── INIT ───────────────────────────────────────────────────────────────────
 let _tecladoVisible = false;
+let _camaraActiva   = false;
+let _zxingReader    = null;
+let _torchTrack     = null;
+let _torchOn        = false;
 
-function confirmarManual() {
+// ── CÁMARA ESCÁNER ─────────────────────────────────────────────────────────
+
+async function abrirCamara() {
+  const overlay = document.getElementById('cam-overlay');
+  overlay.classList.add('open');
+  _camaraActiva = true;
+
+  // Cargar ZXing si no está cargado
+  if (!window.ZXing) {
+    document.getElementById('cam-hint').textContent = 'Cargando escáner…';
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js';
+      s.onload = res;
+      s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  try {
+    const video  = document.getElementById('cam-video');
+    const hint   = document.getElementById('cam-hint');
+    const result = document.getElementById('cam-result');
+    const torch  = document.getElementById('cam-torch');
+
+    result.textContent = '';
+    hint.textContent   = 'Iniciando cámara…';
+
+    // Pedir cámara trasera
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: {ideal:1280}, height: {ideal:720} }
+    });
+    video.srcObject = stream;
+
+    // Detectar si la cámara soporta linterna
+    const [track] = stream.getVideoTracks();
+    _torchTrack = track;
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.torch) {
+      torch.style.display = 'inline-block';
+    }
+
+    hint.textContent = 'Apuntá el código de barras al recuadro azul';
+
+    // Iniciar ZXing
+    _zxingReader = new ZXing.BrowserMultiFormatReader();
+    _zxingReader.decodeFromVideoElement(video, (res, err) => {
+      if (!_camaraActiva) return;
+      if (res) {
+        const codigo = res.getText();
+        result.textContent = '✅ ' + codigo;
+        // Vibrar si disponible
+        if (navigator.vibrate) navigator.vibrate([60, 30, 60]);
+        // Pequeño delay para que el usuario vea el resultado
+        setTimeout(() => {
+          cerrarCamara();
+          // Procesar el código escaneado
+          scan(codigo);
+        }, 600);
+      }
+    });
+
+  } catch (e) {
+    document.getElementById('cam-hint').textContent =
+      e.name === 'NotAllowedError'
+        ? '❌ Permiso de cámara denegado. Habilitalo en la configuración del navegador.'
+        : '❌ No se pudo acceder a la cámara: ' + e.message;
+  }
+}
+
+function cerrarCamara() {
+  _camaraActiva = false;
+  const video = document.getElementById('cam-video');
+
+  // Detener ZXing
+  if (_zxingReader) {
+    try { _zxingReader.reset(); } catch(e) {}
+    _zxingReader = null;
+  }
+
+  // Apagar linterna si estaba encendida
+  if (_torchTrack && _torchOn) {
+    try { _torchTrack.applyConstraints({advanced:[{torch:false}]}); } catch(e) {}
+    _torchOn = false;
+  }
+
+  // Detener stream de video
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+  }
+
+  document.getElementById('cam-overlay').classList.remove('open');
+  document.getElementById('cam-result').textContent = '';
+  document.getElementById('cam-torch').style.display = 'none';
+
+  // Restaurar foco al input
+  const inp = $('sku');
+  if (inp) setTimeout(() => inp.focus(), 100);
+}
+
+function toggleTorch() {
+  if (!_torchTrack) return;
+  _torchOn = !_torchOn;
+  try {
+    _torchTrack.applyConstraints({advanced: [{torch: _torchOn}]});
+    document.getElementById('cam-torch').textContent =
+      _torchOn ? '🔦 Linterna ON' : '🔦 Linterna';
+  } catch(e) {
+    console.warn('Linterna no disponible:', e);
+  }
+}
+
+
   const inp = $('sku');
   const v   = inp.value.trim();
   if (v) { scan(v); inp.value = ''; inp.focus(); }
@@ -2911,6 +3539,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   inp.focus();
+
+  // Mostrar botón cámara solo en dispositivos táctiles
+  const btnCam = document.getElementById('btn-cam');
+  if (btnCam) {
+    const esMovil = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+    btnCam.style.display = esMovil ? 'flex' : 'none';
+  }
 
   $('fab').addEventListener('click', () => {
     $('fab').classList.add('spin');
