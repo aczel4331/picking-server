@@ -435,30 +435,6 @@ def _token_valido():
     return bool(_tokens.get("access_token"))
 
 
-def _renovar_token():
-    """Renueva el access_token usando el refresh_token."""
-    try:
-        payload = {
-            "grant_type":    "refresh_token",
-            "client_id":     ML_APP_ID,
-            "client_secret": ML_SECRET_KEY,
-            "refresh_token": _tokens.get("refresh_token", ""),
-        }
-        # Intentar con endpoint global primero (más confiable)
-        r = requests.post("https://api.mercadolibre.com/oauth/token",
-                          data=payload, timeout=10)
-        if r.status_code != 200:
-            r = requests.post(f"{ML_AUTH_URL}/oauth/token",
-                              data=payload, timeout=10)
-        if r.status_code == 200:
-            d = r.json()
-            _tokens["access_token"]  = d["access_token"]
-            _tokens["refresh_token"] = d.get("refresh_token", _tokens["refresh_token"])
-            _tokens["expires_at"]    = datetime.now() + timedelta(seconds=d.get("expires_in", 21600))
-    except Exception:
-        pass
-
-
 def _ml_get(path, params=None):
     """GET autenticado a la API de ML."""
     headers = {"Authorization": f"Bearer {_tokens.get('access_token', '')}"}
@@ -905,9 +881,16 @@ def auth_callback():
             f"Error de autorizacion: {error or 'sin codigo'}",
             f"Redirect URI: <code>{ML_REDIRECT}</code>")
 
-    entry      = _pkce_store.pop(state, None) or {}
-    verifier   = entry.get("verifier") if isinstance(entry, dict) else entry
-    cuenta_id  = entry.get("cuenta_id", "cuenta_0") if isinstance(entry, dict) else "cuenta_0"
+    entry     = _pkce_store.pop(state, None) or {}
+    verifier  = entry.get("verifier") if isinstance(entry, dict) else entry
+    cuenta_id = entry.get("cuenta_id", "cuenta_0") if isinstance(entry, dict) else "cuenta_0"
+
+    # Si el state no existe, el servidor pudo haberse reiniciado entre el login y callback.
+    # Intentar igual sin PKCE (el code sigue siendo válido).
+    if not entry:
+        print(f"[AUTH] State '{state}' no encontrado en pkce_store — posible reinicio del servidor")
+        verifier  = None
+        cuenta_id = "cuenta_0"
 
     payload = {
         "grant_type":    "authorization_code",
@@ -2078,8 +2061,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
         <button class="btn btn-ghost fecha-rapida" data-dias="14"
                 onclick="setFechaRapida(14,this)">14 días</button>
         <button class="btn btn-ghost fecha-rapida" data-dias="30"
-                onclick="setFechaRapida(30,this)">30 días</button>
-      </div>
+                onclick="setFechaRapida(30,this)">30 días</button>      </div>
       <!-- Rango personalizado -->
       <div style="display:flex;align-items:center;gap:6px">
         <span style="font-size:11px;color:var(--lo)">Desde</span>
@@ -2105,6 +2087,8 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
              oninput="filtrarPedidos()">
       <span class="badge-count" id="badge-pedidos">0</span>
       <div class="spacer"></div>
+      <!-- Resumen impresos vs pendientes -->
+      <span id="resumen-pedidos" style="font-size:12px;margin-right:12px"></span>
       <button class="btn btn-ghost" onclick="refreshPedidos()" id="btn-refresh">
         🔄 Actualizar
       </button>
@@ -2112,20 +2096,43 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
         ▶ Generar Lote de Picking
       </button>
     </div>
+    <!-- Sub-tabs tipo logistica + filtro impresos -->
+    <div style="display:flex;align-items:center;gap:4px;padding:6px 14px;
+                background:var(--bg);border-bottom:1px solid var(--border);flex-wrap:wrap">
+      <button class="btn btn-ghost tipo-tab active-tipo"
+              onclick="setTipoFiltro('todos',this)"
+              style="background:var(--accent);color:#fff;padding:4px 14px;font-size:12px">
+        Todos
+      </button>
+      <button class="btn btn-ghost tipo-tab" onclick="setTipoFiltro('flex',this)"
+              style="padding:4px 14px;font-size:12px">⚡ Flex</button>
+      <button class="btn btn-ghost tipo-tab" onclick="setTipoFiltro('me2',this)"
+              style="padding:4px 14px;font-size:12px">🚚 Mercado Envíos</button>
+      <button class="btn btn-ghost tipo-tab" onclick="setTipoFiltro('me1',this)"
+              style="padding:4px 14px;font-size:12px">📦 ME1</button>
+      <div style="flex:1;min-width:12px"></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;
+                    color:var(--mid);cursor:pointer;white-space:nowrap">
+        <input type="checkbox" id="chk-solo-pendientes"
+               onchange="filtrarPedidos()"
+               style="accent-color:var(--warning)">
+        ⏳ Solo pendientes
+      </label>
+    </div>
     <div class="tabla-wrap">
       <table class="tabla" id="tabla-pedidos">
         <thead>
           <tr>
+            <th>Tipo / Estado</th>
             <th>Pedido</th>
-            <th>Fecha</th>
             <th>Comprador</th>
-            <th style="width:40%">SKU · Nombre del Producto</th>
+            <th style="width:38%">SKU · Nombre del Producto</th>
             <th>Estado Envío</th>
             <th>Acciones</th>
           </tr>
         </thead>
         <tbody id="tbody-pedidos">
-          <tr><td colspan="7" class="empty">
+          <tr><td colspan="6" class="empty">
             <div class="empty-i">⏳</div>
             <div>Cargando pedidos…</div>
           </td></tr>
@@ -2437,54 +2444,150 @@ document.addEventListener('DOMContentLoaded', () => {
   actualizarLblPeriodo();
 });
 
-function renderPedidos(filtro='') {
-  const tbody = document.getElementById('tbody-pedidos');
-  const peds  = Object.values(PEDIDOS).filter(p => {
-    if (!filtro) return true;
-    const q = filtro.toLowerCase();
-    return p.comprador.toLowerCase().includes(q) ||
-           p.order_id.includes(q) ||
-           p.items.some(it => it.titulo.toLowerCase().includes(q) ||
-                               it.sku.toLowerCase().includes(q));
-  });
+function tipoLogistica(p) {
+  const log  = (p.logistica || '').toLowerCase();
+  const tags = (p.tags || []).map(t => t.toLowerCase()).join(' ');
+  if (log === 'self_service' || tags.includes('self_service')) return 'flex';
+  if (['cross_docking','drop_off','xd_drop_off','fulfillment'].includes(log)) return 'me2';
+  if (log === 'default' || tags.includes('me1')) return 'me1';
+  // Si tiene shipping_id y estado_envio pero logistica vacia -> asumir me2
+  if (p.shipping_id && p.estado_envio) return 'me2';
+  return 'desconocido';
+}
 
-  document.getElementById('badge-pedidos').textContent = peds.length;
+function renderPedidos(filtro='') {
+  const tbody  = document.getElementById('tbody-pedidos');
+  const tipoFiltro = window._tipoFiltroActivo || 'todos';
+  const cuentaFiltro = window._cuentaFiltroActiva || 'todas';
+
+  let peds = Object.values(PEDIDOS);
+
+  // Filtrar por cuenta
+  if (cuentaFiltro !== 'todas')
+    peds = peds.filter(p => p._cuenta === cuentaFiltro);
+
+  // Filtrar por tipo logistica
+  if (tipoFiltro !== 'todos')
+    peds = peds.filter(p => tipoLogistica(p) === tipoFiltro);
+
+  // Filtrar solo pendientes si está marcado
+  const soloPend = document.getElementById('chk-solo-pendientes');
+  if (soloPend && soloPend.checked)
+    peds = peds.filter(p => !p.impreso);
+    const q = filtro.toLowerCase();
+    peds = peds.filter(p =>
+      p.comprador.toLowerCase().includes(q) ||
+      p.order_id.includes(q) ||
+      p.items.some(it => it.titulo.toLowerCase().includes(q) ||
+                         it.sku.toLowerCase().includes(q)));
+  }
+
+  // Contar impresos vs pendientes
+  const total     = peds.length;
+  const impresos  = peds.filter(p => p.impreso).length;
+  const pendientes= total - impresos;
+
+  document.getElementById('badge-pedidos').textContent = total;
+
+  // Actualizar resumen
+  const resEl = document.getElementById('resumen-pedidos');
+  if (resEl) {
+    resEl.innerHTML =
+      `<span style="color:var(--success)">✅ ${impresos} impresos</span>` +
+      `<span style="margin:0 8px;color:var(--lo)">·</span>` +
+      `<span style="color:var(--warning)">⏳ ${pendientes} pendientes</span>` +
+      `<span style="margin:0 8px;color:var(--lo)">·</span>` +
+      `<span style="color:var(--mid)">${total} total</span>`;
+  }
 
   if (!peds.length) {
-    tbody.innerHTML = `<tr><td colspan="7"><div class="empty">
-      <div class="empty-i">📋</div><div>Sin pedidos${filtro?' que coincidan':''}</div>
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty">
+      <div class="empty-i">📋</div>
+      <div>Sin pedidos${filtro?' que coincidan':' en este filtro'}</div>
     </div></td></tr>`;
     return;
   }
 
+  // Ordenar: pendientes primero, luego impresos
+  peds.sort((a,b) => {
+    if (a.impreso !== b.impreso) return a.impreso ? 1 : -1;
+    return b.order_id.localeCompare(a.order_id);
+  });
+
   tbody.innerHTML = peds.map(p => {
-    // SKU + nombre del producto — mostrar todos los items del pedido
+    const impreso = p.impreso;
+    const tipo    = tipoLogistica(p);
+
+    // Chip de tipo con color
+    const TIPO_CFG = {
+      flex:        {color:'#7C3AED', label:'⚡ FLEX'},
+      me2:         {color:'#2563EB', label:'🚚 ME2'},
+      me1:         {color:'#0891B2', label:'📦 ME1'},
+      desconocido: {color:'#475569', label:'—'},
+    };
+    const tc = TIPO_CFG[tipo] || TIPO_CFG.desconocido;
+    const tipoChip = `<span style="background:${tc.color};color:#fff;padding:2px 8px;
+      border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">${tc.label}</span>`;
+
+    // SKUs
     const skus = p.items.map(it => {
-      const sku  = it.sku  ? `<span class="sku-chip">${it.sku}</span>` : '';
-      const nom  = it.titulo ? `<span style="color:var(--hi)">${it.titulo.substring(0,32)}</span>` : '';
-      const qty  = `<span style="color:var(--accent);font-size:11px"> ×${it.cantidad}</span>`;
-      return `<div style="margin-bottom:3px">${sku} ${nom}${qty}</div>`;
+      const sku = it.sku ? `<span class="sku-chip">${it.sku}</span>` : '';
+      const nom = it.titulo ? `<span style="color:${impreso?'var(--mid)':'var(--hi)'}">${it.titulo.substring(0,28)}</span>` : '';
+      const qty = `<span style="color:var(--accent);font-size:11px"> ×${it.cantidad}</span>`;
+      return `<div style="margin-bottom:2px">${sku} ${nom}${qty}</div>`;
     }).join('');
 
-    const envChip = p.estado_envio
-      ? `<span class="estado-chip estado-ready">${p.estado_envio}</span>` : '—';
+    // Estado envio con color
+    const est = p.estado_envio || '';
+    const estColor = est === 'ready_to_ship' ? 'var(--success)'
+                   : est === 'delivered'     ? 'var(--mid)'
+                   : est                     ? 'var(--warning)' : 'var(--lo)';
+    const estChip = est
+      ? `<span style="color:${estColor};font-size:11px;font-weight:600">${est}</span>`
+      : '<span style="color:var(--lo)">—</span>';
 
-    // Botón etiqueta — siempre visible, con aviso si no tiene shipping_id
-    const btnEtiq = `<button class="btn btn-ml" style="font-size:11px;padding:4px 10px"
-      onclick="verEtiqueta('${p.order_id}')">🏷️ Etiqueta</button>`;
+    // Botón etiqueta — diferente según impreso
+    const btnEtiq = impreso
+      ? `<button class="btn" style="font-size:11px;padding:4px 10px;
+           background:var(--card);color:var(--mid);border:1px solid var(--border)"
+           onclick="verEtiqueta('${p.order_id}')">🔁 Reimprimir</button>`
+      : `<button class="btn btn-ml" style="font-size:11px;padding:4px 10px"
+           onclick="verEtiqueta('${p.order_id}')">🏷️ Etiqueta</button>`;
 
-    return `<tr class="${p.impreso?'impreso':''}">
-      <td><b style="color:var(--accent)">#${p.order_id}</b></td>
-      <td style="color:var(--mid);font-size:12px">${p.fecha}</td>
+    // Indicador impreso
+    const estadoRow = impreso
+      ? `<span style="color:var(--success);font-size:10px;font-weight:700">✅ IMPRESO</span>`
+      : `<span style="color:var(--warning);font-size:10px;font-weight:700">⏳ PENDIENTE</span>`;
+
+    const rowBg = impreso ? 'opacity:.55;' : '';
+
+    return `<tr style="${rowBg}">
+      <td>${tipoChip}<br><small style="color:var(--lo);font-size:10px">${estadoRow}</small></td>
+      <td><b style="color:${impreso?'var(--mid)':'var(--accent)'}">#${p.order_id}</b><br>
+          <small style="color:var(--lo)">${p.fecha}</small></td>
       <td style="font-weight:600">${p.comprador}</td>
       <td>${skus}</td>
-      <td>${envChip}</td>
+      <td>${estChip}</td>
       <td style="white-space:nowrap">${btnEtiq}</td>
     </tr>`;
   }).join('');
 }
 
 function filtrarPedidos() {
+  renderPedidos(document.getElementById('search-pedidos').value);
+}
+
+function setTipoFiltro(tipo, btn) {
+  window._tipoFiltroActivo = tipo;
+  // Resaltar botón activo
+  document.querySelectorAll('.tipo-tab').forEach(b => {
+    b.style.background = '';
+    b.style.color      = 'var(--mid)';
+  });
+  if (btn) {
+    btn.style.background = 'var(--accent)';
+    btn.style.color      = '#fff';
+  }
   renderPedidos(document.getElementById('search-pedidos').value);
 }
 
