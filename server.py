@@ -1679,44 +1679,43 @@ def api_token_status():
 
 
 
+@app.route("/api/debug_logistica")
 def debug_logistica():
-    """Muestra los valores de logistica de los primeros 20 pedidos para diagnosticar."""
-    sample = []
-    for oid, p in list(_pedidos_ml.items())[:20]:
-        sample.append({
-            "order_id":    oid,
-            "shipping_id": p.get("shipping_id",""),
-            "logistica":   p.get("logistica","(vacio)"),
-            "estado_envio": p.get("estado_envio",""),
-            "tags":        p.get("tags",[]),
-        })
-    tipos = {}
-    for p in _pedidos_ml.values():
-        log = p.get("logistica","(vacio)") or "(vacio)"
-        tipos[log] = tipos.get(log, 0) + 1
+    """Muestra distribucion de tipos de logistica y ejemplos reales."""
+    with _lock:
+        snap = dict(_pedidos_ml)
+
+    # Contar por tipo calculado
+    conteo_tipo = {}
+    conteo_log  = {}
+    ejemplos    = {}
+
+    for oid, p in list(snap.items())[:100]:
+        log  = p.get("logistica","") or "(vacio)"
+        tipo = p.get("tipo","")     or "(sin_tipo)"
+
+        conteo_log[log]   = conteo_log.get(log, 0) + 1
+        conteo_tipo[tipo] = conteo_tipo.get(tipo, 0) + 1
+
+        if tipo not in ejemplos:
+            ejemplos[tipo] = {
+                "order_id":    oid,
+                "logistica":   log,
+                "shipping_id": p.get("shipping_id",""),
+                "tags":        p.get("tags",[])[:5],
+                "estado":      p.get("estado_envio",""),
+            }
+
     return jsonify({
-        "total_pedidos": len(_pedidos_ml),
-        "tipos_encontrados": tipos,
-        "muestra": sample
+        "total_pedidos":    len(snap),
+        "por_tipo":         conteo_tipo,
+        "por_logistica":    conteo_log,
+        "ejemplos_por_tipo": ejemplos,
+        "nota": "Si todos dicen 'me2' o 'desconocido', el campo logistic_type no viene en /orders/search y hay que consultar /shipments individualmente."
     })
 
 
 
-    """Muestra la config exacta que lee el servidor — solo para diagnosticar."""
-    app_id = os.environ.get("ML_APP_ID", "NO_DEFINIDO")
-    secret = os.environ.get("ML_SECRET_KEY", "NO_DEFINIDO")
-    return jsonify({
-        "ML_APP_ID":        app_id,
-        "ML_APP_ID_len":    len(app_id),
-        "ML_APP_ID_repr":   repr(app_id),
-        "ML_SECRET_len":    len(secret),
-        "ML_SECRET_first4": secret[:4] if secret else "",
-        "ML_SECRET_last4":  secret[-4:] if secret else "",
-        "ML_SECRET_repr":   repr(secret[:5]) + "...",
-        "ML_REDIRECT":      ML_REDIRECT,
-        "PICKING_API_KEY":  API_KEY,
-        "ML_AUTH_URL":      ML_AUTH_URL,
-    })
 
 
 @app.route("/api/test_credentials")
