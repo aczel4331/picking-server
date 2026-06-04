@@ -620,48 +620,87 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
 
 
 def _enriquecer_skus_cuenta(pedidos, cuenta_id):
-    """Enriquece SKUs y estado de envío usando los tokens de una cuenta."""
+    """
+    Enriquece SKUs y estado de envio usando los tokens de una cuenta.
+    Las llamadas a /shipments se hacen en paralelo para mayor velocidad.
+    """
+    # 1. Enriquecer SKUs faltantes (multiget de 20)
     item_ids_sin_sku = {}
     for ped in pedidos.values():
         for it in ped["items"]:
             if not it["sku"] and it["item_id"]:
                 item_ids_sin_sku[it["item_id"]] = True
+
     sku_map  = {}
     ids_list = list(item_ids_sin_sku.keys())
     for i in range(0, len(ids_list), 20):
         chunk = ids_list[i:i+20]
-        r = _ml_get_cuenta("/items", cuenta_id, params={"ids": ",".join(chunk)})
-        if r.status_code == 200:
-            for entry in r.json():
-                body = entry.get("body", {})
-                iid  = body.get("id","")
-                sku  = str(body.get("seller_sku") or body.get("seller_custom_field") or "").strip().upper()
-                if iid and sku:
-                    sku_map[iid] = sku
+        try:
+            r = _ml_get_cuenta("/items", cuenta_id, params={"ids": ",".join(chunk)})
+            if r.status_code == 200:
+                for entry in r.json():
+                    body = entry.get("body", {})
+                    iid  = body.get("id","")
+                    sku  = str(body.get("seller_sku") or
+                               body.get("seller_custom_field") or "").strip().upper()
+                    if iid and sku:
+                        sku_map[iid] = sku
+        except Exception:
+            pass
+
     for ped in pedidos.values():
         for it in ped["items"]:
             if not it["sku"] and it["item_id"] in sku_map:
                 it["sku"] = sku_map[it["item_id"]]
-        if ped.get("shipping_id"):
-            try:
-                rs = _ml_get_cuenta(f"/shipments/{ped['shipping_id']}", cuenta_id)
-                if rs.status_code == 200:
-                    sd = rs.json()
-                    log_new = (sd.get("logistic") or {}).get("type", "")
-                    log_old = sd.get("logistic_type", "")
-                    logistica = log_new or log_old
-                    ped["logistica"]    = logistica
-                    ped["estado_envio"] = sd.get("status", "")
-                    ped["substatus"]    = sd.get("substatus", "")
-                    # Recalcular tipo con el logistic_type real del shipment
-                    ped["tipo"] = _calcular_tipo(
-                        logistica, ped.get("tags",[]), ped.get("shipping_id",""))
-            except Exception:
-                pass
-        elif ped.get("logistica"):
-            # Si ya tenía logistica del order, recalcular tipo
+
+    # 2. Enriquecer shipments EN PARALELO (max 10 threads simultaneos)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_shipment(oid):
+        ped = pedidos.get(oid)
+        if not ped or not ped.get("shipping_id"):
+            return oid, None
+        try:
+            rs = _ml_get_cuenta(f"/shipments/{ped['shipping_id']}", cuenta_id)
+            if rs.status_code == 200:
+                return oid, rs.json()
+        except Exception:
+            pass
+        return oid, None
+
+    oids_con_shipping = [oid for oid, p in pedidos.items() if p.get("shipping_id")]
+
+    if oids_con_shipping:
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            futures = {ex.submit(_fetch_shipment, oid): oid
+                       for oid in oids_con_shipping}
+            for future in as_completed(futures, timeout=30):
+                try:
+                    oid, sd = future.result()
+                    if sd and oid in pedidos:
+                        ped = pedidos[oid]
+                        log_new  = (sd.get("logistic") or {}).get("type", "")
+                        log_old  = sd.get("logistic_type", "")
+                        logistica = log_new or log_old
+                        ped["logistica"]    = logistica
+                        ped["estado_envio"] = sd.get("status", "")
+                        ped["substatus"]    = sd.get("substatus", "")
+                        ped["tipo"] = _calcular_tipo(
+                            logistica, ped.get("tags",[]),
+                            ped.get("shipping_id",""))
+                        if logistica:
+                            print(f"[LOG] {oid}: {logistica} → {ped['tipo']}")
+                except Exception:
+                    pass
+
+    # 3. Para pedidos sin shipment o sin logistica, asegurar tipo por fallback
+    for ped in pedidos.values():
+        if not ped.get("tipo") or ped.get("tipo") == "desconocido":
             ped["tipo"] = _calcular_tipo(
-                ped["logistica"], ped.get("tags",[]), ped.get("shipping_id",""))
+                ped.get("logistica",""),
+                ped.get("tags",[]),
+                ped.get("shipping_id",""))
+
     return pedidos
 
 
