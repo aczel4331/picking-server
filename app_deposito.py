@@ -1699,29 +1699,34 @@ class AsistenteDepositoApp:
         self.root.after(1200, self._ml_verificar_conexion)
 
     def _tipo_logistica(self, ped):
-        """Clasifica un pedido usando el campo 'tipo' pre-calculado en el servidor."""
-        # Usar campo pre-calculado si está disponible
-        tipo = ped.get("tipo", "")
-        if tipo and tipo != "desconocido":
-            return tipo
+        """
+        Clasifica un pedido en: flex, me2, me1, desconocido.
+        SIEMPRE recalcula desde logistica para evitar valores stale del servidor.
+        """
+        log = (ped.get("logistica") or "").lower().strip()
 
-        # Fallback por logistica
-        log  = (ped.get("logistica") or "").lower().strip()
-        tags = [t.lower() for t in ped.get("tags", [])]
-        tags_str = " ".join(tags)
-
-        if log == "self_service" or "self_service" in tags_str:
+        # Clasificar por logistic_type (campo definitivo de ML)
+        if log == "self_service":
             return "flex"
-        if log in ("cross_docking", "drop_off", "xd_drop_off", "fulfillment"):
+        if log in ("cross_docking", "drop_off", "xd_drop_off", "fulfillment", "turbo"):
             return "me2"
         if log == "default":
             return "me1"
+
+        # Fallback: usar tipo pre-calculado del servidor si logistica está vacía
+        tipo = (ped.get("tipo") or "").lower()
+        if tipo in ("flex", "me1", "me2"):
+            return tipo
+
+        # Último fallback por tags
+        tags_str = " ".join(t.lower() for t in ped.get("tags", []))
         if "self_service" in tags_str or "flex" in tags_str:
             return "flex"
 
-        # Si tiene shipping_id → algún tipo de ME2
+        # Si tiene shipping_id y no hay info de logistica → asumir me2
         if ped.get("shipping_id"):
             return "me2"
+
         return "desconocido"
 
     def _ml_set_filtro(self, key, color):

@@ -2668,17 +2668,24 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function tipoLogistica(p) {
-  // Usar el campo 'tipo' pre-calculado en el servidor (mas preciso)
-  if (p.tipo && p.tipo !== 'desconocido') return p.tipo;
-
-  // Fallback por logistica
-  const log  = (p.logistica || '').toLowerCase();
+  // SIEMPRE usar logistica primero — es el campo definitivo de ML
+  const log  = (p.logistica || '').toLowerCase().trim();
   const tags = (p.tags || []).map(t => t.toLowerCase()).join(' ');
-  if (log === 'self_service' || tags.includes('self_service')) return 'flex';
-  if (['cross_docking','drop_off','xd_drop_off','fulfillment'].includes(log)) return 'me2';
-  if (log === 'default') return 'me1';
-  // Si tiene shipping_id → algun tipo de ME
-  if (p.shipping_id) return 'me2';
+
+  if (log === 'self_service')                                        return 'flex';
+  if (['cross_docking','drop_off','xd_drop_off',
+       'fulfillment','turbo'].includes(log))                        return 'me2';
+  if (log === 'default')                                            return 'me1';
+
+  // Fallback por tags
+  if (tags.includes('self_service') || tags.includes('flex'))      return 'flex';
+
+  // Fallback por tipo pre-calculado (solo si logistica vacia)
+  const tipo = (p.tipo || '').toLowerCase();
+  if (['flex','me1','me2'].includes(tipo))                          return tipo;
+
+  // Si tiene shipping_id → algun tipo de ME2
+  if (p.shipping_id)                                               return 'me2';
   return 'desconocido';
 }
 
