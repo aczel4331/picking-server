@@ -799,10 +799,20 @@ def _enriquecer_skus(pedidos):
                 rs = _ml_get(f"/shipments/{ped['shipping_id']}")
                 if rs.status_code == 200:
                     sd = rs.json()
-                    ped["logistica"]    = sd.get("logistic_type","")
+                    log_new = (sd.get("logistic") or {}).get("type", "")
+                    log_old = sd.get("logistic_type","")
+                    logistica = log_new or log_old
+                    ped["logistica"]    = logistica
                     ped["estado_envio"] = sd.get("status","")
+                    ped["substatus"]    = sd.get("substatus","")
+                    # Recalcular tipo con logistic_type real
+                    ped["tipo"] = _calcular_tipo(
+                        logistica, ped.get("tags",[]), ped.get("shipping_id",""))
             except Exception:
                 pass
+        elif ped.get("logistica"):
+            ped["tipo"] = _calcular_tipo(
+                ped["logistica"], ped.get("tags",[]), ped.get("shipping_id",""))
 
     return pedidos
 
@@ -1111,13 +1121,21 @@ def api_pedidos():
     if not _cuentas:
         return jsonify({"ok": False, "msg": "login", "pedidos": []}), 200
     with _lock:
-        return jsonify({
-            "ok":      True,
-            "pedidos": list(_pedidos_ml.values()),
-            "total":   len(_pedidos_ml),
-            "ts":      _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S")
-                       if _ultimo_refresh_pedidos else "—",
-        })
+        pedidos = list(_pedidos_ml.values())
+
+    # Garantizar que tipo sea siempre correcto antes de enviar
+    for p in pedidos:
+        log = p.get("logistica","")
+        if log and (not p.get("tipo") or p.get("tipo") == "desconocido"):
+            p["tipo"] = _calcular_tipo(log, p.get("tags",[]), p.get("shipping_id",""))
+
+    return jsonify({
+        "ok":      True,
+        "pedidos": pedidos,
+        "total":   len(pedidos),
+        "ts":      _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S")
+                   if _ultimo_refresh_pedidos else "—",
+    })
 
 
 @app.route("/api/pedidos/refresh", methods=["POST"])
@@ -1712,11 +1730,10 @@ def api_token_status():
 
 @app.route("/api/debug_logistica")
 def debug_logistica():
-    """Muestra distribucion de tipos de logistica y ejemplos reales."""
+    """Muestra distribucion de tipos y ejemplos — para diagnosticar filtros."""
     with _lock:
         snap = dict(_pedidos_ml)
 
-    # Contar por tipo calculado
     conteo_tipo = {}
     conteo_log  = {}
     ejemplos    = {}
@@ -1724,25 +1741,38 @@ def debug_logistica():
     for oid, p in list(snap.items())[:100]:
         log  = p.get("logistica","") or "(vacio)"
         tipo = p.get("tipo","")     or "(sin_tipo)"
+        # Aplicar _calcular_tipo en vivo para comparar
+        tipo_calculado = _calcular_tipo(log, p.get("tags",[]), p.get("shipping_id",""))
 
         conteo_log[log]   = conteo_log.get(log, 0) + 1
         conteo_tipo[tipo] = conteo_tipo.get(tipo, 0) + 1
 
-        if tipo not in ejemplos:
-            ejemplos[tipo] = {
-                "order_id":    oid,
-                "logistica":   log,
-                "shipping_id": p.get("shipping_id",""),
-                "tags":        p.get("tags",[])[:5],
-                "estado":      p.get("estado_envio",""),
+        if log not in ejemplos:
+            ejemplos[log] = {
+                "order_id":       oid,
+                "logistica":      log,
+                "tipo_guardado":  tipo,
+                "tipo_calculado": tipo_calculado,
+                "shipping_id":    p.get("shipping_id",""),
+                "tags":           p.get("tags",[])[:3],
+                "estado":         p.get("estado_envio",""),
+                "coinciden":      tipo == tipo_calculado,
             }
 
     return jsonify({
-        "total_pedidos":    len(snap),
-        "por_tipo":         conteo_tipo,
-        "por_logistica":    conteo_log,
-        "ejemplos_por_tipo": ejemplos,
-        "nota": "Si todos dicen 'me2' o 'desconocido', el campo logistic_type no viene en /orders/search y hay que consultar /shipments individualmente."
+        "total_pedidos":     len(snap),
+        "por_tipo_guardado": conteo_tipo,
+        "por_logistica":     conteo_log,
+        "ejemplos_por_log":  ejemplos,
+        "clasificacion": {
+            "self_service":  "→ flex ⚡",
+            "xd_drop_off":   "→ me2 🚚",
+            "cross_docking": "→ me2 🚚",
+            "drop_off":      "→ me2 🚚",
+            "fulfillment":   "→ me2 🚚",
+            "turbo":         "→ me2 🚚",
+            "default":       "→ me1 📦",
+        }
     })
 
 
