@@ -349,7 +349,48 @@ h1{color:#EF4444;font-size:20px;margin:0 0 16px;text-align:center}
 </div></body></html>""", titulo=titulo, detalle=detalle)
 
 
-def _cargar_sku_db():
+def _calcular_tipo(logistica, tags_order=None, shipping_id=""):
+    """
+    Clasifica el tipo de logistica segun documentacion oficial ML:
+
+    ME2 (Mercado Envios 2):
+      - self_service  → Flex (vendedor despacha)
+      - cross_docking → Colectas (ML retira en vendedor)
+      - xd_drop_off   → Places (vendedor lleva a punto)
+      - drop_off      → Drop Off
+      - fulfillment   → Full (stock en deposito ML)
+      - turbo         → Turbo
+
+    ME1 (Mercado Envios 1):
+      - default       → logistica propia del vendedor
+    """
+    log = (logistica or "").lower().strip()
+
+    # Flex — subtipo de ME2 pero se muestra separado
+    if log == "self_service":
+        return "flex"
+
+    # ME2 — todos los subtipos de Mercado Envios 2
+    if log in ("cross_docking", "drop_off", "xd_drop_off",
+               "fulfillment", "turbo"):
+        return "me2"
+
+    # ME1 — logistica propia
+    if log == "default":
+        return "me1"
+
+    # Fallback por tags del order
+    tags_str = " ".join(t.lower() for t in (tags_order or []))
+    if "self_service" in tags_str or "flex" in tags_str:
+        return "flex"
+    if "turbo" in tags_str:
+        return "me2"
+
+    # Si tiene shipping_id → algun tipo de ME2
+    if shipping_id:
+        return "me2"
+
+    return "desconocido"
     """Carga la BD de SKUs desde variable de entorno."""
     global _sku_db
     raw = os.environ.get(_SKU_DB_ENV_KEY, "").strip()
@@ -534,22 +575,9 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
                 })
             ship = order.get("shipping") or {}
             log_type = (ship.get("logistic_type") or "").lower()
-            log_tags = [t.lower() for t in (ship.get("tags") or [])]
-
-            if log_type == "self_service" or "self_service" in log_tags:
-                tipo_calculado = "flex"
-            elif log_type in ("cross_docking","drop_off","xd_drop_off","fulfillment"):
-                tipo_calculado = "me2"
-            elif log_type == "default":
-                tipo_calculado = "me1"
-            else:
-                order_tags = " ".join(t.lower() for t in order.get("tags",[]))
-                if "self_service" in order_tags or "flex" in order_tags:
-                    tipo_calculado = "flex"
-                elif ship.get("id"):
-                    tipo_calculado = "me2"
-                else:
-                    tipo_calculado = "desconocido"
+            tipo_calculado = _calcular_tipo(
+                log_type, order.get("tags",[]),
+                str(ship.get("id","")) if ship.get("id") else "")
 
             pedidos[oid] = {
                 "order_id":     oid,
@@ -562,7 +590,7 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
                 "moneda":       order.get("currency_id","UYU"),
                 "items":        items,
                 "shipping_id":  str(ship.get("id","")) if ship.get("id") else "",
-                "logistica":    log_type or tipo_calculado,
+                "logistica":    log_type,
                 "tipo":         tipo_calculado,
                 "estado_envio": "",
                 "impreso":      False,
@@ -605,15 +633,21 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                 rs = _ml_get_cuenta(f"/shipments/{ped['shipping_id']}", cuenta_id)
                 if rs.status_code == 200:
                     sd = rs.json()
-                    # Nuevo formato ML: logistic.type
                     log_new = (sd.get("logistic") or {}).get("type", "")
-                    # Formato antiguo: logistic_type directo
                     log_old = sd.get("logistic_type", "")
-                    ped["logistica"]    = log_new or log_old
+                    logistica = log_new or log_old
+                    ped["logistica"]    = logistica
                     ped["estado_envio"] = sd.get("status", "")
                     ped["substatus"]    = sd.get("substatus", "")
+                    # Recalcular tipo con el logistic_type real del shipment
+                    ped["tipo"] = _calcular_tipo(
+                        logistica, ped.get("tags",[]), ped.get("shipping_id",""))
             except Exception:
                 pass
+        elif ped.get("logistica"):
+            # Si ya tenía logistica del order, recalcular tipo
+            ped["tipo"] = _calcular_tipo(
+                ped["logistica"], ped.get("tags",[]), ped.get("shipping_id",""))
     return pedidos
 
 
@@ -686,27 +720,10 @@ def _enriquecer_skus(pedidos):
                 })
 
             ship = order.get("shipping") or {}
-            # logistic_type viene directo en el shipping del order
-            # evita llamadas extra a /shipments/{id}
             log_type = (ship.get("logistic_type") or "").lower()
-            log_tags = [t.lower() for t in (ship.get("tags") or [])]
-
-            # Clasificar tipo aqui mismo con la info disponible
-            if log_type == "self_service" or "self_service" in log_tags:
-                tipo_calculado = "flex"
-            elif log_type in ("cross_docking","drop_off","xd_drop_off","fulfillment"):
-                tipo_calculado = "me2"
-            elif log_type == "default":
-                tipo_calculado = "me1"
-            else:
-                # Fallback por tags del order
-                order_tags = " ".join(t.lower() for t in order.get("tags",[]))
-                if "self_service" in order_tags or "flex" in order_tags:
-                    tipo_calculado = "flex"
-                elif ship.get("id"):  # tiene shipping → algún tipo de ME
-                    tipo_calculado = "me2"
-                else:
-                    tipo_calculado = "desconocido"
+            tipo_calculado = _calcular_tipo(
+                log_type, order.get("tags",[]),
+                str(ship.get("id","")) if ship.get("id") else "")
 
             pedidos[oid] = {
                 "order_id":     oid,
@@ -719,7 +736,7 @@ def _enriquecer_skus(pedidos):
                 "moneda":       order.get("currency_id","UYU"),
                 "items":        items,
                 "shipping_id":  str(ship.get("id","")) if ship.get("id") else "",
-                "logistica":    log_type or tipo_calculado,
+                "logistica":    log_type,
                 "tipo":         tipo_calculado,
                 "estado_envio": "",
                 "impreso":      False,
@@ -2645,16 +2662,30 @@ function renderPedidos(filtro='') {
     const impreso = p.impreso;
     const tipo    = tipoLogistica(p);
 
-    // Chip de tipo con color
+    // Chip de tipo con color Y sub-tipo segun doc ML
     const TIPO_CFG = {
       flex:        {color:'#7C3AED', label:'⚡ FLEX'},
       me2:         {color:'#2563EB', label:'🚚 ME2'},
       me1:         {color:'#0891B2', label:'📦 ME1'},
       desconocido: {color:'#475569', label:'—'},
     };
-    const tc = TIPO_CFG[tipo] || TIPO_CFG.desconocido;
+
+    // Sub-tipo especifico dentro de ME2
+    const SUBTIPO = {
+      'self_service':  '⚡ Flex',
+      'cross_docking': '🚚 Colecta',
+      'xd_drop_off':   '📍 Places',
+      'drop_off':      '🏪 Drop Off',
+      'fulfillment':   '🏭 Full',
+      'turbo':         '⚡ Turbo',
+      'default':       '📦 ME1',
+    };
+
+    const tc     = TIPO_CFG[tipo] || TIPO_CFG.desconocido;
+    const logRaw = (p.logistica || '').toLowerCase();
+    const subLabel = SUBTIPO[logRaw] || tc.label;
     const tipoChip = `<span style="background:${tc.color};color:#fff;padding:2px 8px;
-      border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">${tc.label}</span>`;
+      border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">${subLabel}</span>`;
 
     // SKUs
     const skus = p.items.map(it => {

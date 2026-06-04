@@ -1549,10 +1549,20 @@ class AsistenteDepositoApp:
 
         # ── Colores por tipo de logística ────────────────────────────────────
         self._logistica_cfg = {
-            "flex":      {"label": "FLEX",         "color": "#7C3AED", "light": "#EDE9FE", "emoji": "⚡"},
-            "me2":       {"label": "ME2",           "color": "#2563EB", "light": "#DBEAFE", "emoji": "🚚"},
-            "me1":       {"label": "ME1",           "color": "#0891B2", "light": "#CFFAFE", "emoji": "📦"},
-            "desconocido": {"label": "SIN ENVIO",  "color": "#475569", "light": "#F1F5F9", "emoji": "❓"},
+            "flex":        {"label": "⚡ FLEX",      "color": "#7C3AED", "emoji": "⚡"},
+            "me2":         {"label": "🚚 ME2",        "color": "#2563EB", "emoji": "🚚"},
+            "me1":         {"label": "📦 ME1",        "color": "#0891B2", "emoji": "📦"},
+            "desconocido": {"label": "— Sin envío",   "color": "#475569", "emoji": "—"},
+        }
+        # Etiquetas por sub-tipo de logistica (según doc oficial ML)
+        self._subtipo_label = {
+            "self_service":  "⚡ Flex",
+            "cross_docking": "🚚 Colecta",
+            "xd_drop_off":   "📍 Places",
+            "drop_off":      "🏪 Drop Off",
+            "fulfillment":   "🏭 Full",
+            "turbo":         "⚡ Turbo",
+            "default":       "📦 ME1",
         }
 
         # ── Toolbar ───────────────────────────────────────────────────────────
@@ -1774,6 +1784,8 @@ class AsistenteDepositoApp:
             bg   = bg_alt[i % 2]
             tipo = self._tipo_logistica(ped)
             cfg  = self._logistica_cfg.get(tipo, self._logistica_cfg["desconocido"])
+            log_raw   = (ped.get("logistica") or "").lower()
+            sub_label = self._subtipo_label.get(log_raw, cfg["label"])
 
             fila = tk.Frame(self.frame_ml, bg=bg)
             fila.pack(fill="x")
@@ -1794,7 +1806,7 @@ class AsistenteDepositoApp:
 
             # Chip de tipo
             chip = tk.Label(inner,
-                            text=f"{cfg['emoji']} {cfg['label']}",
+                            text=f"{sub_label}",
                             font=("Segoe UI Semibold", 7),
                             bg=cfg["color"], fg="white",
                             padx=6, pady=2)
