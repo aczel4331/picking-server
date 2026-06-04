@@ -618,27 +618,72 @@ class VentanaConfiguracion(tk.Toplevel):
 
     def _cfg_exportar_tokens(self):
         """
-        Obtiene el JSON de tokens de Railway y abre una ventana para copiarlo.
-        El usuario lo pega en Railway Variables -> ML_TOKENS_JSON.
+        Obtiene el JSON de tokens de Railway y abre ventana para copiarlo.
+        Si Railway no tiene el endpoint (version vieja), genera el JSON localmente
+        consultando /auth/status.
         """
         import threading, urllib.request, json as _j
 
         def _worker():
+            url_base = RAILWAY_URL.rstrip("/")
+
+            # Intentar el endpoint nuevo primero
             try:
-                url = RAILWAY_URL.rstrip("/") + "/api/tokens_export"
                 req = urllib.request.Request(
-                    url, headers={"X-API-Key": "everest2024"})
+                    url_base + "/api/tokens_export",
+                    headers={"X-API-Key": "everest2024"})
                 with urllib.request.urlopen(req, timeout=8) as r:
                     d = _j.loads(r.read())
                 self.after(0, lambda: self._cfg_mostrar_tokens(d))
+                return
             except urllib.error.HTTPError as e:
-                body = e.read().decode() if e.fp else str(e)
-                self.after(0, lambda: messagebox.showerror(
-                    "Error", f"No se pudo obtener los tokens:\n{body[:200]}",
-                    parent=self))
+                if e.code != 404:
+                    body = e.read().decode("utf-8","ignore") if e.fp else str(e)
+                    self.after(0, lambda: messagebox.showerror(
+                        "Error", f"HTTP {e.code}:\n{body[:200]}", parent=self))
+                    return
+                # 404 = Railway tiene version vieja, continuar con fallback
+
             except Exception as e:
                 self.after(0, lambda: messagebox.showerror(
-                    "Error", f"No se pudo conectar:\n{e}", parent=self))
+                    "Error de conexion", str(e), parent=self))
+                return
+
+            # Fallback: usar /auth/status para mostrar instrucciones manuales
+            try:
+                with urllib.request.urlopen(
+                        url_base + "/auth/status", timeout=6) as r:
+                    st = _j.loads(r.read())
+                cuentas = st.get("cuentas", [])
+                if not cuentas:
+                    self.after(0, lambda: messagebox.showwarning(
+                        "Sin cuentas",
+                        "No hay cuentas conectadas a MercadoLibre.\n"
+                        "Conectá primero desde la pestaña Pedidos ML.",
+                        parent=self))
+                    return
+
+                # Mostrar instruccion para subir server.py nuevo
+                msg = (
+                    "Railway tiene una versión antigua del servidor.\n\n"
+                    "Para guardar los tokens necesitás:\n\n"
+                    "1. Subir el server.py nuevo a GitHub\n"
+                    "2. Esperar que Railway redeplye\n"
+                    "3. Volver a presionar 'Guardar tokens'\n\n"
+                    f"Cuentas conectadas ahora: "
+                    f"{', '.join(c.get('nickname','?') for c in cuentas)}\n\n"
+                    "¿Querés abrir Railway para actualizar?"
+                )
+                resp = self.after(0, lambda: None)
+                def _preguntar():
+                    if messagebox.askyesno(
+                            "Servidor desactualizado", msg, parent=self):
+                        __import__("webbrowser").open("https://railway.app")
+                self.after(0, _preguntar)
+
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror(
+                    "Error", str(e), parent=self))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1644,33 +1689,29 @@ class AsistenteDepositoApp:
         self.root.after(1200, self._ml_verificar_conexion)
 
     def _tipo_logistica(self, ped):
-        """
-        Clasifica un pedido en: flex, me2, me1, desconocido.
-        Usa logistica, tags del pedido y estado_envio para determinar el tipo.
-        """
+        """Clasifica un pedido usando el campo 'tipo' pre-calculado en el servidor."""
+        # Usar campo pre-calculado si está disponible
+        tipo = ped.get("tipo", "")
+        if tipo and tipo != "desconocido":
+            return tipo
+
+        # Fallback por logistica
         log  = (ped.get("logistica") or "").lower().strip()
         tags = [t.lower() for t in ped.get("tags", [])]
+        tags_str = " ".join(tags)
 
-        # 1. Clasificar por logistic_type (campo más confiable)
-        if log in ("self_service",):
+        if log == "self_service" or "self_service" in tags_str:
             return "flex"
         if log in ("cross_docking", "drop_off", "xd_drop_off", "fulfillment"):
             return "me2"
-        if log in ("default",):
+        if log == "default":
             return "me1"
-
-        # 2. Fallback por tags del pedido (ML incluye tags útiles)
-        tags_str = " ".join(tags)
         if "self_service" in tags_str or "flex" in tags_str:
             return "flex"
-        if "me2" in tags_str or "mercado_envios" in tags_str:
-            return "me2"
-        if "me1" in tags_str:
-            return "me1"
 
-        # 3. Si tiene shipping_id y estado_envio → es algún tipo de ME2
-        # pero NO clasificar como me2 si no hay logistic_type confirmado
-        # → dejar como desconocido para no mezclar pestañas
+        # Si tiene shipping_id → algún tipo de ME2
+        if ped.get("shipping_id"):
+            return "me2"
         return "desconocido"
 
     def _ml_set_filtro(self, key, color):

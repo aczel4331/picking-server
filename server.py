@@ -20,7 +20,7 @@ SERVER_VERSION = "2.1.0"
 import os, json, threading, time, requests
 from datetime import datetime, timedelta
 from flask import (Flask, jsonify, request, render_template_string,
-                   session, redirect, url_for)
+                   session, redirect, url_for, Response)
 from functools import wraps
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -198,7 +198,10 @@ def _descargar_etiqueta_bg(order_id, reintentos=3):
             cuenta_id = pedido.get("_cuenta", "cuenta_0")
             at = _cuentas.get(cuenta_id, {}).get("access_token","")
             if not at:
-                print(f"[ETIQUETA] Sin token para {cuenta_id}")
+                print(f"[ETIQUETA] Sin token para {cuenta_id} — no hay sesion ML activa")
+                # Remover de la cola para no reintentar sin token
+                if order_id in _cola_etiquetas:
+                    _cola_etiquetas.remove(order_id)
                 return
 
             # Verificar estado del envio
@@ -293,6 +296,58 @@ def _descargar_etiquetas_lote(order_ids):
 
 
 # ─── Helpers multi-cuenta ────────────────────────────────────────────────────
+
+def _html_ok(titulo, detalle=""):
+    """Pagina HTML de exito."""
+    return render_template_string("""
+<!DOCTYPE html><html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OK</title>
+<style>
+body{font-family:'Segoe UI',sans-serif;background:#0F172A;color:#F1F5F9;
+  display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.box{background:#1E293B;border-radius:16px;padding:40px;max-width:500px;width:90%;
+  text-align:center;border:1px solid #334155}
+.icon{font-size:56px;margin-bottom:16px}
+h1{color:#10B981;font-size:22px;margin:0 0 12px}
+p{color:#94A3B8;font-size:14px;line-height:1.6}
+.btn{display:inline-block;margin-top:24px;padding:10px 24px;background:#10B981;
+  color:#fff;border-radius:8px;text-decoration:none;font-weight:600;
+  font-size:14px;cursor:pointer;border:none}
+</style></head>
+<body><div class="box">
+  <div class="icon">✅</div>
+  <h1>{{ titulo }}</h1>
+  <p>{{ detalle|safe }}</p>
+  <button class="btn" onclick="window.close()">Cerrar esta pestaña</button>
+</div></body></html>""", titulo=titulo, detalle=detalle)
+
+
+def _html_error(titulo, detalle=""):
+    """Pagina HTML de error."""
+    return render_template_string("""
+<!DOCTYPE html><html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Error</title>
+<style>
+body{font-family:'Segoe UI',sans-serif;background:#0F172A;color:#F1F5F9;
+  display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px}
+.box{background:#1E293B;border-radius:16px;padding:36px;max-width:560px;width:100%;
+  border:1px solid #334155}
+.icon{font-size:48px;margin-bottom:12px;text-align:center;display:block}
+h1{color:#EF4444;font-size:20px;margin:0 0 16px;text-align:center}
+.detail{background:#0F172A;border-radius:8px;padding:14px;color:#94A3B8;
+  font-size:13px;line-height:1.7;border:1px solid #334155}
+.btn{display:inline-block;margin-top:20px;padding:8px 20px;background:#334155;
+  color:#F1F5F9;border-radius:8px;font-size:13px;cursor:pointer;border:none}
+</style></head>
+<body><div class="box">
+  <span class="icon">❌</span>
+  <h1>{{ titulo }}</h1>
+  <div class="detail">{{ detalle|safe }}</div>
+  <button class="btn" onclick="history.back()">← Volver</button>
+</div></body></html>""", titulo=titulo, detalle=detalle)
+
 
 def _cargar_sku_db():
     """Carga la BD de SKUs desde variable de entorno."""
@@ -478,6 +533,24 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
                     "unit_price": it.get("unit_price", 0),
                 })
             ship = order.get("shipping") or {}
+            log_type = (ship.get("logistic_type") or "").lower()
+            log_tags = [t.lower() for t in (ship.get("tags") or [])]
+
+            if log_type == "self_service" or "self_service" in log_tags:
+                tipo_calculado = "flex"
+            elif log_type in ("cross_docking","drop_off","xd_drop_off","fulfillment"):
+                tipo_calculado = "me2"
+            elif log_type == "default":
+                tipo_calculado = "me1"
+            else:
+                order_tags = " ".join(t.lower() for t in order.get("tags",[]))
+                if "self_service" in order_tags or "flex" in order_tags:
+                    tipo_calculado = "flex"
+                elif ship.get("id"):
+                    tipo_calculado = "me2"
+                else:
+                    tipo_calculado = "desconocido"
+
             pedidos[oid] = {
                 "order_id":     oid,
                 "pack_id":      str(order.get("pack_id","")) if order.get("pack_id") else "",
@@ -489,7 +562,8 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
                 "moneda":       order.get("currency_id","UYU"),
                 "items":        items,
                 "shipping_id":  str(ship.get("id","")) if ship.get("id") else "",
-                "logistica":    "",
+                "logistica":    log_type or tipo_calculado,
+                "tipo":         tipo_calculado,
                 "estado_envio": "",
                 "impreso":      False,
                 "tags":         order.get("tags", []),
@@ -612,6 +686,28 @@ def _enriquecer_skus(pedidos):
                 })
 
             ship = order.get("shipping") or {}
+            # logistic_type viene directo en el shipping del order
+            # evita llamadas extra a /shipments/{id}
+            log_type = (ship.get("logistic_type") or "").lower()
+            log_tags = [t.lower() for t in (ship.get("tags") or [])]
+
+            # Clasificar tipo aqui mismo con la info disponible
+            if log_type == "self_service" or "self_service" in log_tags:
+                tipo_calculado = "flex"
+            elif log_type in ("cross_docking","drop_off","xd_drop_off","fulfillment"):
+                tipo_calculado = "me2"
+            elif log_type == "default":
+                tipo_calculado = "me1"
+            else:
+                # Fallback por tags del order
+                order_tags = " ".join(t.lower() for t in order.get("tags",[]))
+                if "self_service" in order_tags or "flex" in order_tags:
+                    tipo_calculado = "flex"
+                elif ship.get("id"):  # tiene shipping → algún tipo de ME
+                    tipo_calculado = "me2"
+                else:
+                    tipo_calculado = "desconocido"
+
             pedidos[oid] = {
                 "order_id":     oid,
                 "pack_id":      str(order.get("pack_id","")) if order.get("pack_id") else "",
@@ -623,7 +719,8 @@ def _enriquecer_skus(pedidos):
                 "moneda":       order.get("currency_id","UYU"),
                 "items":        items,
                 "shipping_id":  str(ship.get("id","")) if ship.get("id") else "",
-                "logistica":    "",
+                "logistica":    log_type or tipo_calculado,
+                "tipo":         tipo_calculado,
                 "estado_envio": "",
                 "impreso":      False,
                 "tags":         order.get("tags", []),
@@ -2472,13 +2569,17 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function tipoLogistica(p) {
+  // Usar el campo 'tipo' pre-calculado en el servidor (mas preciso)
+  if (p.tipo && p.tipo !== 'desconocido') return p.tipo;
+
+  // Fallback por logistica
   const log  = (p.logistica || '').toLowerCase();
   const tags = (p.tags || []).map(t => t.toLowerCase()).join(' ');
   if (log === 'self_service' || tags.includes('self_service')) return 'flex';
   if (['cross_docking','drop_off','xd_drop_off','fulfillment'].includes(log)) return 'me2';
-  if (log === 'default' || tags.includes('me1')) return 'me1';
-  // Si tiene shipping_id y estado_envio pero logistica vacia -> asumir me2
-  if (p.shipping_id && p.estado_envio) return 'me2';
+  if (log === 'default') return 'me1';
+  // Si tiene shipping_id → algun tipo de ME
+  if (p.shipping_id) return 'me2';
   return 'desconocido';
 }
 
