@@ -297,6 +297,24 @@ def _descargar_etiquetas_lote(order_ids):
 
 # ─── Helpers multi-cuenta ────────────────────────────────────────────────────
 
+def _cargar_sku_db():
+    """Carga la BD de SKUs desde variable de entorno."""
+    global _sku_db
+    raw = os.environ.get(_SKU_DB_ENV_KEY, "").strip()
+    if raw:
+        try:
+            _sku_db = json.loads(raw)
+            print(f"[STARTUP] SKUs cargados: {len(_sku_db)}")
+        except Exception as e:
+            print(f"[STARTUP] Error cargando SKU_DB_JSON: {e}")
+            _sku_db = {}
+
+
+def _sku_info(sku):
+    """Devuelve info de un SKU desde la BD interna."""
+    return _sku_db.get(str(sku).upper(), {"nombre": "", "pasillo": "", "estanteria": ""})
+
+
 def _html_ok(titulo, detalle=""):
     """Pagina HTML de exito."""
     return render_template_string("""
@@ -401,10 +419,6 @@ def _calcular_tipo(logistica, tags_order=None, shipping_id=""):
         except Exception as e:
             print(f"[STARTUP] Error cargando SKU_DB_JSON: {e}")
             _sku_db = {}
-
-def _sku_info(sku):
-    """Devuelve info de un SKU desde la BD interna."""
-    return _sku_db.get(str(sku).upper(), {"nombre": "", "pasillo": "", "estanteria": ""})
 
 def _tokens_de(cuenta_id):
     """Devuelve el dict de tokens de una cuenta, o {} si no existe."""
