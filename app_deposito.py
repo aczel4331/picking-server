@@ -1777,119 +1777,159 @@ class AsistenteDepositoApp:
             w.destroy()
 
         if not pedidos:
-            tk.Label(self.frame_ml,
-                     text="Sin pedidos en esta categoría",
+            tk.Label(self.frame_ml, text="Sin pedidos en esta categoría",
                      font=("Segoe UI", 11), bg=C["bg_dark"],
                      fg=C["text_lo"]).pack(pady=50)
             return
 
         tipo_filtro = self._ml_filtro_tipo.get()
 
-        # Si estamos en "Todos", agrupar por tipo con encabezados de seccion
         if tipo_filtro == "todos":
-            grupos = {"flex": [], "me2": [], "me1": [], "desconocido": []}
+            # Agrupar con encabezados de sección
+            grupos = {}
             for ped in pedidos:
                 t = self._tipo_logistica(ped)
                 grupos.setdefault(t, []).append(ped)
 
-            secciones = [
-                ("flex", "⚡  MERCADO FLEX",    "#7C3AED"),
-                ("me2",  "🚚  MERCADO ENVÍOS",  "#2563EB"),
-                ("me1",  "📦  ME1 / PROPIO",    "#0891B2"),
-                ("desconocido", "❓  SIN CLASIFICAR", "#475569"),
+            SECCIONES = [
+                ("flex",        "⚡  MERCADO FLEX",     "#7C3AED"),
+                ("me2",         "🚚  MERCADO ENVÍOS",   "#2563EB"),
+                ("me1",         "📦  ME1 / PROPIO",     "#0891B2"),
+                ("desconocido", "❓  SIN CLASIFICAR",   "#475569"),
             ]
-            idx = 0
-            for key, titulo, color in secciones:
+            primer = True
+            for key, titulo, color in SECCIONES:
                 lista = grupos.get(key, [])
                 if not lista:
                     continue
-                # Encabezado de sección
+                # Encabezado de sección con color
                 hdr = tk.Frame(self.frame_ml, bg=color)
-                hdr.pack(fill="x", pady=(8 if idx else 0, 0))
-                tk.Label(hdr, text=f"  {titulo}   ·   {len(lista)} pedido(s)",
-                         font=("Segoe UI Black", 10), bg=color, fg="white",
-                         anchor="w", pady=6).pack(fill="x", padx=4)
-                self._ml_render_filas(lista)
-                idx += 1
+                hdr.pack(fill="x", pady=(0 if primer else 8, 0))
+                tk.Label(hdr,
+                         text=f"   {titulo}   ·   {len(lista)} pedido(s)",
+                         font=("Segoe UI Black", 10), bg=color,
+                         fg="white", anchor="w", pady=7).pack(fill="x")
+                self._ml_render_filas(lista, color)
+                primer = False
         else:
-            self._ml_render_filas(pedidos)
+            # Filtro específico — sin encabezado, solo las filas
+            COLORES = {"flex":"#7C3AED","me2":"#2563EB","me1":"#0891B2","desconocido":"#475569"}
+            color = COLORES.get(tipo_filtro, C["accent"])
+            self._ml_render_filas(pedidos, color)
 
-    def _ml_render_filas(self, pedidos):
+    def _ml_render_filas(self, pedidos, color_tipo=None):
+        """Renderiza filas de pedidos con columnas alineadas."""
+
+        # Cabecera de columnas
+        hdr = tk.Frame(self.frame_ml, bg=C["panel"])
+        hdr.pack(fill="x")
+        tk.Frame(hdr, bg=C["panel"], width=4).pack(side="left", fill="y")  # borde
+        for txt, w in [("Tipo",6), ("Pedido",10), ("Fecha",9),
+                       ("Comprador",16), ("SKU · Producto",40), ("Estado",12), ("",8)]:
+            tk.Label(hdr, text=txt, font=("Segoe UI", 8, "bold"),
+                     bg=C["panel"], fg=C["text_lo"],
+                     width=w, anchor="w").pack(side="left", padx=4)
+
+        tk.Frame(self.frame_ml, bg=C["border"], height=1).pack(fill="x")
+
         bg_alt = [C["card"], C["bg_dark"]]
         for i, ped in enumerate(pedidos):
-            bg   = bg_alt[i % 2]
-            tipo = self._tipo_logistica(ped)
-            cfg  = self._logistica_cfg.get(tipo, self._logistica_cfg["desconocido"])
-            log_raw   = (ped.get("logistica") or "").lower()
-            sub_label = self._subtipo_label.get(log_raw, cfg["label"])
+            bg    = bg_alt[i % 2]
+            tipo  = self._tipo_logistica(ped)
+            log   = (ped.get("logistica") or "").lower()
+            impreso = ped.get("impreso", False)
 
+            # Color del borde y chip según tipo
+            TIPO_COLOR = {
+                "flex": "#7C3AED", "me2": "#2563EB",
+                "me1": "#0891B2",  "desconocido": "#475569"
+            }
+            SUBTIPO_LABEL = {
+                "self_service": "⚡ Flex",
+                "xd_drop_off":  "📍 Places",
+                "cross_docking":"🚚 Colecta",
+                "drop_off":     "🏪 Drop Off",
+                "fulfillment":  "🏭 Full",
+                "turbo":        "⚡ Turbo",
+                "default":      "📦 ME1",
+            }
+            borde_color = TIPO_COLOR.get(tipo, "#475569")
+            chip_txt    = SUBTIPO_LABEL.get(log, tipo.upper() if tipo != "desconocido" else "—")
+
+            # Fila
             fila = tk.Frame(self.frame_ml, bg=bg)
             fila.pack(fill="x")
 
-            # Borde izquierdo de color según tipo
-            borde = tk.Frame(fila, bg=cfg["color"], width=4)
-            borde.pack(side="left", fill="y")
+            # Borde de color izquierdo
+            tk.Frame(fila, bg=borde_color, width=4).pack(side="left", fill="y")
 
-            inner = tk.Frame(fila, bg=bg, pady=5)
+            inner = tk.Frame(fila, bg=bg, pady=4)
             inner.pack(side="left", fill="x", expand=True)
 
-            def _lbl(parent, txt, w, fg=None, mono=False, bold=False):
-                f = ("Consolas", 9) if mono else \
-                    (("Segoe UI Semibold", 9) if bold else FONT_SMALL)
-                tk.Label(parent, text=txt, font=f, bg=bg,
-                         fg=fg or C["text_hi"], width=w,
-                         anchor="w", wraplength=220).pack(side="left", padx=4)
+            # Función helper para labels
+            def _col(txt, w, fg=None, bold=False, mono=False, bg_=bg):
+                font = ("Consolas", 9) if mono else \
+                       ("Segoe UI Semibold", 9) if bold else FONT_SMALL
+                tk.Label(inner, text=str(txt), font=font, bg=bg_,
+                         fg=fg or (C["text_mid"] if impreso else C["text_hi"]),
+                         width=w, anchor="w", wraplength=240).pack(side="left", padx=4)
 
-            # Chip de tipo
-            chip = tk.Label(inner,
-                            text=f"{sub_label}",
-                            font=("Segoe UI Semibold", 7),
-                            bg=cfg["color"], fg="white",
-                            padx=6, pady=2)
-            chip.pack(side="left", padx=(4, 2))
+            # Col 1: Chip de tipo
+            tk.Label(inner, text=chip_txt,
+                     font=("Segoe UI Semibold", 7),
+                     bg=borde_color, fg="white",
+                     padx=5, pady=2, width=8, anchor="center").pack(side="left", padx=4)
 
-            # Datos
-            _lbl(inner, f"#{ped['order_id']}", 10, fg=C["accent"], bold=True)
-            _lbl(inner, ped.get("fecha","")[:10], 8, fg=C["text_mid"])
-            _lbl(inner, ped.get("comprador","")[:18], 16, bold=True)
+            # Col 2: Pedido #
+            _col(f"#{ped.get('order_id','')}", 10,
+                 fg=C["text_mid"] if impreso else C["accent"], bold=True)
 
-            # SKU + Nombre del producto (columna principal)
-            its = ped.get("items", [])
-            # Construir texto con SKU y nombre para cada item
-            skus_txt = []
-            for it in its[:4]:
-                sku  = it.get("sku","")
-                nom  = it.get("titulo","")
-                # Buscar nombre en BD interna primero
+            # Col 3: Fecha
+            _col(ped.get("fecha","")[:10], 9, fg=C["text_mid"])
+
+            # Col 4: Comprador
+            _col((ped.get("comprador","")[:16] or "—"), 16, bold=True)
+
+            # Col 5: SKUs y productos
+            items = ped.get("items", [])
+            lineas = []
+            for it in items[:3]:
+                sku = it.get("sku","")
+                nom = it.get("titulo","")
                 if sku and sku in self.db_nombres:
                     info = self.db_nombres[sku]
-                    nom  = info.get("nombre","") if isinstance(info, dict) else str(info)
-                qty  = it.get("cantidad", 1)
+                    nom  = info.get("nombre","") if isinstance(info,dict) else str(info)
+                qty = it.get("cantidad",1)
                 if sku and nom:
-                    skus_txt.append(f"{sku} · {nom[:22]}  x{qty}")
+                    lineas.append(f"{sku}  {nom[:20]}  ×{qty}")
                 elif sku:
-                    skus_txt.append(f"{sku}  x{qty}")
+                    lineas.append(f"{sku}  ×{qty}")
                 elif nom:
-                    skus_txt.append(f"{nom[:28]}  x{qty}")
-            if len(its) > 4:
-                skus_txt.append(f"+{len(its)-4} más")
-            _lbl(inner, "\n".join(skus_txt) if skus_txt else "—", 42, mono=True)
+                    lineas.append(f"{nom[:28]}  ×{qty}")
+            if len(items) > 3:
+                lineas.append(f"+{len(items)-3} más")
+            _col("\n".join(lineas) if lineas else "—", 40, mono=True)
 
-            # Estado envío
-            est = ped.get("estado_envio", "") or "—"
-            col_est = C["success"] if "ready" in est else \
-                      (C["warning"] if est != "—" else C["text_lo"])
-            _lbl(inner, est[:14], 12, fg=col_est)
+            # Col 6: Estado envío
+            est = ped.get("estado_envio","") or "—"
+            col_est = C["success"]  if "ready" in est else \
+                      C["warning"]  if est not in ("—","delivered","cancelled") else \
+                      C["text_lo"]
+            _col(est[:14], 12, fg=col_est)
 
-            # Botón etiqueta
-            if ped.get("shipping_id"):
-                lbl_color = cfg["color"]
-                tk.Button(inner, text="Etiqueta",
+            # Col 7: Botón etiqueta / impreso
+            if impreso:
+                tk.Label(inner, text="✅ Impreso",
+                         font=("Segoe UI", 8), bg=bg,
+                         fg=C["success"]).pack(side="left", padx=4)
+            elif ped.get("shipping_id"):
+                tk.Button(inner, text="🏷 Etiqueta",
                           font=("Segoe UI Semibold", 8),
-                          bg=lbl_color, fg="white",
+                          bg=borde_color, fg="white",
                           activebackground=C["accent2"],
                           activeforeground="white",
-                          relief="flat", cursor="hand2", padx=8, pady=2, bd=0,
+                          relief="flat", cursor="hand2",
+                          padx=8, pady=2, bd=0,
                           command=lambda oid=ped["order_id"]: self._ml_ver_etiqueta(oid)
                           ).pack(side="left", padx=4)
 
