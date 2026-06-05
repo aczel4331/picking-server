@@ -876,15 +876,10 @@ def _refresh_pedidos_worker_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None
                     p["impreso"] = _pedidos_ml[oid].get("impreso", False)
             _pedidos_ml.update(pedidos)
             _ultimo_refresh_pedidos = datetime.now()
-        # Descargar etiquetas de pedidos ready_to_ship que no esten en cache
-        ready = [oid for oid, p in pedidos.items()
-                 if p.get("estado_envio") == "ready_to_ship"
-                 and oid not in _etiquetas_cache]
-        if ready:
-            print(f"[ETIQUETA] Auto-descargando {len(ready)} etiquetas ready_to_ship...")
-            threading.Thread(
-                target=_descargar_etiquetas_lote,
-                args=(ready,), daemon=True).start()
+        # NO auto-descargar etiquetas — descargar /shipment_labels marca el envio
+        # como 'printed' en ML. Solo se descarga cuando el usuario hace clic
+        # en el boton Etiqueta (bajo demanda).
+        # (auto-descarga desactivada intencionalmente)
     except Exception as e:
         print(f"Error refresh cuenta {cuenta_id}: {e}")
 
@@ -1542,13 +1537,8 @@ def _procesar_notificacion_orden(order_id, user_id):
             _pedidos_ml[str(order_id)] = pedido
 
         print(f"[WEBHOOK] ✅ Orden {order_id} agregada ({nick}) — {len(items)} items")
-
-        # Descargar etiqueta automaticamente si hay shipping_id
-        if ship_id:
-            _time.sleep(3)  # Esperar que ML genere la etiqueta
-            _encolar_descarga_etiqueta(str(order_id))
-        else:
-            print(f"[WEBHOOK] Orden {order_id} sin shipping_id aun")
+        # NO descargar etiqueta automaticamente — marca como printed en ML.
+        # La etiqueta se descarga solo cuando el operario hace clic en el boton.
 
     except Exception as e:
         print(f"[WEBHOOK] Error procesando orden {order_id}: {e}")
@@ -1599,11 +1589,10 @@ def _procesar_notificacion_shipment(shipment_id, user_id):
                 _pedidos_ml[order_id]["logistica"]    = logistic
                 _pedidos_ml[order_id]["shipping_id"]  = str(shipment_id)
 
-        # Si esta ready_to_ship → descargar etiqueta inmediatamente
+        # NO auto-descargar — marca como printed en ML.
+        # El estado ready_to_ship solo se registra, la etiqueta se baja bajo demanda.
         if estado == "ready_to_ship" and order_id:
-            print(f"[WEBHOOK] Pedido {order_id} ready_to_ship — descargando etiqueta...")
-            _time.sleep(2)
-            _encolar_descarga_etiqueta(order_id)
+            print(f"[WEBHOOK] Pedido {order_id} ready_to_ship — listo para imprimir")
 
     except Exception as e:
         print(f"[WEBHOOK] Error procesando shipment {shipment_id}: {e}")

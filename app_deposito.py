@@ -1784,6 +1784,38 @@ class AsistenteDepositoApp:
                      fg=C["text_lo"]).pack(pady=50)
             return
 
+        tipo_filtro = self._ml_filtro_tipo.get()
+
+        # Si estamos en "Todos", agrupar por tipo con encabezados de seccion
+        if tipo_filtro == "todos":
+            grupos = {"flex": [], "me2": [], "me1": [], "desconocido": []}
+            for ped in pedidos:
+                t = self._tipo_logistica(ped)
+                grupos.setdefault(t, []).append(ped)
+
+            secciones = [
+                ("flex", "⚡  MERCADO FLEX",    "#7C3AED"),
+                ("me2",  "🚚  MERCADO ENVÍOS",  "#2563EB"),
+                ("me1",  "📦  ME1 / PROPIO",    "#0891B2"),
+                ("desconocido", "❓  SIN CLASIFICAR", "#475569"),
+            ]
+            idx = 0
+            for key, titulo, color in secciones:
+                lista = grupos.get(key, [])
+                if not lista:
+                    continue
+                # Encabezado de sección
+                hdr = tk.Frame(self.frame_ml, bg=color)
+                hdr.pack(fill="x", pady=(8 if idx else 0, 0))
+                tk.Label(hdr, text=f"  {titulo}   ·   {len(lista)} pedido(s)",
+                         font=("Segoe UI Black", 10), bg=color, fg="white",
+                         anchor="w", pady=6).pack(fill="x", padx=4)
+                self._ml_render_filas(lista)
+                idx += 1
+        else:
+            self._ml_render_filas(pedidos)
+
+    def _ml_render_filas(self, pedidos):
         bg_alt = [C["card"], C["bg_dark"]]
         for i, ped in enumerate(pedidos):
             bg   = bg_alt[i % 2]
