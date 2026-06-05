@@ -1652,6 +1652,23 @@ class AsistenteDepositoApp:
             btn.pack(side="left")
             self._ml_sub_btns[key] = (btn, color)
 
+        # Separador
+        tk.Frame(sub_tabs, bg=C["border"], width=1).pack(
+            side="left", fill="y", padx=10, pady=4)
+
+        # Toggle "Solo pendientes" — ACTIVO POR DEFECTO
+        self.var_solo_pendientes = tk.BooleanVar(value=True)
+        chk = tk.Checkbutton(
+            sub_tabs, text="⏳ Solo pendientes",
+            variable=self.var_solo_pendientes,
+            font=("Segoe UI Semibold", 9),
+            bg=C["bg_dark"], fg=C["warning"],
+            activebackground=C["bg_dark"],
+            selectcolor=C["card"],
+            relief="flat", cursor="hand2", bd=0,
+            command=self._ml_filtrar)
+        chk.pack(side="left", padx=4)
+
         # Badges de conteo
         self.lbl_flex_badge  = tk.Label(sub_tabs, text="",
                                          font=("Segoe UI", 8), bg="#7C3AED",
@@ -1740,13 +1757,23 @@ class AsistenteDepositoApp:
 
     def _ml_filtrar(self):
         q    = self.var_buscar_ml.get().strip().lower()
-        tipo = self._ml_filtro_tipo.get()  # Usar siempre el StringVar
+        tipo = self._ml_filtro_tipo.get()
         cta  = getattr(self, "_ml_cuenta_filtro", "todas")
+        solo_pendientes = getattr(self, "var_solo_pendientes",
+                                  tk.BooleanVar(value=True)).get()
         peds = list(self._ml_pedidos.values())
 
         # Filtrar por cuenta ML
         if cta != "todas":
             peds = [p for p in peds if p.get("_cuenta") == cta]
+
+        # ── SOLO PENDIENTES (por defecto activo) ──────────────────────────────
+        # Solo muestra pedidos NO impresos con estado ready_to_ship o sin estado
+        if solo_pendientes:
+            peds = [p for p in peds
+                    if not p.get("impreso", False)
+                    and p.get("estado_envio","") not in
+                    ("shipped", "delivered", "cancelled", "not_delivered")]
 
         # Filtrar por tipo de logística
         if tipo != "todos":
@@ -1761,14 +1788,25 @@ class AsistenteDepositoApp:
                         q in it.get("sku","").lower()
                         for it in p.get("items",[]))]
 
-        # Actualizar badges de tipo
-        todos = list(self._ml_pedidos.values())
-        n_flex = sum(1 for p in todos if self._tipo_logistica(p) == "flex")
-        n_me2  = sum(1 for p in todos if self._tipo_logistica(p) == "me2")
-        self.lbl_flex_badge.config(text=f" {n_flex} " if n_flex else "")
-        if n_flex: self.lbl_flex_badge.pack(side="left", after=self._ml_sub_btns["flex"][0])
-        self.lbl_me2_badge.config(text=f" {n_me2} " if n_me2 else "")
-        if n_me2:  self.lbl_me2_badge.pack(side="left", after=self._ml_sub_btns["me2"][0])
+        # Actualizar badges — contar solo pendientes por tipo
+        base = [p for p in self._ml_pedidos.values()
+                if not p.get("impreso", False)
+                and p.get("estado_envio","") not in
+                ("shipped","delivered","cancelled","not_delivered")]
+        n_flex = sum(1 for p in base if self._tipo_logistica(p) == "flex")
+        n_me2  = sum(1 for p in base if self._tipo_logistica(p) == "me2")
+        n_me1  = sum(1 for p in base if self._tipo_logistica(p) == "me1")
+
+        for key, badge_attr, count in [
+            ("flex", "lbl_flex_badge", n_flex),
+            ("me2",  "lbl_me2_badge",  n_me2),
+        ]:
+            lbl = getattr(self, badge_attr, None)
+            if lbl:
+                lbl.config(text=f" {count} " if count else "")
+                if count:
+                    btn = self._ml_sub_btns[key][0]
+                    lbl.pack(side="left", after=btn)
 
         self._ml_render_pedidos(peds)
 
