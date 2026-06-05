@@ -1701,32 +1701,30 @@ class AsistenteDepositoApp:
     def _tipo_logistica(self, ped):
         """
         Clasifica un pedido en: flex, me2, me1, desconocido.
-        SIEMPRE recalcula desde logistica para evitar valores stale del servidor.
+        SIEMPRE recalcula desde logistica. No asume me2 sin confirmar.
         """
         log = (ped.get("logistica") or "").lower().strip()
 
-        # Clasificar por logistic_type (campo definitivo de ML)
+        # Clasificacion definitiva por logistic_type
         if log == "self_service":
             return "flex"
-        if log in ("cross_docking", "drop_off", "xd_drop_off", "fulfillment", "turbo"):
+        if log in ("cross_docking", "drop_off", "xd_drop_off",
+                   "fulfillment", "turbo", "xd_same_day"):
             return "me2"
-        if log == "default":
+        if log in ("default", "custom", "not_specified"):
             return "me1"
 
-        # Fallback: usar tipo pre-calculado del servidor si logistica está vacía
-        tipo = (ped.get("tipo") or "").lower()
-        if tipo in ("flex", "me1", "me2"):
-            return tipo
-
-        # Último fallback por tags
+        # Fallback por tags
         tags_str = " ".join(t.lower() for t in ped.get("tags", []))
         if "self_service" in tags_str or "flex" in tags_str:
             return "flex"
 
-        # Si tiene shipping_id y no hay info de logistica → asumir me2
-        if ped.get("shipping_id"):
-            return "me2"
+        # Fallback por tipo pre-calculado del servidor
+        tipo = (ped.get("tipo") or "").lower()
+        if tipo in ("flex", "me1", "me2"):
+            return tipo
 
+        # Sin info confirmada → desconocido (NO asumir me2)
         return "desconocido"
 
     def _ml_set_filtro(self, key, color):

@@ -369,45 +369,39 @@ h1{color:#EF4444;font-size:20px;margin:0 0 16px;text-align:center}
 
 def _calcular_tipo(logistica, tags_order=None, shipping_id=""):
     """
-    Clasifica el tipo de logistica segun documentacion oficial ML:
+    Clasifica el tipo de logistica segun documentacion oficial ML.
+    SOLO clasifica con certeza si hay logistic_type o tags claros.
+    Si no hay info suficiente, devuelve 'desconocido' (NO asume me2).
 
     ME2 (Mercado Envios 2):
-      - self_service  → Flex (vendedor despacha)
-      - cross_docking → Colectas (ML retira en vendedor)
-      - xd_drop_off   → Places (vendedor lleva a punto)
-      - drop_off      → Drop Off
-      - fulfillment   → Full (stock en deposito ML)
-      - turbo         → Turbo
-
-    ME1 (Mercado Envios 1):
-      - default       → logistica propia del vendedor
+      - self_service  -> Flex
+      - cross_docking -> Colectas
+      - xd_drop_off   -> Places
+      - drop_off      -> Drop Off
+      - fulfillment   -> Full
+      - turbo         -> Turbo
+    ME1:
+      - default       -> logistica propia
     """
     log = (logistica or "").lower().strip()
 
-    # Flex — subtipo de ME2 pero se muestra separado
+    # Clasificacion definitiva por logistic_type
     if log == "self_service":
         return "flex"
-
-    # ME2 — todos los subtipos de Mercado Envios 2
     if log in ("cross_docking", "drop_off", "xd_drop_off",
-               "fulfillment", "turbo"):
+               "fulfillment", "turbo", "xd_same_day"):
         return "me2"
-
-    # ME1 — logistica propia
     if log == "default":
+        return "me1"
+    if log in ("custom", "not_specified"):
         return "me1"
 
     # Fallback por tags del order
     tags_str = " ".join(t.lower() for t in (tags_order or []))
     if "self_service" in tags_str or "flex" in tags_str:
         return "flex"
-    if "turbo" in tags_str:
-        return "me2"
 
-    # Si tiene shipping_id → algun tipo de ME2
-    if shipping_id:
-        return "me2"
-
+    # Sin logistic_type confirmado → desconocido (no asumir me2)
     return "desconocido"
     """Carga la BD de SKUs desde variable de entorno."""
     global _sku_db
@@ -653,28 +647,31 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
             if not it["sku"] and it["item_id"] in sku_map:
                 it["sku"] = sku_map[it["item_id"]]
 
-    # 2. Enriquecer shipments EN PARALELO (max 10 threads simultaneos)
+    # 2. Enriquecer shipments EN PARALELO (max 12 threads simultaneos)
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def _fetch_shipment(oid):
         ped = pedidos.get(oid)
         if not ped or not ped.get("shipping_id"):
             return oid, None
-        try:
-            rs = _ml_get_cuenta(f"/shipments/{ped['shipping_id']}", cuenta_id)
-            if rs.status_code == 200:
-                return oid, rs.json()
-        except Exception:
-            pass
+        # Reintentar hasta 2 veces si falla
+        for intento in range(2):
+            try:
+                rs = _ml_get_cuenta(f"/shipments/{ped['shipping_id']}", cuenta_id)
+                if rs.status_code == 200:
+                    return oid, rs.json()
+            except Exception:
+                pass
         return oid, None
 
     oids_con_shipping = [oid for oid, p in pedidos.items() if p.get("shipping_id")]
 
     if oids_con_shipping:
-        with ThreadPoolExecutor(max_workers=10) as ex:
+        with ThreadPoolExecutor(max_workers=12) as ex:
             futures = {ex.submit(_fetch_shipment, oid): oid
                        for oid in oids_con_shipping}
-            for future in as_completed(futures, timeout=30):
+            # Sin timeout global — esperar a que TODOS terminen
+            for future in as_completed(futures):
                 try:
                     oid, sd = future.result()
                     if sd and oid in pedidos:
@@ -688,8 +685,6 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                         ped["tipo"] = _calcular_tipo(
                             logistica, ped.get("tags",[]),
                             ped.get("shipping_id",""))
-                        if logistica:
-                            print(f"[LOG] {oid}: {logistica} → {ped['tipo']}")
                 except Exception:
                     pass
 
@@ -2657,24 +2652,20 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function tipoLogistica(p) {
-  // SIEMPRE usar logistica primero — es el campo definitivo de ML
   const log  = (p.logistica || '').toLowerCase().trim();
   const tags = (p.tags || []).map(t => t.toLowerCase()).join(' ');
 
   if (log === 'self_service')                                        return 'flex';
   if (['cross_docking','drop_off','xd_drop_off',
-       'fulfillment','turbo'].includes(log))                        return 'me2';
-  if (log === 'default')                                            return 'me1';
+       'fulfillment','turbo','xd_same_day'].includes(log))          return 'me2';
+  if (['default','custom','not_specified'].includes(log))           return 'me1';
 
-  // Fallback por tags
   if (tags.includes('self_service') || tags.includes('flex'))      return 'flex';
 
-  // Fallback por tipo pre-calculado (solo si logistica vacia)
   const tipo = (p.tipo || '').toLowerCase();
   if (['flex','me1','me2'].includes(tipo))                          return tipo;
 
-  // Si tiene shipping_id → algun tipo de ME2
-  if (p.shipping_id)                                               return 'me2';
+  // Sin info confirmada → desconocido (NO asumir me2)
   return 'desconocido';
 }
 
