@@ -1730,6 +1730,7 @@ class AsistenteDepositoApp:
     def _ml_set_filtro(self, key, color):
         """Cambia la sub-pestaña activa."""
         self._ml_filtro_actual = key
+        self._ml_filtro_tipo.set(key)  # SINCRONIZAR el StringVar
         for k, (btn, c) in self._ml_sub_btns.items():
             if k == key:
                 btn.config(bg=c, fg="white")
@@ -1739,7 +1740,7 @@ class AsistenteDepositoApp:
 
     def _ml_filtrar(self):
         q    = self.var_buscar_ml.get().strip().lower()
-        tipo = getattr(self, "_ml_filtro_actual", "todos")
+        tipo = self._ml_filtro_tipo.get()  # Usar siempre el StringVar
         cta  = getattr(self, "_ml_cuenta_filtro", "todas")
         peds = list(self._ml_pedidos.values())
 
