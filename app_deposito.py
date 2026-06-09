@@ -245,9 +245,19 @@ class VentanaConfiguracion(tk.Toplevel):
         canvas.pack(side="left", fill="both", expand=True)
         body = tk.Frame(canvas, bg=C["bg_dark"], padx=26, pady=14)
         _win = canvas.create_window((0,0), window=body, anchor="nw")
-        body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        def _scroll_cfg(e):
+            canvas.yview_scroll(int(-1*(e.delta/120)), "units")
+
+        body.bind("<Configure>",   lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(_win, width=e.width))
-        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        canvas.bind("<MouseWheel>", _scroll_cfg)
+        body.bind("<MouseWheel>",   _scroll_cfg)
+        # Bindear scroll a todos los hijos que se agreguen después
+        self._cfg_canvas    = canvas
+        self._cfg_body      = body
+        self._cfg_scroll_fn = _scroll_cfg
 
         def sep():
             tk.Frame(body, bg=C["border"], height=1).pack(fill="x", pady=(14,12))
@@ -442,6 +452,14 @@ class VentanaConfiguracion(tk.Toplevel):
         self.after(300, self._cfg_verificar_ml)
 
         tk.Frame(body, bg=C["bg_dark"], height=16).pack()
+
+        # Bindear scroll a TODOS los widgets del body
+        def _bind_all(widget):
+            try: widget.bind("<MouseWheel>", self._cfg_scroll_fn)
+            except Exception: pass
+            for ch in widget.winfo_children():
+                _bind_all(ch)
+        self.after(100, lambda: _bind_all(body))
 
     def _cfg_conectar_ml(self):
         """Abre el browser para conectar/agregar una cuenta ML."""
@@ -1669,6 +1687,19 @@ class AsistenteDepositoApp:
             command=self._ml_filtrar)
         chk.pack(side="left", padx=4)
 
+        # Toggle "Ver impresos"
+        self.var_ver_impresos = tk.BooleanVar(value=False)
+        chk2 = tk.Checkbutton(
+            sub_tabs, text="✅ Ver impresos",
+            variable=self.var_ver_impresos,
+            font=("Segoe UI Semibold", 9),
+            bg=C["bg_dark"], fg=C["success"],
+            activebackground=C["bg_dark"],
+            selectcolor=C["card"],
+            relief="flat", cursor="hand2", bd=0,
+            command=self._ml_filtrar)
+        chk2.pack(side="left", padx=4)
+
         # Badges de conteo
         self.lbl_flex_badge  = tk.Label(sub_tabs, text="",
                                          font=("Segoe UI", 8), bg="#7C3AED",
@@ -1745,115 +1776,156 @@ class AsistenteDepositoApp:
         return "desconocido"
 
     def _ml_set_filtro(self, key, color):
-        """Cambia la sub-pestaña activa."""
+        """Cambia la sub-pestaña activa y actualiza botones."""
         self._ml_filtro_actual = key
-        self._ml_filtro_tipo.set(key)  # SINCRONIZAR el StringVar
+        self._ml_filtro_tipo.set(key)
         for k, (btn, c) in self._ml_sub_btns.items():
-            if k == key:
-                btn.config(bg=c, fg="white")
-            else:
-                btn.config(bg=C["panel"], fg=C["text_mid"])
+            btn.config(bg=c if k==key else C["panel"],
+                       fg="white" if k==key else C["text_mid"])
+        # Actualizar label del botón Generar Lote según pestaña activa
+        NOMBRES = {
+            "todos": "▶  Generar Lote de Picking",
+            "flex":  "▶  Generar Lote Flex",
+            "me2":   "▶  Generar Lote ME2",
+            "me1":   "▶  Generar Lote ME1",
+        }
+        if hasattr(self, "btn_ml_lote"):
+            self.btn_ml_lote.config(text=NOMBRES.get(key, "▶  Generar Lote"))
         self._ml_filtrar()
 
     def _ml_filtrar(self):
-        q    = self.var_buscar_ml.get().strip().lower()
-        tipo = self._ml_filtro_tipo.get()
-        cta  = getattr(self, "_ml_cuenta_filtro", "todas")
-        solo_pendientes = getattr(self, "var_solo_pendientes",
-                                  tk.BooleanVar(value=True)).get()
-        peds = list(self._ml_pedidos.values())
+        """Filtra y renderiza los pedidos según pestañas y toggles activos."""
+        q            = self.var_buscar_ml.get().strip().lower()
+        tipo         = self._ml_filtro_tipo.get()
+        cta          = getattr(self, "_ml_cuenta_filtro", "todas")
+        solo_pend    = getattr(self, "var_solo_pendientes",
+                               tk.BooleanVar(value=True)).get()
+        ver_impresos = getattr(self, "var_ver_impresos",
+                               tk.BooleanVar(value=False)).get()
 
-        # Filtrar por cuenta ML
+        todos = list(self._ml_pedidos.values())
+
+        # Filtrar por cuenta
         if cta != "todas":
-            peds = [p for p in peds if p.get("_cuenta") == cta]
+            todos = [p for p in todos if p.get("_cuenta") == cta]
 
-        # ── SOLO PENDIENTES (por defecto activo) ──────────────────────────────
-        # Solo muestra pedidos NO impresos con estado ready_to_ship o sin estado
-        if solo_pendientes:
-            peds = [p for p in peds
-                    if not p.get("impreso", False)
-                    and p.get("estado_envio","") not in
-                    ("shipped", "delivered", "cancelled", "not_delivered")]
+        # Filtrar por texto
+        if q:
+            todos = [p for p in todos if
+                     q in p.get("comprador","").lower() or
+                     q in str(p.get("order_id","")).lower() or
+                     any(q in it.get("titulo","").lower() or
+                         q in it.get("sku","").lower()
+                         for it in p.get("items",[]))]
 
-        # Filtrar por tipo de logística
+        # Separar pendientes e impresos
+        ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
+        pendientes = [p for p in todos
+                      if not p.get("impreso", False)
+                      and p.get("estado_envio","") not in ESTADOS_FINALES]
+        impresos   = [p for p in todos if p.get("impreso", False)]
+
+        # Decidir qué mostrar
+        if solo_pend and not ver_impresos:
+            peds = pendientes
+        elif ver_impresos and not solo_pend:
+            peds = impresos
+        elif ver_impresos and solo_pend:
+            peds = pendientes + impresos
+        else:
+            peds = todos
+
+        # Filtrar por tipo
         if tipo != "todos":
             peds = [p for p in peds if self._tipo_logistica(p) == tipo]
 
-        # Filtrar por búsqueda de texto
-        if q:
-            peds = [p for p in peds if
-                    q in p.get("comprador","").lower() or
-                    q in str(p.get("order_id","")).lower() or
-                    any(q in it.get("titulo","").lower() or
-                        q in it.get("sku","").lower()
-                        for it in p.get("items",[]))]
-
-        # Actualizar badges — contar solo pendientes por tipo
-        base = [p for p in self._ml_pedidos.values()
-                if not p.get("impreso", False)
-                and p.get("estado_envio","") not in
-                ("shipped","delivered","cancelled","not_delivered")]
-        n_flex = sum(1 for p in base if self._tipo_logistica(p) == "flex")
-        n_me2  = sum(1 for p in base if self._tipo_logistica(p) == "me2")
-        n_me1  = sum(1 for p in base if self._tipo_logistica(p) == "me1")
-
-        for key, badge_attr, count in [
-            ("flex", "lbl_flex_badge", n_flex),
-            ("me2",  "lbl_me2_badge",  n_me2),
-        ]:
+        # Actualizar badges con pendientes por tipo
+        for key, badge_attr in [("flex","lbl_flex_badge"),("me2","lbl_me2_badge")]:
+            n   = sum(1 for p in pendientes if self._tipo_logistica(p) == key)
             lbl = getattr(self, badge_attr, None)
             if lbl:
-                lbl.config(text=f" {count} " if count else "")
-                if count:
-                    btn = self._ml_sub_btns[key][0]
-                    lbl.pack(side="left", after=btn)
+                lbl.config(text=f" {n} " if n else "")
 
-        self._ml_render_pedidos(peds)
+        self._ml_render_pedidos(peds, pendientes, impresos)
 
-    def _ml_render_pedidos(self, pedidos):
+    def _ml_render_pedidos(self, pedidos, pendientes=None, impresos=None):
+        """Renderiza pedidos con secciones separadas por tipo de logística."""
         for w in self.frame_ml.winfo_children():
             w.destroy()
 
         if not pedidos:
-            tk.Label(self.frame_ml, text="Sin pedidos en esta categoría",
-                     font=("Segoe UI", 11), bg=C["bg_dark"],
-                     fg=C["text_lo"]).pack(pady=50)
+            vf = tk.Frame(self.frame_ml, bg=C["bg_dark"])
+            vf.pack(fill="both", expand=True)
+            tk.Label(vf, text="✅", font=("Segoe UI",32),
+                     bg=C["bg_dark"], fg=C["success"]).pack(pady=(40,4))
+            tk.Label(vf, text="No hay pedidos pendientes",
+                     font=("Segoe UI Semibold",12), bg=C["bg_dark"],
+                     fg=C["text_mid"]).pack()
+            tk.Label(vf,
+                     text=f"Impresos: {len(impresos or [])}  ·  Pendientes: {len(pendientes or [])}",
+                     font=FONT_SMALL, bg=C["bg_dark"], fg=C["text_lo"]).pack(pady=4)
             return
 
         tipo_filtro = self._ml_filtro_tipo.get()
 
+        SECCIONES = [
+            ("flex",        "⚡  MERCADO FLEX",    "#7C3AED"),
+            ("me2",         "🚚  MERCADO ENVÍOS",  "#2563EB"),
+            ("me1",         "📦  ME1 / PROPIO",    "#0891B2"),
+            ("desconocido", "❓  SIN CLASIFICAR",  "#475569"),
+        ]
+        COLORES = {k:c for k,_,c in SECCIONES}
+
         if tipo_filtro == "todos":
-            # Agrupar con encabezados de sección
+            # Agrupar por tipo con encabezados
             grupos = {}
             for ped in pedidos:
                 t = self._tipo_logistica(ped)
                 grupos.setdefault(t, []).append(ped)
 
-            SECCIONES = [
-                ("flex",        "⚡  MERCADO FLEX",     "#7C3AED"),
-                ("me2",         "🚚  MERCADO ENVÍOS",   "#2563EB"),
-                ("me1",         "📦  ME1 / PROPIO",     "#0891B2"),
-                ("desconocido", "❓  SIN CLASIFICAR",   "#475569"),
-            ]
             primer = True
             for key, titulo, color in SECCIONES:
                 lista = grupos.get(key, [])
                 if not lista:
                     continue
-                # Encabezado de sección con color
+                if not primer:
+                    tk.Frame(self.frame_ml, bg=C["border"],
+                             height=2).pack(fill="x", pady=2)
+                # Encabezado de sección
                 hdr = tk.Frame(self.frame_ml, bg=color)
-                hdr.pack(fill="x", pady=(0 if primer else 8, 0))
+                hdr.pack(fill="x")
                 tk.Label(hdr,
                          text=f"   {titulo}   ·   {len(lista)} pedido(s)",
                          font=("Segoe UI Black", 10), bg=color,
-                         fg="white", anchor="w", pady=7).pack(fill="x")
+                         fg="white", anchor="w", pady=8).pack(fill="x")
+                self._ml_render_col_header()
                 self._ml_render_filas(lista, color)
                 primer = False
         else:
-            # Filtro específico — sin encabezado, solo las filas
-            COLORES = {"flex":"#7C3AED","me2":"#2563EB","me1":"#0891B2","desconocido":"#475569"}
-            color = COLORES.get(tipo_filtro, C["accent"])
+            # Pestaña específica
+            titulo = {k:t for k,t,_ in SECCIONES}.get(tipo_filtro, tipo_filtro.upper())
+            color  = COLORES.get(tipo_filtro, C["accent"])
+            hdr = tk.Frame(self.frame_ml, bg=color)
+            hdr.pack(fill="x")
+            tk.Label(hdr,
+                     text=f"   {titulo}   ·   {len(pedidos)} pedido(s)",
+                     font=("Segoe UI Black", 10), bg=color,
+                     fg="white", anchor="w", pady=8).pack(fill="x")
+            self._ml_render_col_header()
             self._ml_render_filas(pedidos, color)
+
+    def _ml_render_col_header(self):
+        """Cabecera de columnas."""
+        hdr = tk.Frame(self.frame_ml, bg=C["panel"], pady=2)
+        hdr.pack(fill="x")
+        tk.Frame(hdr, bg=C["panel"], width=4).pack(side="left", fill="y")
+        for txt, w in [("Tipo",9),("# Pedido",11),("Fecha",9),
+                       ("Comprador",16),("SKU · Producto",38),
+                       ("Estado",12),("Acción",10)]:
+            tk.Label(hdr, text=txt, font=("Segoe UI",8,"bold"),
+                     bg=C["panel"], fg=C["text_lo"],
+                     width=w, anchor="w").pack(side="left", padx=3)
+        tk.Frame(self.frame_ml, bg=C["border"], height=1).pack(fill="x")
 
     def _ml_render_filas(self, pedidos, color_tipo=None):
         """Renderiza filas de pedidos con columnas alineadas."""
@@ -1972,6 +2044,8 @@ class AsistenteDepositoApp:
                           ).pack(side="left", padx=4)
 
         self.canvas_ml.yview_moveto(0)
+        # Hacer scrollable todos los widgets del frame_ml
+        self._hacer_scrollable(self.frame_ml, self.canvas_ml)
 
     def _switch_tab(self, nombre):
         """Alterna entre Dashboard, Pedidos ML y Picking/Packing."""
@@ -2360,65 +2434,6 @@ class AsistenteDepositoApp:
 
     # ── Renderizado de pedidos ────────────────────────────────────────────────
 
-    def _ml_filtrar(self):
-        q = self.var_buscar_ml.get().strip().lower()
-        peds = list(self._ml_pedidos.values())
-        if q:
-            peds = [p for p in peds if
-                    q in p.get("comprador","").lower() or
-                    q in str(p.get("order_id","")).lower() or
-                    any(q in it.get("titulo","").lower() or q in it.get("sku","").lower()
-                        for it in p.get("items",[]))]
-        self._ml_render_pedidos(peds)
-
-    def _ml_render_pedidos(self, pedidos):
-        for w in self.frame_ml.winfo_children():
-            w.destroy()
-
-        if not pedidos:
-            self._ml_mostrar_placeholder("Sin pedidos que mostrar")
-            return
-
-        bg_alt = [C["card"], C["bg_dark"]]
-        for i, ped in enumerate(pedidos):
-            bg  = bg_alt[i % 2]
-            fila = tk.Frame(self.frame_ml, bg=bg, pady=4)
-            fila.pack(fill="x")
-
-            def _lbl(txt, w, fg=None, mono=False, bold=False):
-                f = ("Consolas", 9) if mono else (("Segoe UI Semibold", 9) if bold else FONT_SMALL)
-                tk.Label(fila, text=txt, font=f, bg=bg,
-                         fg=fg or C["text_hi"], width=w,
-                         anchor="w", wraplength=250).pack(side="left", padx=4)
-
-            # Pedido
-            _lbl(f"#{ped['order_id']}", 10, fg=C["accent"], bold=True)
-            # Fecha
-            _lbl(ped.get("fecha","")[:10], 8, fg=C["text_mid"])
-            # Comprador
-            _lbl(ped.get("comprador","")[:20], 18, bold=True)
-            # Productos
-            items_txt = "\n".join(
-                f"{it.get('sku','?')}  {(self.db_nombres.get(it.get('sku',''),{}) or {}).get('nombre', it.get('titulo',''))[:22]}  x{it.get('cantidad',1)}"
-                for it in ped.get("items",[])[:4])
-            if len(ped.get("items",[])) > 4:
-                items_txt += f"\n+{len(ped['items'])-4} más"
-            _lbl(items_txt, 42, mono=True)
-            # Estado envío (sin columna de precio)
-            est = ped.get("estado_envio","") or ped.get("logistica","")
-            col_est = C["success"] if "ready" in est else \
-                      (C["warning"] if est else C["text_lo"])
-            _lbl(est[:14], 14, fg=col_est)
-            # Botón etiqueta
-            tk.Button(fila, text="Etiqueta",
-                      font=("Segoe UI", 8), bg="#CA8A04", fg="black",
-                      activebackground="#EAD700", activeforeground="black",
-                      relief="flat", cursor="hand2", padx=8, pady=2, bd=0,
-                      command=lambda oid=ped["order_id"]: self._ml_ver_etiqueta(oid)
-                      ).pack(side="left", padx=4)
-
-        self.canvas_ml.yview_moveto(0)
-
     def _ml_mostrar_placeholder(self, texto):
         for w in self.frame_ml.winfo_children():
             w.destroy()
@@ -2468,13 +2483,44 @@ class AsistenteDepositoApp:
     # ── Generar lote de picking ───────────────────────────────────────────────
 
     def _ml_generar_lote(self):
-        """Toma los pedidos ML pendientes y genera el lote de picking."""
-        pendientes = [p for p in self._ml_pedidos.values() if not p.get("impreso")]
+        """
+        Genera el lote de picking usando SOLO los pedidos visibles actualmente:
+        - De la pestaña seleccionada (Flex, Mercado Envíos, ME1 o Todos)
+        - Solo pendientes (no impresos, no en estados finales)
+        """
+        tipo_activo = self._ml_filtro_tipo.get()
+        ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
+        NOMBRES_TIPO = {
+            "flex": "⚡ Mercado Flex",
+            "me2":  "🚚 Mercado Envíos",
+            "me1":  "📦 ME1 / Propio",
+            "todos": "Todos los tipos",
+        }
+
+        # Tomar SOLO los pedidos de la pestaña activa y pendientes
+        todos = list(self._ml_pedidos.values())
+
+        # Filtrar pendientes (no impresos, no finales)
+        pendientes = [p for p in todos
+                      if not p.get("impreso", False)
+                      and p.get("estado_envio","") not in ESTADOS_FINALES]
+
+        # Filtrar por tipo de la pestaña activa
+        if tipo_activo != "todos":
+            pendientes = [p for p in pendientes
+                          if self._tipo_logistica(p) == tipo_activo]
+
+        nombre_tab = NOMBRES_TIPO.get(tipo_activo, tipo_activo)
+
         if not pendientes:
-            messagebox.showwarning("Sin pedidos", "No hay pedidos pendientes.", parent=self.root)
+            messagebox.showwarning(
+                "Sin pedidos pendientes",
+                f"No hay pedidos pendientes en la pestaña '{nombre_tab}'.\n\n"
+                f"Verificá que haya pedidos en estado ready_to_ship.",
+                parent=self.root)
             return
 
-        # Consolidar SKUs de todos los pedidos
+        # Consolidar SKUs de los pedidos filtrados
         total_req  = {}
         sku_nombre = {}
         for ped in pendientes:
@@ -2518,21 +2564,25 @@ class AsistenteDepositoApp:
             return (0, int(m.group(1)), n) if m else (1, 0, n)
 
         grupos = [{"pasillo": k, "items": v}
-                  for k, v in sorted(grupos_dict.items(), key=lambda x: _orden_pas(x[0]))]
+                  for k, v in sorted(grupos_dict.items(),
+                                     key=lambda x: _orden_pas(x[0]))]
 
         total_skus = len(total_req)
         total_uds  = sum(total_req.values())
         sin_bd     = sum(1 for sku in total_req if sku not in self.db_nombres)
 
-        # Confirmar con el usuario
-        msg = (f"Se van a preparar {len(pendientes)} pedido(s):\n"
-               f"• {total_skus} SKUs distintos\n"
-               f"• {total_uds} unidades en total\n"
-               f"• {len(grupos)} pasillo(s)")
+        # Confirmar con el usuario mostrando de qué pestaña viene el lote
+        msg = (f"Lote de picking — {nombre_tab}\n\n"
+               f"  • {len(pendientes)} pedido(s) pendientes\n"
+               f"  • {total_skus} SKUs distintos\n"
+               f"  • {total_uds} unidades en total\n"
+               f"  • {len(grupos)} pasillo(s)")
         if sin_bd > 0:
-            msg += f"\n\n⚠  {sin_bd} SKUs sin ubicacion en la BD.\nApareceran en 'Sin ubicacion en BD'."
+            msg += (f"\n\n⚠  {sin_bd} SKUs sin ubicacion en la BD.\n"
+                    f"Apareceran en 'Sin ubicacion en BD'.")
 
-        if not messagebox.askokcancel("Generar Lote de Picking", msg, parent=self.root):
+        if not messagebox.askokcancel(
+                f"Generar Lote — {nombre_tab}", msg, parent=self.root):
             return
 
         # Construir pedidos internos para Fase 1 y Fase 2
@@ -2572,7 +2622,7 @@ class AsistenteDepositoApp:
         self.lbl_fase_actual.config(text="● FASE 1: COLECTA EN DEPOSITO", fg=C["accent"])
         self.lbl_col1_header.config(text="FASE 1: COLECTA EN DEPOSITO")
         self.lbl_estado_pdf.config(
-            text=f"Lote ML: {len(self.pedidos)} pedidos / {total_uds} unidades — Subiendo a celulares…",
+            text=f"Lote {nombre_tab}: {len(self.pedidos)} pedidos / {total_uds} uds — Subiendo a celulares…",
             fg=C["accent"])
 
         # Siempre subir a Railway para que los celulares reciban el lote
@@ -2612,6 +2662,7 @@ class AsistenteDepositoApp:
             lambda e: canvas.yview_scroll(int(-1*(e.delta/120)),"units"))
         canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        self._dash_canvas = canvas
         self._build_dashboard_content()
 
     def _build_dashboard_content(self):
@@ -2770,6 +2821,10 @@ class AsistenteDepositoApp:
         tk.Label(f, text=f"Actualizado a las {_dt.now().strftime('%H:%M:%S')}",
                  font=("Segoe UI", 8), bg=C["bg_dark"],
                  fg=C["text_lo"]).pack(anchor="e", padx=pad, pady=(0,20))
+
+        # Scroll desde cualquier widget del dashboard
+        if hasattr(self, "_dash_canvas"):
+            self._hacer_scrollable(f, self._dash_canvas)
 
     def _refresh_dashboard(self):
         try:
@@ -3596,7 +3651,7 @@ class AsistenteDepositoApp:
 
                 self.fase1_items[sku] = {"checkbox": chk, "lbl_cnt": lbl_cnt, "req": qty}
 
-        self._bind_scroll_recursivo(self.frame_fase1)
+        self._bind_scroll_recursivo(self.frame_fase1, self.canvas_fase1)
 
     def _dibujar_fase2(self):
         """Lista por caja con checkmarks por SKU para el armado de pedidos."""
@@ -3659,7 +3714,7 @@ class AsistenteDepositoApp:
                              bg=C["card"], fg=C["text_hi"],
                              width=16, anchor="w").pack(anchor="w")
 
-        self._bind_scroll_recursivo(self.frame_fase1)
+        self._bind_scroll_recursivo(self.frame_fase1, self.canvas_fase1)
 
     def _animar_exito(self):
         """Flash verde en el panel de control al escanear correctamente."""
@@ -3716,15 +3771,53 @@ class AsistenteDepositoApp:
         self.root.after(400, _restaurar)
         self.canvas_fase1.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    def _bind_scroll_recursivo(self, widget):
-        """Enlaza scroll a todos los widgets hijos recursivamente."""
-        fn = getattr(self, '_scroll_fase1_fn', self._on_scroll_fase1)
+    def _bind_scroll_recursivo(self, widget, canvas=None):
+        """Enlaza scroll de rueda a todos los hijos de un widget hacia un canvas."""
+        target = canvas or getattr(self, 'canvas_fase1', None)
+        if not target:
+            return
+
+        def _scroll(e, c=target):
+            try:
+                c.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            except Exception:
+                pass
+
+        try:
+            widget.bind("<MouseWheel>", _scroll)
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            self._bind_scroll_recursivo(child, target)
+
+    def _scroll_universal(self, canvas):
+        """
+        Devuelve un handler de scroll para el canvas dado.
+        Úsalo para bindear cualquier widget al scroll de un canvas específico.
+        """
+        def _handler(e):
+            try:
+                canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            except Exception:
+                pass
+        return _handler
+
+    def _hacer_scrollable(self, widget, canvas):
+        """
+        Hace que un widget y todos sus hijos hagan scroll en el canvas dado.
+        Llamar después de agregar widgets al frame del canvas.
+        """
+        fn = self._scroll_universal(canvas)
+        self._bind_scroll_fn(widget, fn)
+
+    def _bind_scroll_fn(self, widget, fn):
+        """Aplica una función de scroll a widget y todos sus hijos recursivamente."""
         try:
             widget.bind("<MouseWheel>", fn)
         except Exception:
             pass
         for child in widget.winfo_children():
-            self._bind_scroll_recursivo(child)
+            self._bind_scroll_fn(child, fn)
 
     def actualizar_contador_global(self):
         pend = sum(1 for d in self.pedidos.values() if not d["impreso"])
