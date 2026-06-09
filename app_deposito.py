@@ -1441,6 +1441,8 @@ class AsistenteDepositoApp:
         self.root.after(100, self._cargar_db_interna)
         # Primer arranque
         self.root.after(600, self._verificar_primera_vez)
+        # Auto-refresh de pedidos ML cada 5 minutos
+        self.root.after(300_000, self._auto_refresh_ml)
 
     def _build_ui(self):
         # TOPBAR
@@ -1820,10 +1822,16 @@ class AsistenteDepositoApp:
 
         # Separar pendientes e impresos
         ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
+        SUBESTADOS_IMPRESOS = {"printed"}
+
         pendientes = [p for p in todos
                       if not p.get("impreso", False)
-                      and p.get("estado_envio","") not in ESTADOS_FINALES]
-        impresos   = [p for p in todos if p.get("impreso", False)]
+                      and p.get("estado_envio","") not in ESTADOS_FINALES
+                      and p.get("substatus","") not in SUBESTADOS_IMPRESOS]
+        impresos   = [p for p in todos
+                      if p.get("impreso", False)
+                      or p.get("substatus","") in SUBESTADOS_IMPRESOS
+                      or p.get("estado_envio","") in ESTADOS_FINALES]
 
         # Decidir qué mostrar
         if solo_pend and not ver_impresos:
@@ -2021,11 +2029,26 @@ class AsistenteDepositoApp:
             _col("\n".join(lineas) if lineas else "—", 40, mono=True)
 
             # Col 6: Estado envío
-            est = ped.get("estado_envio","") or "—"
-            col_est = C["success"]  if "ready" in est else \
-                      C["warning"]  if est not in ("—","delivered","cancelled") else \
-                      C["text_lo"]
-            _col(est[:14], 12, fg=col_est)
+            est       = ped.get("estado_envio","") or "—"
+            substatus = ped.get("substatus","") or ""
+
+            # Color según substatus real de ML
+            if substatus == "printed" or est in ("shipped","delivered"):
+                col_est = C["text_lo"]
+                est_txt = substatus or est
+            elif substatus == "ready_to_print":
+                col_est = C["warning"]
+                est_txt = "ready_to_print"
+            elif "ready" in est:
+                col_est = C["success"]
+                est_txt = est
+            elif est == "pending":
+                col_est = C["warning"]
+                est_txt = "pending"
+            else:
+                col_est = C["text_mid"]
+                est_txt = est
+            _col(est_txt[:16], 12, fg=col_est)
 
             # Col 7: Botón etiqueta / impreso
             if impreso:
@@ -2076,7 +2099,92 @@ class AsistenteDepositoApp:
 
     # ── Conexión ML ──────────────────────────────────────────────────────────
 
-    def _ml_verificar_conexion(self):
+    def _auto_refresh_ml(self):
+        """
+        Auto-refresh de pedidos ML cada 5 minutos.
+        Solo refresca si hay cuentas conectadas y el panel ML está activo.
+        Silencioso — no molesta al usuario.
+        """
+        try:
+            if self._ml_pedidos or getattr(self, "_ml_cuentas", {}):
+                # Refrescar en background sin cambiar la UI hasta tener datos
+                self._ml_refresh_pedidos_silencioso()
+        except Exception:
+            pass
+        # Reprogramar para 5 minutos
+        self.root.after(300_000, self._auto_refresh_ml)
+
+    def _ml_refresh_pedidos_silencioso(self):
+        """Refresca pedidos en background sin tocar la UI durante la carga."""
+        import threading, urllib.request, json as _j
+
+        fecha_desde = getattr(self, "_ml_fecha_desde_actual", None)
+        fecha_hasta = getattr(self, "_ml_fecha_hasta_actual", None)
+
+        def _worker():
+            try:
+                url = RAILWAY_URL.rstrip("/") + "/api/pedidos"
+                if fecha_desde:
+                    url += f"?fecha_desde={fecha_desde}"
+                    if fecha_hasta:
+                        url += f"&fecha_hasta={fecha_hasta}"
+                req = urllib.request.Request(
+                    url, headers={"X-API-Key": "everest2024"})
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    d = _j.loads(r.read())
+
+                if not d.get("ok"):
+                    return
+
+                nuevos = {p["order_id"]: p for p in d.get("pedidos", [])}
+                if not nuevos:
+                    return
+
+                # Detectar pedidos nuevos (que no estaban antes)
+                antes   = set(self._ml_pedidos.keys())
+                despues = set(nuevos.keys())
+                nuevos_ids = despues - antes
+
+                # Actualizar datos
+                self._ml_pedidos.update(nuevos)
+
+                def _update_ui():
+                    if not self.root.winfo_exists():
+                        return
+                    # Actualizar la vista si hay cambios
+                    self._ml_filtrar()
+
+                    # Notificar si hay pedidos nuevos
+                    if nuevos_ids:
+                        self._notificar_pedidos_nuevos(len(nuevos_ids))
+
+                self.root.after(0, _update_ui)
+
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _notificar_pedidos_nuevos(self, cantidad):
+        """Muestra indicador discreto de pedidos nuevos en la topbar."""
+        try:
+            plural = "pedido nuevo" if cantidad == 1 else "pedidos nuevos"
+            # Actualizar badge en la pestaña ML
+            if hasattr(self, "_btn_tab_ml"):
+                self._btn_tab_ml.config(
+                    text=f"📦  Pedidos ML  🔴{cantidad}")
+                # Restaurar después de 30 segundos
+                self.root.after(30_000, lambda: self._btn_tab_ml.config(
+                    text="📦  Pedidos ML") if self.root.winfo_exists() else None)
+            # Flash en el estado
+            if hasattr(self, "lbl_ml_estado"):
+                self.lbl_ml_estado.config(
+                    text=f"🔔 {cantidad} {plural}!",
+                    fg=C["warning"])
+        except Exception:
+            pass
+
+
         """Consulta el servidor Railway para ver todas las cuentas activas."""
         import threading
         def _worker():

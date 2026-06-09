@@ -403,16 +403,7 @@ def _calcular_tipo(logistica, tags_order=None, shipping_id=""):
 
     # Sin logistic_type confirmado → desconocido (no asumir me2)
     return "desconocido"
-    """Carga la BD de SKUs desde variable de entorno."""
-    global _sku_db
-    raw = os.environ.get(_SKU_DB_ENV_KEY, "").strip()
-    if raw:
-        try:
-            _sku_db = json.loads(raw)
-            print(f"[STARTUP] SKUs cargados: {len(_sku_db)}")
-        except Exception as e:
-            print(f"[STARTUP] Error cargando SKU_DB_JSON: {e}")
-            _sku_db = {}
+
 
 def _tokens_de(cuenta_id):
     """Devuelve el dict de tokens de una cuenta, o {} si no existe."""
@@ -425,15 +416,18 @@ def _token_valido_cuenta(cuenta_id=None):
     if not tok.get("access_token"):
         return False
     exp = tok.get("expires_at")
-    if exp and datetime.now() >= exp - timedelta(seconds=300):
-        _renovar_token_cuenta(cid)
+    if exp and isinstance(exp, datetime):
+        if datetime.now() >= exp - timedelta(seconds=300):
+            _renovar_token_cuenta(cid)
     return bool(_cuentas.get(cid, {}).get("access_token"))
 
+
 def _token_valido():
-    """Compatibilidad: verifica la cuenta_0."""
     return _token_valido_cuenta("cuenta_0")
 
+
 def _renovar_token_cuenta(cuenta_id):
+    """Renueva el access_token usando el refresh_token."""
     tok = _cuentas.get(cuenta_id, {})
     if not tok.get("refresh_token"):
         return
@@ -452,20 +446,23 @@ def _renovar_token_cuenta(cuenta_id):
             d = r.json()
             tok["access_token"]  = d["access_token"]
             tok["refresh_token"] = d.get("refresh_token", tok["refresh_token"])
-            tok["expires_at"]    = datetime.now() + timedelta(seconds=d.get("expires_in", 21600))
-            _cuentas[cuenta_id]  = tok
+            tok["expires_at"]    = datetime.now() + timedelta(
+                seconds=d.get("expires_in", 21600))
+            _cuentas[cuenta_id] = tok
             if cuenta_id == "cuenta_0":
                 _tokens.update(tok)
-            # Persistir tokens despues de cada renovacion
             _guardar_tokens()
             print(f"[TOKEN] Renovado OK para {cuenta_id}")
         else:
-            print(f"[TOKEN] Error renovando {cuenta_id}: {r.status_code} {r.text[:100]}")
+            print(f"[TOKEN] Error renovando {cuenta_id}: {r.status_code}")
     except Exception as e:
         print(f"[TOKEN] Excepcion renovando {cuenta_id}: {e}")
 
+
 def _renovar_token():
     _renovar_token_cuenta("cuenta_0")
+
+
 
 def _ml_get_cuenta(ruta, cuenta_id, params=None):
     """GET a la API ML usando los tokens de una cuenta específica."""
@@ -676,15 +673,36 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                     oid, sd = future.result()
                     if sd and oid in pedidos:
                         ped = pedidos[oid]
-                        log_new  = (sd.get("logistic") or {}).get("type", "")
-                        log_old  = sd.get("logistic_type", "")
+                        log_new   = (sd.get("logistic") or {}).get("type", "")
+                        log_old   = sd.get("logistic_type", "")
                         logistica = log_new or log_old
+                        status    = sd.get("status", "")
+                        substatus = sd.get("substatus", "")
+
                         ped["logistica"]    = logistica
-                        ped["estado_envio"] = sd.get("status", "")
-                        ped["substatus"]    = sd.get("substatus", "")
+                        ped["estado_envio"] = status
+                        ped["substatus"]    = substatus
                         ped["tipo"] = _calcular_tipo(
                             logistica, ped.get("tags",[]),
                             ped.get("shipping_id",""))
+
+                        # Sincronizar campo impreso desde ML
+                        # printed = etiqueta ya fue impresa
+                        # ready_to_print = falta imprimir
+                        # shipped/delivered = ya enviado (también "impreso")
+                        ESTADOS_IMPRESOS = {
+                            "printed", "shipped", "delivered",
+                            "not_delivered", "cancelled"
+                        }
+                        if substatus in ESTADOS_IMPRESOS or status in (
+                                "shipped", "delivered", "not_delivered", "cancelled"):
+                            ped["impreso"] = True
+                        elif substatus == "ready_to_print":
+                            ped["impreso"] = False
+                        # Si substatus vacío y status es ready_to_ship → pendiente
+                        elif status == "ready_to_ship" and not substatus:
+                            ped["impreso"] = False
+
                 except Exception:
                     pass
 
@@ -836,12 +854,25 @@ def _enriquecer_skus(pedidos):
                     log_new = (sd.get("logistic") or {}).get("type", "")
                     log_old = sd.get("logistic_type","")
                     logistica = log_new or log_old
+                    status    = sd.get("status","")
+                    substatus = sd.get("substatus","")
                     ped["logistica"]    = logistica
-                    ped["estado_envio"] = sd.get("status","")
-                    ped["substatus"]    = sd.get("substatus","")
-                    # Recalcular tipo con logistic_type real
+                    ped["estado_envio"] = status
+                    ped["substatus"]    = substatus
                     ped["tipo"] = _calcular_tipo(
                         logistica, ped.get("tags",[]), ped.get("shipping_id",""))
+                    # Sincronizar impreso desde substatus ML
+                    ESTADOS_IMPRESOS = {
+                        "printed","shipped","delivered",
+                        "not_delivered","cancelled"
+                    }
+                    if substatus in ESTADOS_IMPRESOS or status in (
+                            "shipped","delivered","not_delivered","cancelled"):
+                        ped["impreso"] = True
+                    elif substatus == "ready_to_print":
+                        ped["impreso"] = False
+                    elif status == "ready_to_ship" and not substatus:
+                        ped["impreso"] = False
             except Exception:
                 pass
         elif ped.get("logistica"):
@@ -886,9 +917,9 @@ def _refresh_pedidos_worker():
 
 
 def _auto_refresh_loop():
-    """Refresca pedidos de todas las cuentas cada 5 minutos."""
+    """Refresca pedidos de todas las cuentas cada 2 minutos."""
     while True:
-        time.sleep(300)
+        time.sleep(120)
         if _cuentas:
             _refresh_pedidos_worker()
 
@@ -932,8 +963,8 @@ def _cache_cleanup_loop():
             print(f"[CACHE] Error en limpieza: {e}")
 
 
-threading.Thread(target=_auto_refresh_loop,   daemon=True).start()
-threading.Thread(target=_cache_cleanup_loop,  daemon=True).start()
+threading.Thread(target=_auto_refresh_loop,  daemon=True).start()
+threading.Thread(target=_cache_cleanup_loop, daemon=True).start()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1721,32 +1752,29 @@ def api_tokens_export():
 
 
 
+@app.route("/api/token_status")
 def api_token_status():
-    """Muestra el estado de los tokens de todas las cuentas."""
+    """Estado de los tokens de todas las cuentas."""
     result = []
     for cid, tok in _cuentas.items():
         exp = tok.get("expires_at")
         if isinstance(exp, datetime):
-            diff = exp - datetime.now()
-            horas = diff.total_seconds() / 3600
-            estado_exp = f"Vence en {horas:.1f}h" if horas > 0 else "EXPIRADO"
+            horas = (exp - datetime.now()).total_seconds() / 3600
+            estado = f"Vence en {horas:.1f}h" if horas > 0 else "EXPIRADO"
         else:
-            estado_exp = "Sin fecha"
+            estado = "Sin fecha"
         result.append({
-            "cuenta_id":   cid,
-            "nickname":    tok.get("nickname", "?"),
-            "tiene_token": bool(tok.get("access_token")),
+            "cuenta_id":     cid,
+            "nickname":      tok.get("nickname","?"),
+            "tiene_token":   bool(tok.get("access_token")),
             "tiene_refresh": bool(tok.get("refresh_token")),
-            "token_estado": estado_exp,
-            "user_id":     tok.get("user_id",""),
+            "token_estado":  estado,
         })
     return jsonify({
-        "ok":           True,
-        "cuentas":      result,
-        "total":        len(result),
-        "railway_api":  bool(RAILWAY_API_TOKEN),
-        "tokens_json_guardado": bool(os.environ.get(ML_TOKENS_ENV_KEY)),
-        "ts":           _ts(),
+        "ok":     True,
+        "cuentas": result,
+        "total":   len(result),
+        "ts":      _ts(),
     })
 
 
