@@ -1878,6 +1878,13 @@ def subir_estado():
             "ultima_actualizacion": _ts(),
             "cargado":          True,
         })
+    # Persistir en /tmp para sobrevivir reinicios de Railway
+    try:
+        import json as _j
+        with open("/tmp/lote_estado.json", "w") as f:
+            _j.dump(dict(_estado), f)
+    except Exception as e:
+        print(f"[LOTE] Error persistiendo estado: {e}")
     return jsonify({"ok": True, "msg": f"Estado cargado: {_estado['total_skus']} SKUs"})
 
 
@@ -1914,6 +1921,13 @@ def escanear():
                    for g in _estado["grupos"] for it in g["items"])
         _estado["colecta_completa"] = todo
         nuevo = colecta[sku]
+    # Persistir colecta actualizada
+    try:
+        import json as _j
+        with open("/tmp/lote_estado.json","w") as f:
+            _j.dump(dict(_estado), f)
+    except Exception:
+        pass
     return jsonify({"ok": True,
                     "tipo":        "completo" if nuevo >= req else "parcial",
                     "sku":         sku,
@@ -2052,25 +2066,15 @@ def api_skus_limpiar():
 
 # ── Inicializar al arrancar ───────────────────────────────────────────────────
 def _startup():
-    """
-    Inicializa el servidor al arrancar.
-    Carga tokens persistidos y SKUs para sobrevivir reinicios de Railway.
-    Se llama DESPUES de que todas las funciones esten definidas.
-    """
-    # Cargar base de datos de SKUs
+    """Inicializa el servidor al arrancar."""
     _cargar_sku_db()
-
-    # Cargar tokens de ML desde variable de entorno (persiste entre redeploys)
     _cargar_tokens_persistidos()
-
-    # Fallback: archivo /tmp (persiste entre reinicios normales)
     if not _cuentas:
         _cargar_tokens_local()
 
     if _cuentas:
-        nicks = [t.get("nickname", "?") for t in _cuentas.values()]
-        print(f"[STARTUP] ✅ Tokens cargados para: {nicks}")
-        # Convertir expires_at de string a datetime si es necesario
+        nicks = [t.get("nickname","?") for t in _cuentas.values()]
+        print(f"[STARTUP] ✅ Tokens cargados: {nicks}")
         for cid in list(_cuentas.keys()):
             tok = _cuentas[cid]
             exp = tok.get("expires_at")
@@ -2081,10 +2085,22 @@ def _startup():
                 except Exception:
                     tok["expires_at"] = datetime.now() + timedelta(hours=1)
                     _cuentas[cid] = tok
-        # Traer pedidos en background
         threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
     else:
-        print("[STARTUP] ⚠ Sin tokens guardados. Conectar ML desde la app.")
+        print("[STARTUP] ⚠ Sin tokens. Conectar ML desde la app.")
+
+    # Restaurar el último lote enviado por el supervisor
+    try:
+        import json as _j
+        with open("/tmp/lote_estado.json") as f:
+            data = _j.load(f)
+        if data.get("cargado") and data.get("grupos"):
+            _estado.update(data)
+            print(f"[STARTUP] ✅ Lote restaurado: {data.get('total_skus',0)} SKUs")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[STARTUP] Error restaurando lote: {e}")
 
 _startup()
 

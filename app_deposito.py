@@ -1572,7 +1572,7 @@ class AsistenteDepositoApp:
             "flex":        {"label": "⚡ FLEX",      "color": "#7C3AED", "emoji": "⚡"},
             "me2":         {"label": "🚚 ME2",        "color": "#2563EB", "emoji": "🚚"},
             "me1":         {"label": "📦 ME1",        "color": "#0891B2", "emoji": "📦"},
-            "desconocido": {"label": "— Sin envío",   "color": "#475569", "emoji": "—"},
+            "desconocido": {"label": "⏳ Pendiente", "color": "#CA8A04", "emoji": "⏳"},
         }
         # Etiquetas por sub-tipo de logistica (según doc oficial ML)
         self._subtipo_label = {
@@ -1877,10 +1877,10 @@ class AsistenteDepositoApp:
         tipo_filtro = self._ml_filtro_tipo.get()
 
         SECCIONES = [
-            ("flex",        "⚡  MERCADO FLEX",    "#7C3AED"),
-            ("me2",         "🚚  MERCADO ENVÍOS",  "#2563EB"),
-            ("me1",         "📦  ME1 / PROPIO",    "#0891B2"),
-            ("desconocido", "❓  SIN CLASIFICAR",  "#475569"),
+            ("flex",        "⚡  MERCADO FLEX",         "#7C3AED"),
+            ("me2",         "🚚  MERCADO ENVÍOS",        "#2563EB"),
+            ("me1",         "📦  ME1 / PROPIO",          "#0891B2"),
+            ("desconocido", "⏳  PENDIENTES SIN ENVÍO",  "#CA8A04"),
         ]
         COLORES = {k:c for k,_,c in SECCIONES}
 
@@ -1960,7 +1960,7 @@ class AsistenteDepositoApp:
             # Color del borde y chip según tipo
             TIPO_COLOR = {
                 "flex": "#7C3AED", "me2": "#2563EB",
-                "me1": "#0891B2",  "desconocido": "#475569"
+                "me1": "#0891B2",  "desconocido": "#CA8A04"
             }
             SUBTIPO_LABEL = {
                 "self_service": "⚡ Flex",
@@ -1971,8 +1971,12 @@ class AsistenteDepositoApp:
                 "turbo":        "⚡ Turbo",
                 "default":      "📦 ME1",
             }
-            borde_color = TIPO_COLOR.get(tipo, "#475569")
-            chip_txt    = SUBTIPO_LABEL.get(log, tipo.upper() if tipo != "desconocido" else "—")
+            borde_color = TIPO_COLOR.get(tipo, "#CA8A04")
+            # Chip: si no tiene logistica → mostrar PENDIENTE en amarillo
+            if tipo == "desconocido" or not log:
+                chip_txt = "⏳ Pend."
+            else:
+                chip_txt = SUBTIPO_LABEL.get(log, tipo.upper())
 
             # Fila
             fila = tk.Frame(self.frame_ml, bg=bg)
@@ -2098,6 +2102,24 @@ class AsistenteDepositoApp:
             self.entrada_sku.focus()
 
     # ── Conexión ML ──────────────────────────────────────────────────────────
+
+    def _ml_verificar_conexion(self):
+        """Consulta el servidor Railway para ver qué cuentas ML están activas."""
+        import threading, urllib.request, json as _j
+
+        def _worker():
+            try:
+                url = RAILWAY_URL.rstrip("/") + "/auth/status"
+                req = urllib.request.Request(
+                    url, headers={"X-API-Key": "everest2024",
+                                  "User-Agent": "PickingApp/2.1"})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    d = _j.loads(r.read())
+                self.root.after(0, lambda: self._ml_on_status(d))
+            except Exception as e:
+                self.root.after(0, lambda: self._ml_on_error(str(e)))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _auto_refresh_ml(self):
         """
@@ -2599,21 +2621,26 @@ class AsistenteDepositoApp:
         tipo_activo = self._ml_filtro_tipo.get()
         ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
         NOMBRES_TIPO = {
-            "flex": "⚡ Mercado Flex",
-            "me2":  "🚚 Mercado Envíos",
-            "me1":  "📦 ME1 / Propio",
-            "todos": "Todos los tipos",
+            "flex":        "⚡ Mercado Flex",
+            "me2":         "🚚 Mercado Envíos",
+            "me1":         "📦 ME1 / Propio",
+            "desconocido": "⏳ Pendientes sin envío",
+            "todos":       "Todos los tipos",
         }
+        ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
+        SUBESTADOS_IMPRESOS = {"printed"}
 
         # Tomar SOLO los pedidos de la pestaña activa y pendientes
         todos = list(self._ml_pedidos.values())
 
-        # Filtrar pendientes (no impresos, no finales)
+        # Filtrar pendientes (no impresos, no finales, no printed)
         pendientes = [p for p in todos
                       if not p.get("impreso", False)
-                      and p.get("estado_envio","") not in ESTADOS_FINALES]
+                      and p.get("estado_envio","") not in ESTADOS_FINALES
+                      and p.get("substatus","") not in SUBESTADOS_IMPRESOS]
 
         # Filtrar por tipo de la pestaña activa
+        # "todos" incluye TODOS los tipos incluido desconocido
         if tipo_activo != "todos":
             pendientes = [p for p in pendientes
                           if self._tipo_logistica(p) == tipo_activo]
