@@ -1890,8 +1890,12 @@ def subir_estado():
 
 @app.route("/api/estado")
 def get_estado():
+    """Estado del lote para la app móvil."""
     with _lock:
-        return jsonify(dict(_estado))
+        estado = dict(_estado)
+    # Asegurar que cargado sea boolean, no string
+    estado["cargado"] = bool(estado.get("cargado", False))
+    return jsonify(estado)
 
 
 @app.route("/api/escanear", methods=["POST"])
@@ -3558,8 +3562,10 @@ async function load() {
   try {
     const r = await fetch('/api/estado');
     E = await r.json();
+    console.log('[MOVIL] Estado recibido:', JSON.stringify(E).substring(0,200));
     render();
   } catch(e) {
+    console.error('[MOVIL] Error cargando estado:', e);
     fb('err', '❌ Sin conexión al servidor');
   }
 }
@@ -3569,16 +3575,19 @@ async function loadQ() {
     const r = await fetch('/api/estado');
     E = await r.json();
     render(true);
-  } catch(e) {}
+  } catch(e) {
+    console.error('[MOVIL] Error loadQ:', e);
+  }
 }
 
 // ── RENDER ─────────────────────────────────────────────────────────────────
 function render(quiet = false) {
-  if (!E) return;
+  if (!E) { console.log('[MOVIL] render: E es null'); return; }
   const gs  = E.grupos  || [];
   const col = E.colecta || {};
+  console.log('[MOVIL] render: cargado='+E.cargado+' grupos='+gs.length);
 
-  if (!gs.length || !E.cargado) {
+  if (!gs.length || !E.cargado || E.cargado === 'false') {
     $('content').innerHTML = `<div class="empty">
       <div class="empty-i">📋</div>
       <div class="empty-t">Esperando lote del supervisor…<br>
@@ -3601,10 +3610,14 @@ function render(quiet = false) {
   }));
 
   const b = $('badge');
-  b.textContent = `${done} / ${tot}`;
-  b.className   = done === tot ? 'badge done' : (done > 0 ? 'badge warn' : 'badge');
-  $('t-sub').textContent = `${uds_done} / ${uds_tot} unidades`;
-  $('ban').className = E.colecta_completa ? 'show' : '';
+  if (b) {
+    b.textContent = `${done} / ${tot}`;
+    b.className   = done === tot ? 'badge done' : (done > 0 ? 'badge warn' : 'badge');
+  }
+  const tsub = $('t-sub');
+  if (tsub) tsub.textContent = `${uds_done} / ${uds_tot} unidades`;
+  const ban = $('ban');
+  if (ban) ban.className = E.colecta_completa ? 'show' : '';
 
   // Recordar grupos colapsados
   const colaps = new Set();
