@@ -3561,11 +3561,12 @@ let E = null, last = null;
 async function load() {
   try {
     const r = await fetch('/api/estado');
+    if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
     E = await r.json();
-    console.log('[MOVIL] Estado recibido:', JSON.stringify(E).substring(0,200));
+    console.log('[MOVIL] cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
     render();
   } catch(e) {
-    console.error('[MOVIL] Error cargando estado:', e);
+    console.error('[MOVIL] load error:', e);
     fb('err', '❌ Sin conexión al servidor');
   }
 }
@@ -3573,95 +3574,98 @@ async function load() {
 async function loadQ() {
   try {
     const r = await fetch('/api/estado');
+    if (!r.ok) return;
     E = await r.json();
     render(true);
-  } catch(e) {
-    console.error('[MOVIL] Error loadQ:', e);
-  }
+  } catch(e) {}
 }
 
 // ── RENDER ─────────────────────────────────────────────────────────────────
 function render(quiet = false) {
-  if (!E) { console.log('[MOVIL] render: E es null'); return; }
-  const gs  = E.grupos  || [];
-  const col = E.colecta || {};
-  console.log('[MOVIL] render: cargado='+E.cargado+' grupos='+gs.length);
+  try {
+    if (!E) return;
+    const gs  = E.grupos  || [];
+    const col = E.colecta || {};
+    const cargado = E.cargado === true || E.cargado === 'true' || E.cargado === 1;
 
-  if (!gs.length || !E.cargado || E.cargado === 'false') {
-    $('content').innerHTML = `<div class="empty">
-      <div class="empty-i">📋</div>
-      <div class="empty-t">Esperando lote del supervisor…<br>
-      <small style="color:var(--lo)">Cuando el supervisor genere el lote<br>aparecerá aquí automáticamente.</small>
-      </div></div>`;
-    $('badge').textContent = '— / —';
-    $('badge').className   = 'badge';
-    $('t-sub').textContent = 'Esperando lote…';
-    return;
-  }
+    const content = document.getElementById('content');
+    const badge   = document.getElementById('badge');
+    const tsub    = document.getElementById('t-sub');
+    const ban     = document.getElementById('ban');
 
-  // Totales
-  let tot = 0, done = 0, uds_done = 0, uds_tot = 0;
-  gs.forEach(g => g.items.forEach(it => {
-    const c = col[it.sku] || 0;
-    tot++;
-    uds_tot += it.req;
-    uds_done += Math.min(c, it.req);
-    if (c >= it.req) done++;
-  }));
+    if (!cargado || !gs.length) {
+      if (content) content.innerHTML = `<div class="empty">
+        <div class="empty-i">📋</div>
+        <div class="empty-t">Esperando lote del supervisor…<br>
+        <small style="color:var(--lo)">Cuando el supervisor genere el lote<br>aparecerá aquí automáticamente.</small>
+        </div></div>`;
+      if (badge) { badge.textContent = '— / —'; badge.className = 'badge'; }
+      if (tsub)  tsub.textContent = 'Esperando lote…';
+      return;
+    }
 
-  const b = $('badge');
-  if (b) {
-    b.textContent = `${done} / ${tot}`;
-    b.className   = done === tot ? 'badge done' : (done > 0 ? 'badge warn' : 'badge');
-  }
-  const tsub = $('t-sub');
-  if (tsub) tsub.textContent = `${uds_done} / ${uds_tot} unidades`;
-  const ban = $('ban');
-  if (ban) ban.className = E.colecta_completa ? 'show' : '';
+    // Totales
+    let tot = 0, done = 0, uds_done = 0, uds_tot = 0;
+    gs.forEach(g => (g.items||[]).forEach(it => {
+      const c = col[it.sku] || 0;
+      tot++;
+      uds_tot  += it.req || 0;
+      uds_done += Math.min(c, it.req || 0);
+      if (c >= it.req) done++;
+    }));
 
-  // Recordar grupos colapsados
-  const colaps = new Set();
-  document.querySelectorAll('.grupo').forEach(el => {
-    if (el.querySelector('.g-items.col')) colaps.add(el.dataset.p);
-  });
+    if (badge) {
+      badge.textContent = `${done} / ${tot}`;
+      badge.className   = done === tot ? 'badge done' : (done > 0 ? 'badge warn' : 'badge');
+    }
+    if (tsub) tsub.textContent = `${uds_done} / ${uds_tot} unidades`;
+    if (ban)  ban.className    = E.colecta_completa ? 'show' : '';
 
-  $('content').innerHTML = gs.map(g => {
-    const p    = g.pasillo || 'Sin pasillo';
-    const its  = g.items;
-    const d    = its.filter(it => (col[it.sku] || 0) >= it.req).length;
-    const gDone = d === its.length;
-    const cl   = colaps.has(p) ? 'col' : '';
+    // Recordar grupos colapsados
+    const colaps = new Set();
+    document.querySelectorAll('.grupo').forEach(el => {
+      if (el.querySelector('.g-items.col')) colaps.add(el.dataset.p);
+    });
 
-    return `<div class="grupo" data-p="${p}">
-      <div class="g-hdr" onclick="tog(this)">
-        <div class="g-left">
-          <span style="font-size:18px">📦</span>
-          <div>
-            <div class="g-name">${p}</div>
-            <div class="g-stats">${its.length} SKU${its.length>1?'s':''} · ${its.reduce((s,i)=>s+i.req,0)} ud.</div>
-          </div>
-        </div>
-        <div class="g-prog ${gDone?'done':'pend'}">${d}/${its.length}</div>
-      </div>
-      <div class="g-items ${cl}">
-        ${its.map(it => {
-          const c   = col[it.sku] || 0;
-          const ok  = c >= it.req;
-          return `<div class="item ${ok?'done':''}" id="item-${it.sku}">
-            <div class="chk ${ok?'ok':'pend'}">${ok ? '✔' : '○'}</div>
-            <div class="ibody">
-              <div class="iname">${it.nombre || it.sku}</div>
-              <div class="irow">
-                <span class="isku">${it.sku}</span>
-                <span class="icnt ${ok?'ok':'pend'}">${c} / ${it.req}</span>
-              </div>
-              ${it.estanteria ? `<div class="iest">🗂 ${it.estanteria}</div>` : ''}
+    if (content) content.innerHTML = gs.map(g => {
+      const p     = g.pasillo || 'Sin pasillo';
+      const its   = g.items || [];
+      const d     = its.filter(it => (col[it.sku] || 0) >= it.req).length;
+      const gDone = d === its.length;
+      const cl    = colaps.has(p) ? 'col' : '';
+      return `<div class="grupo" data-p="${p}">
+        <div class="g-hdr" onclick="tog(this)">
+          <div class="g-left">
+            <span style="font-size:18px">📦</span>
+            <div>
+              <div class="g-name">${p}</div>
+              <div class="g-stats">${its.length} SKU${its.length>1?'s':''} · ${its.reduce((s,i)=>s+(i.req||0),0)} ud.</div>
             </div>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>`;
-  }).join('');
+          </div>
+          <div class="g-prog ${gDone?'done':'pend'}">${d}/${its.length}</div>
+        </div>
+        <div class="g-items ${cl}">
+          ${its.map(it => {
+            const c  = col[it.sku] || 0;
+            const ok = c >= it.req;
+            return `<div class="item ${ok?'done':''}" id="item-${it.sku}">
+              <div class="chk ${ok?'ok':'pend'}">${ok ? '✔' : '○'}</div>
+              <div class="ibody">
+                <div class="iname">${it.nombre || it.sku}</div>
+                <div class="irow">
+                  <span class="isku">${it.sku}</span>
+                  <span class="icnt ${ok?'ok':'pend'}">${c} / ${it.req}</span>
+                </div>
+                ${it.estanteria ? `<div class="iest">🗂 ${it.estanteria}</div>` : ''}
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }).join('');
+  } catch(err) {
+    console.error('[MOVIL] render error:', err);
+  }
 }
 
 function tog(h) { h.nextElementSibling.classList.toggle('col'); }
