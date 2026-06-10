@@ -2116,6 +2116,22 @@ def index():
     return render_template_string(HTML_APP)
 
 
+@app.route("/manifest.json")
+def manifest():
+    """PWA manifest para la app móvil."""
+    return jsonify({
+        "name": "Picking App",
+        "short_name": "Picking",
+        "start_url": "/movil",
+        "display": "standalone",
+        "background_color": "#0F172A",
+        "theme_color": "#1E293B",
+        "icons": [
+            {"src": "/static/icon.png", "sizes": "192x192", "type": "image/png"}
+        ]
+    })
+
+
 @app.route("/movil")
 def movil():
     return render_template_string(HTML_MOVIL)
@@ -3870,7 +3886,7 @@ function toggleTorch() {
   }
 }
 
-
+function confirmarManual() {
   const inp = $('sku');
   const v   = inp.value.trim();
   if (v) { scan(v); inp.value = ''; inp.focus(); }
