@@ -197,12 +197,12 @@ C = {
     "bar_ok":     "#0EA5E9",   # Barra completa cian
 }
 
-FONT_TITLE  = ("Segoe UI Semibold", 13)
-FONT_BODY   = ("Segoe UI",          11)
-FONT_SMALL  = ("Segoe UI",          10)
-FONT_MONO   = ("Consolas",          14, "bold")
+FONT_TITLE  = ("Segoe UI Semibold", 14)
+FONT_BODY   = ("Segoe UI",          12)
+FONT_SMALL  = ("Segoe UI",          11)
+FONT_MONO   = ("Consolas",          12, "bold")
 FONT_GIANT  = ("Segoe UI Black",    54, "bold")
-FONT_BTN    = ("Segoe UI Semibold", 11)
+FONT_BTN    = ("Segoe UI Semibold", 12)
 
 
 class VentanaConfiguracion(tk.Toplevel):
@@ -1463,13 +1463,23 @@ class AsistenteDepositoApp:
         left = tk.Frame(topbar, bg=C["panel"])
         left.pack(side="left", padx=20, fill="y")
 
-        # Logo: "Logi" gris + "bot" cian — simula el logo Logibot
+        # Logo en topbar — pequeño, solo texto estilizado
         logo_frame = tk.Frame(left, bg=C["panel"])
-        logo_frame.pack(side="left", pady=8)
-        tk.Label(logo_frame, text="Logi", font=("Segoe UI Black", 18),
-                 bg=C["panel"], fg="#6B7280").pack(side="left")
-        tk.Label(logo_frame, text="bot", font=("Segoe UI Black", 18),
-                 bg=C["panel"], fg=C["accent"]).pack(side="left")
+        logo_frame.pack(side="left", pady=10)
+        try:
+            from PIL import Image, ImageTk
+            import os
+            logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+            img = Image.open(logo_path).convert("RGBA")
+            img = img.resize((110, 32), Image.LANCZOS)
+            self._logo_topbar = ImageTk.PhotoImage(img)
+            tk.Label(logo_frame, image=self._logo_topbar,
+                     bg=C["panel"]).pack(side="left")
+        except Exception:
+            tk.Label(logo_frame, text="Logi", font=("Segoe UI Black", 16),
+                     bg=C["panel"], fg="#6B7280").pack(side="left")
+            tk.Label(logo_frame, text="bot", font=("Segoe UI Black", 16),
+                     bg=C["panel"], fg=C["accent"]).pack(side="left")
 
         # Separador vertical
         tk.Frame(left, bg=C["border"], width=1).pack(
@@ -1559,9 +1569,52 @@ class AsistenteDepositoApp:
         self.body_container = tk.Frame(self.root, bg=C["bg_dark"])
         self.body_container.pack(fill="both", expand=True)
 
+        # ── Marca de agua del logo en el fondo ───────────────────────────────
+        try:
+            from PIL import Image, ImageTk, ImageEnhance
+            import os
+            logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+            img = Image.open(logo_path).convert("RGBA")
+
+            # Hacer transparente (marca de agua al 8%)
+            r, g, b, a = img.split()
+            a = a.point(lambda x: int(x * 0.08))
+            img.putalpha(a)
+
+            # Tamaño grande para cubrir el fondo
+            img = img.resize((700, 200), Image.LANCZOS)
+
+            self._watermark_img = ImageTk.PhotoImage(img)
+
+            # Canvas de fondo que cubre todo el body
+            self._watermark_canvas = tk.Canvas(
+                self.body_container,
+                bg=C["bg_dark"],
+                highlightthickness=0)
+            self._watermark_canvas.place(
+                relx=0, rely=0, relwidth=1, relheight=1)
+
+            # Centrar el logo
+            def _draw_watermark(event=None):
+                w = self._watermark_canvas.winfo_width()  or 1200
+                h = self._watermark_canvas.winfo_height() or 700
+                self._watermark_canvas.delete("watermark")
+                self._watermark_canvas.create_image(
+                    w // 2, h // 2,
+                    image=self._watermark_img,
+                    anchor="center",
+                    tags="watermark")
+
+            self._watermark_canvas.bind("<Configure>", _draw_watermark)
+            self.root.after(200, _draw_watermark)
+
+        except Exception as e:
+            print(f"[LOGO] Marca de agua no cargada: {e}")
+
         # ── Panel Dashboard ───────────────────────────────────────────────
         self.panel_dashboard = tk.Frame(self.body_container, bg=C["bg_dark"])
-        self.panel_dashboard.pack(fill="both", expand=True)  # visible por defecto
+        self.panel_dashboard.pack(fill="both", expand=True)
+        self.panel_dashboard.lift()  # sobre el canvas de fondo
         self._build_dashboard()
 
         # ── Panel ML ─────────────────────────────────────────────────────
@@ -1736,7 +1789,7 @@ class AsistenteDepositoApp:
         chk2 = tk.Checkbutton(
             sub_tabs, text="✅ Ver impresos",
             variable=self.var_ver_impresos,
-            font=("Segoe UI Semibold", 9),
+            font=("Segoe UI Semibold", 11),
             bg=C["bg_dark"], fg=C["success"],
             activebackground=C["bg_dark"],
             selectcolor=C["card"],
@@ -1939,8 +1992,8 @@ class AsistenteDepositoApp:
             h = tk.Frame(self.frame_ml, bg=color)
             h.pack(fill="x")
             tk.Label(h, text=f"   {titulo}   ·   {n} pedido(s)",
-                     font=("Segoe UI Black", 10), bg=color,
-                     fg="white", anchor="w", pady=8).pack(fill="x")
+                     font=("Segoe UI Black", 12), bg=color,
+                     fg="white", anchor="w", pady=10).pack(fill="x")
 
         def _bloque(lista, color):
             self._ml_render_col_header()
@@ -2002,7 +2055,7 @@ class AsistenteDepositoApp:
         for txt, w in [("Tipo",9),("# Pedido",11),("Fecha",9),
                        ("Comprador",16),("SKU · Producto",38),
                        ("Estado",12),("Acción",10)]:
-            tk.Label(hdr, text=txt, font=("Segoe UI",8,"bold"),
+            tk.Label(hdr, text=txt, font=("Segoe UI",10,"bold"),
                      bg=C["panel"], fg=C["text_lo"],
                      width=w, anchor="w").pack(side="left", padx=3)
         tk.Frame(self.frame_ml, bg=C["border"], height=1).pack(fill="x")
@@ -2062,15 +2115,15 @@ class AsistenteDepositoApp:
 
             # Función helper para labels
             def _col(txt, w, fg=None, bold=False, mono=False, bg_=bg):
-                font = ("Consolas", 9) if mono else \
-                       ("Segoe UI Semibold", 9) if bold else FONT_SMALL
+                font = ("Consolas", 11) if mono else \
+                       ("Segoe UI Semibold", 11) if bold else FONT_SMALL
                 tk.Label(inner, text=str(txt), font=font, bg=bg_,
                          fg=fg or (C["text_mid"] if impreso else C["text_hi"]),
                          width=w, anchor="w", wraplength=240).pack(side="left", padx=4)
 
             # Col 1: Chip de tipo
             tk.Label(inner, text=chip_txt,
-                     font=("Segoe UI Semibold", 7),
+                     font=("Segoe UI Semibold", 9),
                      bg=borde_color, fg="white",
                      padx=5, pady=2, width=8, anchor="center").pack(side="left", padx=4)
 
@@ -2740,10 +2793,32 @@ class AsistenteDepositoApp:
                       and p.get("substatus","") not in SUBESTADOS_IMPRESOS]
 
         # Filtrar por tipo de la pestaña activa
-        # "todos" incluye TODOS los tipos incluido desconocido
         if tipo_activo != "todos":
             pendientes = [p for p in pendientes
                           if self._tipo_logistica(p) == tipo_activo]
+
+        # ── Deduplicar por pack_id ──────────────────────────────────────
+        # Un pack (compra de múltiples productos) = una etiqueta = un pedido
+        # Evita generar el lote con el mismo paquete dos veces
+        packs_vistos = set()
+        pendientes_unicos = []
+        for p in pendientes:
+            pack_id = p.get("pack_id","")
+            key = pack_id if pack_id else p.get("order_id","")
+            if key not in packs_vistos:
+                packs_vistos.add(key)
+                pendientes_unicos.append(p)
+            else:
+                # Es parte de un pack ya incluido — agregar sus items al pedido principal
+                for existing in pendientes_unicos:
+                    if (pack_id and existing.get("pack_id","") == pack_id):
+                        skus_ex = {it["sku"] for it in existing["items"]}
+                        for it in p.get("items",[]):
+                            if it["sku"] not in skus_ex:
+                                existing["items"].append(it)
+                                skus_ex.add(it["sku"])
+                        break
+        pendientes = pendientes_unicos
 
         nombre_tab = NOMBRES_TIPO.get(tipo_activo, tipo_activo)
 

@@ -607,7 +607,44 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
         offset += limit
         if offset >= total:
             break
-    return pedidos
+
+    # ── Agrupar por pack_id ─────────────────────────────────────────────────
+    # Si varios order_ids comparten el mismo pack_id → van en un solo paquete.
+    # Consolidar en una sola entrada usando el primer order_id del pack.
+    pedidos_agrupados = {}
+    packs_vistos = {}  # pack_id → order_id principal
+
+    for oid, ped in pedidos.items():
+        pack_id = ped.get("pack_id", "")
+        if not pack_id:
+            # Sin pack → entrada individual
+            pedidos_agrupados[oid] = ped
+        elif pack_id not in packs_vistos:
+            # Primer orden del pack → es la entrada principal
+            packs_vistos[pack_id] = oid
+            pedidos_agrupados[oid] = ped
+        else:
+            # Orden adicional del mismo pack → agregar sus items al principal
+            oid_principal = packs_vistos[pack_id]
+            ped_principal = pedidos_agrupados[oid_principal]
+            # Agregar items que no estén ya
+            skus_existentes = {it["sku"] for it in ped_principal["items"]}
+            for it in ped.get("items", []):
+                if it["sku"] not in skus_existentes:
+                    ped_principal["items"].append(it)
+                    skus_existentes.add(it["sku"])
+                else:
+                    # SKU ya existe — sumar cantidad si es diferente item_id
+                    for ex in ped_principal["items"]:
+                        if ex["sku"] == it["sku"] and ex["item_id"] != it["item_id"]:
+                            ex["cantidad"] += it["cantidad"]
+                            break
+            # Sumar total
+            ped_principal["total"] = (ped_principal.get("total", 0)
+                                      + ped.get("total", 0))
+            print(f"[PACK] Agrupado {oid} → {oid_principal} (pack {pack_id})")
+
+    return pedidos_agrupados
 
 
 def _enriquecer_skus_cuenta(pedidos, cuenta_id):
@@ -814,7 +851,26 @@ def _enriquecer_skus(pedidos):
         if offset >= total:
             break
 
-    return pedidos
+    # Agrupar por pack_id igual que en _ml_get_all_orders_cuenta
+    pedidos_agrupados = {}
+    packs_vistos = {}
+    for oid, ped in pedidos.items():
+        pack_id = ped.get("pack_id", "")
+        if not pack_id:
+            pedidos_agrupados[oid] = ped
+        elif pack_id not in packs_vistos:
+            packs_vistos[pack_id] = oid
+            pedidos_agrupados[oid] = ped
+        else:
+            oid_p = packs_vistos[pack_id]
+            ped_p = pedidos_agrupados[oid_p]
+            skus_ex = {it["sku"] for it in ped_p["items"]}
+            for it in ped.get("items", []):
+                if it["sku"] not in skus_ex:
+                    ped_p["items"].append(it)
+                    skus_ex.add(it["sku"])
+            ped_p["total"] = ped_p.get("total",0) + ped.get("total",0)
+    return pedidos_agrupados
 
 
 def _enriquecer_skus(pedidos):
