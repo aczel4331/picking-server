@@ -179,22 +179,22 @@ def guardar_config(config: dict):
 
 # ─────────────────────────────────────────────────────────────────────────────
 C = {
-    "bg_dark":    "#111318",   # Negro profundo (fondo logo)
-    "panel":      "#1C2030",   # Gris azulado oscuro
-    "card":       "#161B27",   # Ligeramente más claro que bg
-    "border":     "#2A3352",   # Borde sutil azulado
-    "accent":     "#2563EB",   # Azul Logibot principal
-    "accent2":    "#1D4ED8",   # Azul más profundo
-    "success":    "#0EA5E9",   # Cian tecnológico (éxito)
-    "warning":    "#F59E0B",   # Naranja alerta
-    "danger":     "#EF4444",   # Rojo error
-    "text_hi":    "#F0F4FF",   # Blanco azulado (texto principal)
-    "text_mid":   "#8B9CC8",   # Gris azulado (texto secundario)
-    "text_lo":    "#4A5578",   # Gris oscuro (texto tenue)
-    "preview_bg": "#0D1020",   # Fondo vista previa
-    "bar_bg":     "#1A2340",   # Fondo barra progreso
-    "bar_fg":     "#2563EB",   # Barra progreso azul
-    "bar_ok":     "#0EA5E9",   # Barra completa cian
+    "bg_dark":    "#F8FAFC",   # Blanco muy claro (fondo principal)
+    "panel":      "#FFFFFF",   # Blanco puro (paneles)
+    "card":       "#F1F5F9",   # Gris clarito (tarjetas alternas)
+    "border":     "#E2E8F0",   # Gris borde
+    "accent":     "#06B6D4",   # Cian brillante (acento principal)
+    "accent2":    "#0891B2",   # Cian más oscuro
+    "success":    "#10B981",   # Verde moderno
+    "warning":    "#F59E0B",   # Naranja moderno
+    "danger":     "#EF4444",   # Rojo
+    "text_hi":    "#0F172A",   # Azul oscuro (textos principal)
+    "text_mid":   "#475569",   # Gris oscuro (textos secundario)
+    "text_lo":    "#94A3B8",   # Gris (textos tenue)
+    "preview_bg": "#F1F5F9",   # Fondo vista previa
+    "bar_bg":     "#E2E8F0",   # Barra progreso fondo
+    "bar_fg":     "#06B6D4",   # Barra progreso cian
+    "bar_ok":     "#10B981",   # Barra completa verde
 }
 
 FONT_TITLE  = ("Segoe UI Semibold", 14)
@@ -1705,14 +1705,6 @@ class AsistenteDepositoApp:
         sep_frame = tk.Frame(tb, bg=C["border"], width=1)
         sep_frame.pack(side="left", fill="y", padx=8, pady=4)
 
-        for label, dias in [("Hoy", 0), ("Ayer", 1), ("7d", 7), ("14d", 14), ("30d", 30)]:
-            tk.Button(tb, text=label,
-                      font=("Segoe UI", 8), bg=C["panel"], fg=C["text_mid"],
-                      activebackground=C["accent"], activeforeground="white",
-                      relief="flat", cursor="hand2", padx=8, pady=3, bd=0,
-                      command=lambda d=dias: self._ml_refresh_rapido(d)
-                      ).pack(side="left", padx=1)
-
         self.lbl_ml_estado = tk.Label(
             tb, text="Sin conexion a MercadoLibre",
             font=FONT_SMALL, bg=C["panel"], fg=C["text_lo"])
@@ -1996,18 +1988,19 @@ class AsistenteDepositoApp:
                      fg="white", anchor="w", pady=10).pack(fill="x")
 
         def _bloque(lista, color):
-            self._ml_render_col_header()
             self._ml_render_filas(lista, color)
 
         if tipo_filtro == "todos":
-            # Separar pendientes e impresos
             pends = [p for p in pedidos if not _es_impreso(p)]
             imps  = [p for p in pedidos if _es_impreso(p)]
 
-            # ── PENDIENTES agrupados por tipo ─────────────────────────────
             grupos = {}
             for ped in pends:
                 grupos.setdefault(self._tipo_logistica(ped), []).append(ped)
+
+            # Cabecera de columnas — UNA SOLA VEZ al inicio
+            if pends:
+                self._ml_render_col_header()
 
             primer = True
             for key, titulo, color in SECCIONES:
@@ -2021,11 +2014,11 @@ class AsistenteDepositoApp:
                 _bloque(lista, color)
                 primer = False
 
-            # ── IMPRESOS al final (solo si "Ver impresos" activo) ─────────
             if imps and ver_imp:
                 tk.Frame(self.frame_ml, bg=C["border"],
                          height=4).pack(fill="x", pady=6)
                 _hdr("✅  YA IMPRESOS / ENVIADOS", C["text_lo"], len(imps))
+                self._ml_render_col_header()
                 _bloque(imps, C["text_lo"])
 
         else:
@@ -2038,42 +2031,47 @@ class AsistenteDepositoApp:
 
             if pends:
                 _hdr(titulo, color, len(pends))
+                self._ml_render_col_header()
                 _bloque(pends, color)
 
             if imps and ver_imp:
                 tk.Frame(self.frame_ml, bg=C["border"],
                          height=4).pack(fill="x", pady=4)
                 _hdr("✅  YA IMPRESOS", C["text_lo"], len(imps))
+                self._ml_render_col_header()
                 _bloque(imps, C["text_lo"])
 
 
     def _ml_render_col_header(self):
-        """Cabecera de columnas."""
+        """Cabecera de columnas — expande para llenar todo el ancho."""
         hdr = tk.Frame(self.frame_ml, bg=C["panel"], pady=2)
-        hdr.pack(fill="x")
+        hdr.pack(fill="both", expand=True)
+        
+        # Borde izquierdo
         tk.Frame(hdr, bg=C["panel"], width=4).pack(side="left", fill="y")
-        for txt, w in [("Tipo",9),("# Pedido",11),("Fecha",9),
-                       ("Comprador",16),("SKU · Producto",38),
-                       ("Estado",12),("Acción",10)]:
-            tk.Label(hdr, text=txt, font=("Segoe UI",10,"bold"),
+        
+        # Columnas con pesos relativos
+        cols = [
+            ("Tipo", 0.08),
+            ("# Pedido", 0.12),
+            ("Fecha", 0.10),
+            ("Comprador", 0.16),
+            ("SKU · Producto", 0.38),
+            ("Estado", 0.12),
+            ("Acción", 0.04)  # Última columna se expande
+        ]
+        
+        for txt, peso in cols:
+            col_frame = tk.Frame(hdr, bg=C["panel"])
+            col_frame.pack(side="left", fill="both", expand=True)
+            tk.Label(col_frame, text=txt, font=("Segoe UI", 10, "bold"),
                      bg=C["panel"], fg=C["text_lo"],
-                     width=w, anchor="w").pack(side="left", padx=3)
+                     anchor="w").pack(fill="both", expand=True, padx=3)
+        
         tk.Frame(self.frame_ml, bg=C["border"], height=1).pack(fill="x")
 
     def _ml_render_filas(self, pedidos, color_tipo=None):
-        """Renderiza filas de pedidos con columnas alineadas."""
-
-        # Cabecera de columnas
-        hdr = tk.Frame(self.frame_ml, bg=C["panel"])
-        hdr.pack(fill="x")
-        tk.Frame(hdr, bg=C["panel"], width=4).pack(side="left", fill="y")  # borde
-        for txt, w in [("Tipo",6), ("Pedido",10), ("Fecha",9),
-                       ("Comprador",16), ("SKU · Producto",40), ("Estado",12), ("",8)]:
-            tk.Label(hdr, text=txt, font=("Segoe UI", 8, "bold"),
-                     bg=C["panel"], fg=C["text_lo"],
-                     width=w, anchor="w").pack(side="left", padx=4)
-
-        tk.Frame(self.frame_ml, bg=C["border"], height=1).pack(fill="x")
+        """Renderiza filas de pedidos con columnas alineadas (sin cabecera)."""
 
         bg_alt = [C["card"], C["bg_dark"]]
         for i, ped in enumerate(pedidos):
@@ -2105,27 +2103,27 @@ class AsistenteDepositoApp:
 
             # Fila
             fila = tk.Frame(self.frame_ml, bg=bg)
-            fila.pack(fill="x")
+            fila.pack(fill="both", expand=True)
 
             # Borde de color izquierdo
             tk.Frame(fila, bg=borde_color, width=4).pack(side="left", fill="y")
 
             inner = tk.Frame(fila, bg=bg, pady=4)
-            inner.pack(side="left", fill="x", expand=True)
+            inner.pack(side="left", fill="both", expand=True)
 
-            # Función helper para labels
+            # Función helper para labels — expandibles
             def _col(txt, w, fg=None, bold=False, mono=False, bg_=bg):
                 font = ("Consolas", 11) if mono else \
                        ("Segoe UI Semibold", 11) if bold else FONT_SMALL
                 tk.Label(inner, text=str(txt), font=font, bg=bg_,
                          fg=fg or (C["text_mid"] if impreso else C["text_hi"]),
-                         width=w, anchor="w", wraplength=240).pack(side="left", padx=4)
+                         anchor="w", wraplength=240).pack(side="left", padx=4, fill="both", expand=True)
 
             # Col 1: Chip de tipo
             tk.Label(inner, text=chip_txt,
                      font=("Segoe UI Semibold", 9),
                      bg=borde_color, fg="white",
-                     padx=5, pady=2, width=8, anchor="center").pack(side="left", padx=4)
+                     padx=5, pady=2, anchor="center").pack(side="left", padx=4, fill="both", expand=True)
 
             # Col 2: Pedido #
             _col(f"#{ped.get('order_id','')}", 10,
@@ -2183,7 +2181,7 @@ class AsistenteDepositoApp:
             if impreso:
                 tk.Label(inner, text="✅ Impreso",
                          font=("Segoe UI", 8), bg=bg,
-                         fg=C["success"]).pack(side="left", padx=4)
+                         fg=C["success"]).pack(side="left", padx=4, fill="both", expand=True)
             elif ped.get("shipping_id"):
                 tk.Button(inner, text="🏷 Etiqueta",
                           font=("Segoe UI Semibold", 8),
@@ -2193,7 +2191,7 @@ class AsistenteDepositoApp:
                           relief="flat", cursor="hand2",
                           padx=8, pady=2, bd=0,
                           command=lambda oid=ped["order_id"]: self._ml_ver_etiqueta(oid)
-                          ).pack(side="left", padx=4)
+                          ).pack(side="left", padx=4, fill="both", expand=True)
 
         self.canvas_ml.yview_moveto(0)
         # Hacer scrollable todos los widgets del frame_ml

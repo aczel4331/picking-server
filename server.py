@@ -2204,8 +2204,8 @@ HTML_APP = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Logibot · Logibot · Sistema de Picking Pro</title>
 <style>
-:root{--bg:#111318;--panel:#1C2030;--card:#161B27;--border:#2A3352;
-  --accent:#2563EB;--accent2:#1D4ED8;--success:#0EA5E9;--warning:#F59E0B;
+:root{--bg:#F8FAFC;--panel:#FFFFFF;--card:#F1F5F9;--border:#E2E8F0;
+  --accent:#06B6D4;--accent2:#0891B2;--success:#10B981;--warning:#F59E0B;
   --danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F;
   --ml:#FFE600}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -3420,8 +3420,8 @@ HTML_MOVIL = r"""<!DOCTYPE html>
 <link rel="manifest" href="/manifest.json">
 <title>Logibot · Picking</title>
 <style>
-:root{--bg:#111318;--panel:#1C2030;--card:#161B27;--border:#2A3352;
-  --accent:#2563EB;--accent2:#1D4ED8;--success:#0EA5E9;
+:root{--bg:#F8FAFC;--panel:#FFFFFF;--card:#F1F5F9;--border:#E2E8F0;
+  --accent:#06B6D4;--accent2:#0891B2;--success:#10B981;
   --warning:#F59E0B;--danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;
