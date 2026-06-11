@@ -1448,7 +1448,7 @@ class AsistenteDepositoApp:
         # Primer arranque
         self.root.after(600, self._verificar_primera_vez)
         # Auto-refresh de pedidos ML cada 3 minutos
-        self.root.after(180_000, self._auto_refresh_ml)
+        self.root.after(60_000, self._auto_refresh_ml)
 
     def _build_ui(self):
         # TOPBAR
@@ -2155,27 +2155,19 @@ class AsistenteDepositoApp:
                 lineas.append(f"+{len(items)-3} más")
             _col("\n".join(lineas) if lineas else "—", 40, mono=True)
 
-            # Col 6: Estado envío
+            # Col 6: Estado envío — Pendientes o Impresas
             est       = ped.get("estado_envio","") or "—"
             substatus = ped.get("substatus","") or ""
 
-            # Color según substatus real de ML
-            if substatus == "printed" or est in ("shipped","delivered"):
-                col_est = C["text_lo"]
-                est_txt = substatus or est
-            elif substatus == "ready_to_print":
-                col_est = C["warning"]
-                est_txt = "ready_to_print"
-            elif "ready" in est:
-                col_est = C["success"]
-                est_txt = est
-            elif est == "pending":
-                col_est = C["warning"]
-                est_txt = "pending"
+            # Lógica simple: Pendientes (naranja) o Impresas (verde)
+            if impreso or substatus == "printed" or est in ("shipped","delivered","cancelled","not_delivered"):
+                col_est = C["success"]  # Verde
+                est_txt = "Impresas"
             else:
-                col_est = C["text_mid"]
-                est_txt = est
-            _col(est_txt[:16], 12, fg=col_est)
+                col_est = C["warning"]  # Naranja
+                est_txt = "Pendientes"
+
+            _col(est_txt, 12, fg=col_est)
 
             # Col 7: Botón etiqueta / impreso
             if impreso:
@@ -2285,7 +2277,7 @@ class AsistenteDepositoApp:
             self._refresh_countdown_seg = 180
         except Exception:
             pass
-        self.root.after(180_000, self._auto_refresh_ml)
+        self.root.after(60_000, self._auto_refresh_ml)
 
     def _ml_refresh_pedidos_silencioso(self):
         """Refresca pedidos en background sin tocar la UI durante la carga."""

@@ -975,7 +975,7 @@ def _refresh_pedidos_worker():
 def _auto_refresh_loop():
     """Refresca pedidos de todas las cuentas cada 2 minutos."""
     while True:
-        time.sleep(120)
+        time.sleep(60)
         if _cuentas:
             _refresh_pedidos_worker()
 
