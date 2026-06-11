@@ -1441,8 +1441,8 @@ class AsistenteDepositoApp:
         self.root.after(100, self._cargar_db_interna)
         # Primer arranque
         self.root.after(600, self._verificar_primera_vez)
-        # Auto-refresh de pedidos ML cada 5 minutos
-        self.root.after(300_000, self._auto_refresh_ml)
+        # Auto-refresh de pedidos ML cada 3 minutos
+        self.root.after(180_000, self._auto_refresh_ml)
 
     def _build_ui(self):
         # TOPBAR
@@ -1603,8 +1603,20 @@ class AsistenteDepositoApp:
             font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"],
             activebackground=C["border"], activeforeground=C["text_hi"],
             relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
-            command=self._ml_refresh_pedidos)
+            command=lambda: [self._ml_refresh_pedidos(),
+                             self._reset_refresh_countdown()])
         self.btn_ml_refresh.pack(side="left")
+
+        # Contador regresivo del auto-refresh
+        self.lbl_refresh_countdown = tk.Label(
+            tb, text="↻ 3:00",
+            font=("Segoe UI", 8), bg=C["panel"],
+            fg=C["text_lo"])
+        self.lbl_refresh_countdown.pack(side="left", padx=(2,0))
+
+        # Iniciar countdown
+        self._refresh_countdown_seg = 180
+        self.root.after(1000, self._tick_refresh_countdown)
 
         # Filtros de fecha rápidos
         sep_frame = tk.Frame(tb, bg=C["border"], width=1)
@@ -1857,7 +1869,7 @@ class AsistenteDepositoApp:
         self._ml_render_pedidos(peds, pendientes, impresos)
 
     def _ml_render_pedidos(self, pedidos, pendientes=None, impresos=None):
-        """Renderiza pedidos con secciones separadas por tipo de logística."""
+        """Renderiza pedidos — pendientes primero, impresos al final si activo."""
         for w in self.frame_ml.winfo_children():
             w.destroy()
 
@@ -1866,15 +1878,17 @@ class AsistenteDepositoApp:
             vf.pack(fill="both", expand=True)
             tk.Label(vf, text="✅", font=("Segoe UI",32),
                      bg=C["bg_dark"], fg=C["success"]).pack(pady=(40,4))
-            tk.Label(vf, text="No hay pedidos pendientes",
+            tk.Label(vf, text="No hay pedidos pendientes de imprimir",
                      font=("Segoe UI Semibold",12), bg=C["bg_dark"],
                      fg=C["text_mid"]).pack()
             tk.Label(vf,
-                     text=f"Impresos: {len(impresos or [])}  ·  Pendientes: {len(pendientes or [])}",
+                     text=f"Impresos hoy: {len(impresos or [])}  ·  Pendientes: {len(pendientes or [])}",
                      font=FONT_SMALL, bg=C["bg_dark"], fg=C["text_lo"]).pack(pady=4)
             return
 
         tipo_filtro = self._ml_filtro_tipo.get()
+        ver_imp     = getattr(self, "var_ver_impresos",
+                              tk.BooleanVar(value=False)).get()
 
         SECCIONES = [
             ("flex",        "⚡  MERCADO FLEX",         "#7C3AED"),
@@ -1882,14 +1896,35 @@ class AsistenteDepositoApp:
             ("me1",         "📦  ME1 / PROPIO",          "#0891B2"),
             ("desconocido", "⏳  PENDIENTES SIN ENVÍO",  "#CA8A04"),
         ]
-        COLORES = {k:c for k,_,c in SECCIONES}
+        COLORES    = {k: c for k,_,c in SECCIONES}
+        EST_FINAL  = {"shipped","delivered","cancelled","not_delivered"}
+        SUB_IMP    = {"printed"}
+
+        def _es_impreso(p):
+            return (p.get("impreso", False)
+                    or p.get("substatus","") in SUB_IMP
+                    or p.get("estado_envio","") in EST_FINAL)
+
+        def _hdr(titulo, color, n):
+            h = tk.Frame(self.frame_ml, bg=color)
+            h.pack(fill="x")
+            tk.Label(h, text=f"   {titulo}   ·   {n} pedido(s)",
+                     font=("Segoe UI Black", 10), bg=color,
+                     fg="white", anchor="w", pady=8).pack(fill="x")
+
+        def _bloque(lista, color):
+            self._ml_render_col_header()
+            self._ml_render_filas(lista, color)
 
         if tipo_filtro == "todos":
-            # Agrupar por tipo con encabezados
+            # Separar pendientes e impresos
+            pends = [p for p in pedidos if not _es_impreso(p)]
+            imps  = [p for p in pedidos if _es_impreso(p)]
+
+            # ── PENDIENTES agrupados por tipo ─────────────────────────────
             grupos = {}
-            for ped in pedidos:
-                t = self._tipo_logistica(ped)
-                grupos.setdefault(t, []).append(ped)
+            for ped in pends:
+                grupos.setdefault(self._tipo_logistica(ped), []).append(ped)
 
             primer = True
             for key, titulo, color in SECCIONES:
@@ -1899,28 +1934,35 @@ class AsistenteDepositoApp:
                 if not primer:
                     tk.Frame(self.frame_ml, bg=C["border"],
                              height=2).pack(fill="x", pady=2)
-                # Encabezado de sección
-                hdr = tk.Frame(self.frame_ml, bg=color)
-                hdr.pack(fill="x")
-                tk.Label(hdr,
-                         text=f"   {titulo}   ·   {len(lista)} pedido(s)",
-                         font=("Segoe UI Black", 10), bg=color,
-                         fg="white", anchor="w", pady=8).pack(fill="x")
-                self._ml_render_col_header()
-                self._ml_render_filas(lista, color)
+                _hdr(titulo, color, len(lista))
+                _bloque(lista, color)
                 primer = False
+
+            # ── IMPRESOS al final (solo si "Ver impresos" activo) ─────────
+            if imps and ver_imp:
+                tk.Frame(self.frame_ml, bg=C["border"],
+                         height=4).pack(fill="x", pady=6)
+                _hdr("✅  YA IMPRESOS / ENVIADOS", C["text_lo"], len(imps))
+                _bloque(imps, C["text_lo"])
+
         else:
-            # Pestaña específica
-            titulo = {k:t for k,t,_ in SECCIONES}.get(tipo_filtro, tipo_filtro.upper())
             color  = COLORES.get(tipo_filtro, C["accent"])
-            hdr = tk.Frame(self.frame_ml, bg=color)
-            hdr.pack(fill="x")
-            tk.Label(hdr,
-                     text=f"   {titulo}   ·   {len(pedidos)} pedido(s)",
-                     font=("Segoe UI Black", 10), bg=color,
-                     fg="white", anchor="w", pady=8).pack(fill="x")
-            self._ml_render_col_header()
-            self._ml_render_filas(pedidos, color)
+            titulo = {k:t for k,t,_ in SECCIONES}.get(
+                tipo_filtro, tipo_filtro.upper())
+
+            pends = [p for p in pedidos if not _es_impreso(p)]
+            imps  = [p for p in pedidos if _es_impreso(p)]
+
+            if pends:
+                _hdr(titulo, color, len(pends))
+                _bloque(pends, color)
+
+            if imps and ver_imp:
+                tk.Frame(self.frame_ml, bg=C["border"],
+                         height=4).pack(fill="x", pady=4)
+                _hdr("✅  YA IMPRESOS", C["text_lo"], len(imps))
+                _bloque(imps, C["text_lo"])
+
 
     def _ml_render_col_header(self):
         """Cabecera de columnas."""
@@ -2121,20 +2163,48 @@ class AsistenteDepositoApp:
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _auto_refresh_ml(self):
-        """
-        Auto-refresh de pedidos ML cada 5 minutos.
-        Solo refresca si hay cuentas conectadas y el panel ML está activo.
-        Silencioso — no molesta al usuario.
-        """
+    def _tick_refresh_countdown(self):
+        """Cuenta regresiva visual hasta el próximo auto-refresh."""
         try:
-            if self._ml_pedidos or getattr(self, "_ml_cuentas", {}):
-                # Refrescar en background sin cambiar la UI hasta tener datos
-                self._ml_refresh_pedidos_silencioso()
+            if not self.root.winfo_exists():
+                return
+            self._refresh_countdown_seg -= 1
+            if self._refresh_countdown_seg <= 0:
+                self._refresh_countdown_seg = 180
+            seg = self._refresh_countdown_seg
+            mins, secs = divmod(seg, 60)
+            txt = f"↻ {mins}:{secs:02d}"
+            # Color según urgencia
+            if seg <= 30:
+                color = C["warning"]
+            elif seg <= 60:
+                color = C["text_mid"]
+            else:
+                color = C["text_lo"]
+            if hasattr(self, "lbl_refresh_countdown") and \
+               self.lbl_refresh_countdown.winfo_exists():
+                self.lbl_refresh_countdown.config(text=txt, fg=color)
         except Exception:
             pass
-        # Reprogramar para 5 minutos
-        self.root.after(300_000, self._auto_refresh_ml)
+        self.root.after(1000, self._tick_refresh_countdown)
+
+    def _reset_refresh_countdown(self):
+        """Reinicia el contador a 3 minutos (llamar después de un refresh manual)."""
+        self._refresh_countdown_seg = 180
+        if hasattr(self, "lbl_refresh_countdown") and \
+           self.lbl_refresh_countdown.winfo_exists():
+            self.lbl_refresh_countdown.config(text="↻ 3:00", fg=C["text_lo"])
+
+    def _auto_refresh_ml(self):
+        """Auto-refresh de pedidos ML cada 3 minutos. Silencioso."""
+        try:
+            if self._ml_pedidos or getattr(self, "_ml_cuentas", {}):
+                self._ml_refresh_pedidos_silencioso()
+            # Reiniciar countdown
+            self._refresh_countdown_seg = 180
+        except Exception:
+            pass
+        self.root.after(180_000, self._auto_refresh_ml)
 
     def _ml_refresh_pedidos_silencioso(self):
         """Refresca pedidos en background sin tocar la UI durante la carga."""

@@ -3514,10 +3514,11 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <!-- ESCANEO -->
 <div class="scan-box">
   <div style="display:flex;gap:8px;margin-bottom:8px">
-    <input id="sku" type="text" inputmode="text"
-           autocomplete="off" autocorrect="off"
-           autocapitalize="characters" spellcheck="false"
-           placeholder="Escaneá o escribí el SKU"
+    <input id="sku" type="text"
+           inputmode="none"
+           autocomplete="off" autocorrect="off" autocapitalize="characters"
+           spellcheck="false" enterkeyhint="send"
+           placeholder="Apuntá el escáner aquí"
            style="flex:1">
     <button id="btn-confirmar"
             style="background:var(--success);color:#fff;border:none;border-radius:10px;
@@ -3525,12 +3526,12 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
             onclick="confirmarManual()">✓</button>
   </div>
   <div style="display:flex;align-items:center;gap:8px">
-    <div id="fb" class="neu" style="flex:1">Listo para escanear</div>
+    <div id="fb" class="neu" style="flex:1">🔫 Listo para escanear</div>
     <button id="btn-teclado"
             onclick="toggleTeclado()"
             style="background:var(--panel);border:1px solid var(--border);color:var(--mid);
             border-radius:8px;padding:5px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
-            title="Abrir/cerrar teclado">⌨</button>
+            title="Abrir teclado manual">⌨</button>
   </div>
 </div>
 
@@ -3897,21 +3898,23 @@ function toggleTeclado() {
   const inp = $('sku');
   const btn = $('btn-teclado');
   _tecladoVisible = !_tecladoVisible;
+
   if (_tecladoVisible) {
+    // Modo teclado manual — abre teclado virtual
     inp.setAttribute('inputmode', 'text');
     inp.focus(); inp.click();
-    btn.style.background = 'var(--accent)';
-    btn.style.color      = '#fff';
-    btn.title            = 'Cerrar teclado';
-    fb('neu', 'Escribí el SKU y tocá ✓');
+    if (btn) { btn.style.background='var(--accent)'; btn.style.color='#fff'; }
+    const f = $('fb');
+    if (f) { f.textContent='⌨ Escribí el SKU y tocá ✓'; f.className='neu'; }
   } else {
+    // Modo escáner láser — no abre teclado virtual
     inp.setAttribute('inputmode', 'none');
+    inp.value = '';
     inp.blur();
     setTimeout(() => inp.focus(), 80);
-    btn.style.background = 'var(--panel)';
-    btn.style.color      = 'var(--mid)';
-    btn.title            = 'Abrir teclado';
-    fb('neu', 'Listo para escanear');
+    if (btn) { btn.style.background='var(--panel)'; btn.style.color='var(--mid)'; }
+    const f = $('fb');
+    if (f) { f.textContent='🔫 Listo para escanear'; f.className='neu'; }
   }
 }
 
@@ -3919,51 +3922,70 @@ document.addEventListener('DOMContentLoaded', () => {
   load();
   const inp = $('sku');
 
-  // Enter → procesar
+  // ── ESCÁNER LÁSER HARDWARE ─────────────────────────────────────────────
+  // El escáner láser de Android manda el código + Enter (como teclado físico)
+  // inputmode="none" = no abre teclado virtual pero SÍ recibe input del escáner
+
+  // Enter → procesar inmediatamente (escáner láser siempre manda Enter al final)
   inp.addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' || e.keyCode === 13) {
       e.preventDefault();
       const v = inp.value.trim();
       if (v) { scan(v); inp.value = ''; }
     }
   });
 
-  // Fallback 300ms (para lectores sin Enter)
+  // Fallback: si el escáner NO manda Enter, procesar cuando deja de escribir (150ms)
+  // Los escáneres escriben muy rápido (<50ms) — 150ms asegura que terminó
+  let _scanTimer = null;
   inp.addEventListener('input', () => {
-    clearTimeout(window._t);
-    window._t = setTimeout(() => {
-      const v = inp.value.trim();
-      if (v.length >= 4 && !_tecladoVisible) { scan(v); inp.value = ''; }
-    }, 300);
+    clearTimeout(_scanTimer);
+    const v = inp.value.trim();
+    if (!v) return;
+    if (_tecladoVisible) return;  // en modo teclado manual, esperar Enter o botón ✓
+    _scanTimer = setTimeout(() => {
+      const v2 = inp.value.trim();
+      if (v2.length >= 3) { scan(v2); inp.value = ''; }
+    }, 150);
   });
 
-  // Clic en contenido → foco (excepto botones de teclado y confirmar)
+  // Clic en contenido → foco (excepto botones interactivos)
   document.addEventListener('click', e => {
     if (!e.target.closest('#btn-teclado') &&
         !e.target.closest('#btn-confirmar') &&
+        !e.target.closest('#btn-cam') &&
+        !e.target.closest('#cam-overlay') &&
         !e.target.closest('.g-hdr')) {
-      if (!_tecladoVisible) inp.focus();
+      if (!_tecladoVisible && !_camaraActiva) inp.focus();
     }
   });
 
+  // Foco inicial
   inp.focus();
 
-  // Mostrar botón cámara solo en dispositivos táctiles
+  // Botón cámara: solo en dispositivos táctiles
   const btnCam = document.getElementById('btn-cam');
   if (btnCam) {
     const esMovil = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
     btnCam.style.display = esMovil ? 'flex' : 'none';
   }
 
+  // Botón refresh
   $('fab').addEventListener('click', () => {
     $('fab').classList.add('spin');
     load().finally(() => setTimeout(() => $('fab').classList.remove('spin'), 500));
   });
 
+  // Auto-refresh del estado cada 5 segundos (silencioso)
   setInterval(loadQ, 5000);
 
-  // Mantener foco cada 2s SOLO si el teclado manual no está activo
-  setInterval(() => { if (!_tecladoVisible) inp.focus(); }, 2000);
+  // Mantener foco en el input cada 3s — asegura que el escáner siempre funcione
+  // Solo si el teclado manual y la cámara no están activos
+  setInterval(() => {
+    if (!_tecladoVisible && !_camaraActiva && document.activeElement !== inp) {
+      inp.focus();
+    }
+  }, 3000);
 });
 </script>
 </body>
