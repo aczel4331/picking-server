@@ -179,30 +179,30 @@ def guardar_config(config: dict):
 
 # ─────────────────────────────────────────────────────────────────────────────
 C = {
-    "bg_dark":    "#0F172A",
-    "panel":      "#1E293B",
-    "card":       "#0F172A",
-    "border":     "#334155",
-    "accent":     "#3B82F6",
-    "accent2":    "#6366F1",
-    "success":    "#10B981",
-    "warning":    "#F59E0B",
-    "danger":     "#EF4444",
-    "text_hi":    "#F1F5F9",
-    "text_mid":   "#94A3B8",
-    "text_lo":    "#475569",
-    "preview_bg": "#0B1120",
-    "bar_bg":     "#1E3A5F",
-    "bar_fg":     "#3B82F6",
-    "bar_ok":     "#10B981",
+    "bg_dark":    "#111318",   # Negro profundo (fondo logo)
+    "panel":      "#1C2030",   # Gris azulado oscuro
+    "card":       "#161B27",   # Ligeramente más claro que bg
+    "border":     "#2A3352",   # Borde sutil azulado
+    "accent":     "#2563EB",   # Azul Logibot principal
+    "accent2":    "#1D4ED8",   # Azul más profundo
+    "success":    "#0EA5E9",   # Cian tecnológico (éxito)
+    "warning":    "#F59E0B",   # Naranja alerta
+    "danger":     "#EF4444",   # Rojo error
+    "text_hi":    "#F0F4FF",   # Blanco azulado (texto principal)
+    "text_mid":   "#8B9CC8",   # Gris azulado (texto secundario)
+    "text_lo":    "#4A5578",   # Gris oscuro (texto tenue)
+    "preview_bg": "#0D1020",   # Fondo vista previa
+    "bar_bg":     "#1A2340",   # Fondo barra progreso
+    "bar_fg":     "#2563EB",   # Barra progreso azul
+    "bar_ok":     "#0EA5E9",   # Barra completa cian
 }
 
-FONT_TITLE  = ("Segoe UI Semibold", 11)
-FONT_BODY   = ("Segoe UI",          10)
-FONT_SMALL  = ("Segoe UI",           9)
-FONT_MONO   = ("Consolas",          13, "bold")
-FONT_GIANT  = ("Segoe UI Black",    52, "bold")
-FONT_BTN    = ("Segoe UI Semibold", 10)
+FONT_TITLE  = ("Segoe UI Semibold", 13)
+FONT_BODY   = ("Segoe UI",          11)
+FONT_SMALL  = ("Segoe UI",          10)
+FONT_MONO   = ("Consolas",          14, "bold")
+FONT_GIANT  = ("Segoe UI Black",    54, "bold")
+FONT_BTN    = ("Segoe UI Semibold", 11)
 
 
 class VentanaConfiguracion(tk.Toplevel):
@@ -1412,10 +1412,16 @@ class VentanaCodigoSupervisor(tk.Toplevel):
 class AsistenteDepositoApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Sistema de Picking — Pro Edition")
-        self.root.geometry("1400x800")
-        self.root.minsize(1000, 600)
+        self.root.title("Logibot · Sistema de Picking Pro")
         self.root.config(bg=C["bg_dark"])
+        self.root.minsize(1100, 650)
+
+        # Pantalla completa al arrancar
+        self.root.after(50, lambda: self.root.state("zoomed"))
+        # Escapar pantalla completa con F11
+        self.root.bind("<F11>", lambda e: self.root.state(
+            "normal" if self.root.state() == "zoomed" else "zoomed"))
+        self.root.bind("<Escape>", lambda e: self.root.state("normal"))
 
         self.ruta_pdf          = ""
         self.pedidos           = {}
@@ -1446,20 +1452,38 @@ class AsistenteDepositoApp:
 
     def _build_ui(self):
         # TOPBAR
-        topbar = tk.Frame(self.root, bg=C["panel"], height=56)
+        topbar = tk.Frame(self.root, bg=C["panel"], height=62)
         topbar.pack(fill="x", side="top")
         topbar.pack_propagate(False)
 
+        # Línea de acento cian en la parte superior del topbar
+        tk.Frame(self.root, bg=C["accent"], height=3).pack(
+            fill="x", side="top", before=topbar)
+
         left = tk.Frame(topbar, bg=C["panel"])
         left.pack(side="left", padx=20, fill="y")
-        tk.Label(left, text="⬡", font=("Segoe UI", 20), bg=C["panel"],
-                 fg=C["accent"]).pack(side="left", padx=(0, 10))
+
+        # Logo: "Logi" gris + "bot" cian — simula el logo Logibot
+        logo_frame = tk.Frame(left, bg=C["panel"])
+        logo_frame.pack(side="left", pady=8)
+        tk.Label(logo_frame, text="Logi", font=("Segoe UI Black", 18),
+                 bg=C["panel"], fg="#6B7280").pack(side="left")
+        tk.Label(logo_frame, text="bot", font=("Segoe UI Black", 18),
+                 bg=C["panel"], fg=C["accent"]).pack(side="left")
+
+        # Separador vertical
+        tk.Frame(left, bg=C["border"], width=1).pack(
+            side="left", fill="y", padx=14, pady=10)
+
+        # Subtítulo sistema
         col = tk.Frame(left, bg=C["panel"])
-        col.pack(side="left", fill="y", pady=8)
-        tk.Label(col, text="SISTEMA DE PICKING", font=("Segoe UI Black", 11),
+        col.pack(side="left", fill="y", pady=10)
+        tk.Label(col, text="SISTEMA DE PICKING  PRO",
+                 font=("Segoe UI Black", 12),
                  bg=C["panel"], fg=C["text_hi"]).pack(anchor="w")
-        tk.Label(col, text="Mercado Libre · Fase 1 (Colecta) + Fase 2 (Preparación)",
-                 font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"]).pack(anchor="w")
+        tk.Label(col, text="Mercado Libre  ·  Fase 1 Colecta  +  Fase 2 Preparación",
+                 font=("Segoe UI", 10), bg=C["panel"],
+                 fg=C["text_mid"]).pack(anchor="w")
 
         center = tk.Frame(topbar, bg=C["panel"])
         center.place(relx=0.5, rely=0.5, anchor="center")
@@ -1499,30 +1523,36 @@ class AsistenteDepositoApp:
         self.lbl_servidor_ip.pack(anchor="e")
 
         # TABS bajo el topbar
-        tabs_bar = tk.Frame(self.root, bg=C["panel"], height=36)
+        tabs_bar = tk.Frame(self.root, bg="#161B27", height=40)
         tabs_bar.pack(fill="x", side="top")
         tabs_bar.pack_propagate(False)
+
+        # Línea separadora sutil
+        tk.Frame(self.root, bg=C["border"], height=1).pack(fill="x", side="top")
 
         self._tab_actual = tk.StringVar(value="dashboard")
         def _tab(nombre, texto, activo=False):
             btn = tk.Button(tabs_bar, text=texto,
-                            font=("Segoe UI Semibold", 9),
-                            bg=C["accent"] if activo else C["panel"],
+                            font=("Segoe UI Semibold", 10),
+                            bg=C["accent"] if activo else "#161B27",
                             fg="white" if activo else C["text_mid"],
-                            activebackground=C["accent2"], activeforeground="white",
-                            relief="flat", cursor="hand2", padx=18, pady=0, bd=0,
+                            activebackground=C["accent2"],
+                            activeforeground="white",
+                            relief="flat", cursor="hand2",
+                            padx=20, pady=0, bd=0,
                             command=lambda n=nombre: self._switch_tab(n))
             btn.pack(side="left", fill="y")
             return btn
 
-        self._btn_tab_dash    = _tab("dashboard", "⬡  Inicio",          activo=True)
-        self._btn_tab_ml      = _tab("ml",        "📦  Pedidos ML",      activo=False)
+        self._btn_tab_dash    = _tab("dashboard", "⬡  Inicio",            activo=True)
+        self._btn_tab_ml      = _tab("ml",        "📦  Pedidos ML",        activo=False)
         self._btn_tab_picking = _tab("picking",   "🔍  Picking / Packing", activo=False)
 
         # Indicador de pedidos pendientes
         self.lbl_ml_badge = tk.Label(tabs_bar, text="",
-                                     font=("Segoe UI", 8), bg=C["accent"],
-                                     fg="white", padx=6, pady=2)
+                                     font=("Segoe UI Semibold", 9),
+                                     bg=C["accent"], fg="white",
+                                     padx=7, pady=2)
         self.lbl_ml_badge.pack(side="left")
 
         # BODY: contenedor que alterna entre paneles
@@ -2130,7 +2160,7 @@ class AsistenteDepositoApp:
         ]:
             activo = (tab == nombre)
             btn.config(
-                bg=C["accent"] if activo else C["panel"],
+                bg=C["accent"] if activo else "#161B27",
                 fg="white"     if activo else C["text_mid"])
 
         # Mostrar el panel correcto
