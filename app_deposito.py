@@ -1692,13 +1692,13 @@ class AsistenteDepositoApp:
 
         # Contador regresivo del auto-refresh
         self.lbl_refresh_countdown = tk.Label(
-            tb, text="↻ 3:00",
+            tb, text="↻ 1:00",
             font=("Segoe UI", 8), bg=C["panel"],
             fg=C["text_lo"])
         self.lbl_refresh_countdown.pack(side="left", padx=(2,0))
 
         # Iniciar countdown
-        self._refresh_countdown_seg = 180
+        self._refresh_countdown_seg = 60
         self.root.after(1000, self._tick_refresh_countdown)
 
         # Filtros de fecha rápidos
@@ -2243,7 +2243,7 @@ class AsistenteDepositoApp:
                 return
             self._refresh_countdown_seg -= 1
             if self._refresh_countdown_seg <= 0:
-                self._refresh_countdown_seg = 180
+                self._refresh_countdown_seg = 60
             seg = self._refresh_countdown_seg
             mins, secs = divmod(seg, 60)
             txt = f"↻ {mins}:{secs:02d}"
@@ -2263,10 +2263,10 @@ class AsistenteDepositoApp:
 
     def _reset_refresh_countdown(self):
         """Reinicia el contador a 3 minutos (llamar después de un refresh manual)."""
-        self._refresh_countdown_seg = 180
+        self._refresh_countdown_seg = 60
         if hasattr(self, "lbl_refresh_countdown") and \
            self.lbl_refresh_countdown.winfo_exists():
-            self.lbl_refresh_countdown.config(text="↻ 3:00", fg=C["text_lo"])
+            self.lbl_refresh_countdown.config(text="↻ 1:00", fg=C["text_lo"])
 
     def _auto_refresh_ml(self):
         """Auto-refresh de pedidos ML cada 3 minutos. Silencioso."""
@@ -2274,7 +2274,7 @@ class AsistenteDepositoApp:
             if self._ml_pedidos or getattr(self, "_ml_cuentas", {}):
                 self._ml_refresh_pedidos_silencioso()
             # Reiniciar countdown
-            self._refresh_countdown_seg = 180
+            self._refresh_countdown_seg = 60
         except Exception:
             pass
         self.root.after(60_000, self._auto_refresh_ml)
