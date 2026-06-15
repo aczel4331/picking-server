@@ -8,6 +8,14 @@ import re
 import json
 import subprocess
 from datetime import datetime
+
+# Notificaciones Windows nativas
+try:
+    from win10toast import ToastNotifier
+    _notificador_windows = ToastNotifier()
+except ImportError:
+    _notificador_windows = None
+
 try:
     import openpyxl
     _OPENPYXL_OK = True
@@ -1414,7 +1422,7 @@ class AsistenteDepositoApp:
         self.root = root
         self.root.title("Logibot · Sistema de Picking Pro")
         self.root.config(bg=C["bg_dark"])
-        self.root.minsize(1100, 650)
+        self.root.minsize(1200, 700)
 
         # Pantalla completa al arrancar
         self.root.after(50, lambda: self.root.state("zoomed"))
@@ -1437,6 +1445,7 @@ class AsistenteDepositoApp:
         self._servidor_activo  = False
         self._export_pending   = False   # debounce flag para exportar estado
         self._redraw_pending   = False   # debounce flag para redibujar fase1
+        self._pedidos_previos  = set()   # Rastrear pedidos para detectar nuevos
 
         self._build_ui()
         self.root.bind('<Escape>', lambda e: self.cancelar_paquete())
@@ -1649,6 +1658,7 @@ class AsistenteDepositoApp:
     # =========================================================================
     def _build_ml_panel(self):
         p = self.panel_ml
+        p.pack_propagate(False)  # No reducir tamaño
 
         # ── Colores por tipo de logística ────────────────────────────────────
         self._logistica_cfg = {
@@ -1669,33 +1679,33 @@ class AsistenteDepositoApp:
         }
 
         # ── Toolbar ───────────────────────────────────────────────────────────
-        tb = tk.Frame(p, bg=C["panel"], pady=8)
+        tb = tk.Frame(p, bg=C["panel"], pady=12, padx=8)
         tb.pack(fill="x")
 
         self.btn_ml_login = tk.Button(
-            tb, text="Conectar MercadoLibre",
-            font=("Segoe UI Semibold", 10),
+            tb, text="🔐  Conectar MercadoLibre",
+            font=("Segoe UI Semibold", 11),
             bg="#CA8A04", fg="black",
             activebackground="#EAD700", activeforeground="black",
-            relief="flat", cursor="hand2", padx=14, pady=5, bd=0,
+            relief="flat", cursor="hand2", padx=18, pady=8, bd=0, highlightthickness=0,
             command=self._ml_abrir_login)
-        self.btn_ml_login.pack(side="left", padx=(14, 6))
+        self.btn_ml_login.pack(side="left", padx=(16, 10))
 
         self.btn_ml_refresh = tk.Button(
-            tb, text="Actualizar",
-            font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"],
-            activebackground=C["border"], activeforeground=C["text_hi"],
-            relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
+            tb, text="🔄  Actualizar",
+            font=("Segoe UI", 10), bg=C["card"], fg=C["text_hi"],
+            activebackground=C["border"], activeforeground=C["accent"],
+            relief="flat", cursor="hand2", padx=14, pady=8, bd=0, highlightthickness=0,
             command=lambda: [self._ml_refresh_pedidos(),
                              self._reset_refresh_countdown()])
-        self.btn_ml_refresh.pack(side="left")
+        self.btn_ml_refresh.pack(side="left", padx=(0, 8))
 
         # Contador regresivo del auto-refresh
         self.lbl_refresh_countdown = tk.Label(
             tb, text="↻ 1:00",
-            font=("Segoe UI", 8), bg=C["panel"],
-            fg=C["text_lo"])
-        self.lbl_refresh_countdown.pack(side="left", padx=(2,0))
+            font=("Segoe UI Semibold", 9), bg=C["card"], fg=C["accent"],
+            padx=10, pady=4)
+        self.lbl_refresh_countdown.pack(side="left", padx=(6, 0))
 
         # Iniciar countdown
         self._refresh_countdown_seg = 60
@@ -1707,8 +1717,9 @@ class AsistenteDepositoApp:
 
         self.lbl_ml_estado = tk.Label(
             tb, text="Sin conexion a MercadoLibre",
-            font=FONT_SMALL, bg=C["panel"], fg=C["text_lo"])
-        self.lbl_ml_estado.pack(side="left", padx=(10, 0))
+            font=("Segoe UI", 10), bg=C["panel"], fg=C["text_mid"],
+            padx=10, pady=4)
+        self.lbl_ml_estado.pack(side="left", padx=(16, 0))
 
         # Buscar
         bw = tk.Frame(tb, bg=C["border"], padx=1, pady=1)
@@ -1723,21 +1734,21 @@ class AsistenteDepositoApp:
         # Generar lote
         self.btn_ml_lote = tk.Button(
             tb, text="▶  Generar Lote de Picking",
-            font=("Segoe UI Semibold", 10),
+            font=("Segoe UI Semibold", 11),
             bg=C["success"], fg="white",
             activebackground="#059669", activeforeground="white",
-            relief="flat", cursor="hand2", padx=14, pady=5, bd=0,
+            relief="flat", cursor="hand2", padx=20, pady=8, bd=0, highlightthickness=0,
             state="disabled", command=self._ml_generar_lote)
-        self.btn_ml_lote.pack(side="right", padx=(0, 8))
+        self.btn_ml_lote.pack(side="right", padx=(8, 16))
 
         # ── Pestañas de cuentas ML ────────────────────────────────────────────
         self._cuenta_tabs_frame = tk.Frame(p, bg=C["panel"], pady=4)
-        self._cuenta_tabs_frame.pack(fill="x", padx=6)
+        self._cuenta_tabs_frame.pack(fill="x", padx=0)
         # Se llena dinámicamente en _rebuild_cuenta_tabs()
 
         # ── Sub-pestañas: Todos / Flex / Mercado Envíos ───────────────────────
         sub_tabs = tk.Frame(p, bg=C["bg_dark"])
-        sub_tabs.pack(fill="x")
+        sub_tabs.pack(fill="both", expand=True)
 
         self._ml_filtro_tipo = tk.StringVar(value="todos")
         self._ml_sub_btns = {}
@@ -1809,17 +1820,24 @@ class AsistenteDepositoApp:
 
         # ── Lista scrollable ──────────────────────────────────────────────────
         lista = tk.Frame(p, bg=C["bg_dark"])
-        lista.pack(fill="both", expand=True)
-        self.canvas_ml = tk.Canvas(lista, bg=C["bg_dark"], highlightthickness=0)
+        lista.pack(fill="both", expand=True, padx=0, pady=0)
+        self.canvas_ml = tk.Canvas(lista, bg=C["bg_dark"], highlightthickness=0, bd=0)
         sb = tk.Scrollbar(lista, orient="vertical", command=self.canvas_ml.yview)
         self.frame_ml  = tk.Frame(self.canvas_ml, bg=C["bg_dark"])
-        self.canvas_ml.create_window((0, 0), window=self.frame_ml, anchor="nw")
+        self.canvas_window_id = self.canvas_ml.create_window((0, 0), window=self.frame_ml, anchor="nw", width=0)
         self.canvas_ml.configure(yscrollcommand=sb.set)
+        
+        # Hacer que frame_ml se expanda al ancho del canvas
+        def _on_canvas_configure(event):
+            self.canvas_ml.itemconfig(self.canvas_window_id, width=event.width)
+        
+        self.canvas_ml.bind("<Configure>", _on_canvas_configure)
+        
         self.frame_ml.bind("<Configure>",
                            lambda e: self.canvas_ml.configure(
                                scrollregion=self.canvas_ml.bbox("all")))
-        self.canvas_ml.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        self.canvas_ml.pack(side="left", fill="both", expand=True, padx=0, pady=0)
+        sb.pack(side="right", fill="y", padx=0, pady=0)
         self.canvas_ml.bind("<MouseWheel>",
                             lambda e: self.canvas_ml.yview_scroll(
                                 int(-1*(e.delta/120)), "units"))
@@ -2009,14 +2027,14 @@ class AsistenteDepositoApp:
                     continue
                 if not primer:
                     tk.Frame(self.frame_ml, bg=C["border"],
-                             height=2).pack(fill="x", pady=2)
+                             height=3).pack(fill="x", pady=4)
                 _hdr(titulo, color, len(lista))
                 _bloque(lista, color)
                 primer = False
 
             if imps and ver_imp:
                 tk.Frame(self.frame_ml, bg=C["border"],
-                         height=4).pack(fill="x", pady=6)
+                         height=4).pack(fill="x", pady=10)
                 _hdr("✅  YA IMPRESOS / ENVIADOS", C["text_lo"], len(imps))
                 self._ml_render_col_header()
                 _bloque(imps, C["text_lo"])
@@ -2036,7 +2054,7 @@ class AsistenteDepositoApp:
 
             if imps and ver_imp:
                 tk.Frame(self.frame_ml, bg=C["border"],
-                         height=4).pack(fill="x", pady=4)
+                         height=4).pack(fill="x", pady=8)
                 _hdr("✅  YA IMPRESOS", C["text_lo"], len(imps))
                 self._ml_render_col_header()
                 _bloque(imps, C["text_lo"])
@@ -2044,7 +2062,7 @@ class AsistenteDepositoApp:
 
     def _ml_render_col_header(self):
         """Cabecera de columnas — expande para llenar todo el ancho."""
-        hdr = tk.Frame(self.frame_ml, bg=C["panel"], pady=2)
+        hdr = tk.Frame(self.frame_ml, bg=C["panel"], pady=8, padx=6)
         hdr.pack(fill="both", expand=True)
         
         # Borde izquierdo
@@ -2064,11 +2082,11 @@ class AsistenteDepositoApp:
         for txt, peso in cols:
             col_frame = tk.Frame(hdr, bg=C["panel"])
             col_frame.pack(side="left", fill="both", expand=True)
-            tk.Label(col_frame, text=txt, font=("Segoe UI", 10, "bold"),
+            tk.Label(col_frame, text=txt, font=("Segoe UI", 11, "bold"),
                      bg=C["panel"], fg=C["text_lo"],
-                     anchor="w").pack(fill="both", expand=True, padx=3)
+                     anchor="w").pack(fill="both", expand=True, padx=6, pady=4)
         
-        tk.Frame(self.frame_ml, bg=C["border"], height=1).pack(fill="x")
+        tk.Frame(self.frame_ml, bg=C["border"], height=2).pack(fill="x")
 
     def _ml_render_filas(self, pedidos, color_tipo=None):
         """Renderiza filas de pedidos con columnas alineadas (sin cabecera)."""
@@ -2101,41 +2119,34 @@ class AsistenteDepositoApp:
             else:
                 chip_txt = SUBTIPO_LABEL.get(log, tipo.upper())
 
-            # Fila
-            fila = tk.Frame(self.frame_ml, bg=bg)
+            # Fila con altura mínima
+            fila = tk.Frame(self.frame_ml, bg=bg, height=60)
             fila.pack(fill="both", expand=True)
 
             # Borde de color izquierdo
             tk.Frame(fila, bg=borde_color, width=4).pack(side="left", fill="y")
 
-            inner = tk.Frame(fila, bg=bg, pady=4)
-            inner.pack(side="left", fill="both", expand=True)
+            inner = tk.Frame(fila, bg=bg, pady=8)
+            inner.pack(side="left", fill="both", expand=True, padx=6)
 
-            # Función helper para labels — expandibles
-            def _col(txt, w, fg=None, bold=False, mono=False, bg_=bg):
-                font = ("Consolas", 11) if mono else \
-                       ("Segoe UI Semibold", 11) if bold else FONT_SMALL
-                tk.Label(inner, text=str(txt), font=font, bg=bg_,
-                         fg=fg or (C["text_mid"] if impreso else C["text_hi"]),
-                         anchor="w", wraplength=240).pack(side="left", padx=4, fill="both", expand=True)
+            # Pesos de columnas (DEBEN COINCIDIR CON LA CABECERA)
+            col_weights = [0.08, 0.12, 0.10, 0.16, 0.38, 0.12, 0.04]
+            col_data = []
 
-            # Col 1: Chip de tipo
-            tk.Label(inner, text=chip_txt,
-                     font=("Segoe UI Semibold", 9),
-                     bg=borde_color, fg="white",
-                     padx=5, pady=2, anchor="center").pack(side="left", padx=4, fill="both", expand=True)
+            # 1. Tipo (chip)
+            col_data.append((chip_txt, "chip", borde_color))
 
-            # Col 2: Pedido #
-            _col(f"#{ped.get('order_id','')}", 10,
-                 fg=C["text_mid"] if impreso else C["accent"], bold=True)
+            # 2. Pedido #
+            col_data.append((f"#{ped.get('order_id','')}", "pedido", 
+                            C["text_mid"] if impreso else C["accent"]))
 
-            # Col 3: Fecha
-            _col(ped.get("fecha","")[:10], 9, fg=C["text_mid"])
+            # 3. Fecha
+            col_data.append((ped.get("fecha","")[:10], "fecha", C["text_mid"]))
 
-            # Col 4: Comprador
-            _col((ped.get("comprador","")[:16] or "—"), 16, bold=True)
+            # 4. Comprador
+            col_data.append(((ped.get("comprador","")[:16] or "—"), "comprador", C["text_hi"]))
 
-            # Col 5: SKUs y productos
+            # 5. SKU y productos
             items = ped.get("items", [])
             lineas = []
             for it in items[:3]:
@@ -2153,37 +2164,51 @@ class AsistenteDepositoApp:
                     lineas.append(f"{nom[:28]}  ×{qty}")
             if len(items) > 3:
                 lineas.append(f"+{len(items)-3} más")
-            _col("\n".join(lineas) if lineas else "—", 40, mono=True)
+            col_data.append(("\n".join(lineas) if lineas else "—", "sku", C["text_hi"]))
 
-            # Col 6: Estado envío — Pendientes o Impresas
-            est       = ped.get("estado_envio","") or "—"
+            # 6. Estado
+            est = ped.get("estado_envio","") or "—"
             substatus = ped.get("substatus","") or ""
-
-            # Lógica simple: Pendientes (naranja) o Impresas (verde)
             if impreso or substatus == "printed" or est in ("shipped","delivered","cancelled","not_delivered"):
-                col_est = C["success"]  # Verde
+                est_color = C["success"]
                 est_txt = "Impresas"
             else:
-                col_est = C["warning"]  # Naranja
+                est_color = C["warning"]
                 est_txt = "Pendientes"
+            col_data.append((est_txt, "estado", est_color))
 
-            _col(est_txt, 12, fg=col_est)
-
-            # Col 7: Botón etiqueta / impreso
+            # 7. Acción (etiqueta o impreso)
             if impreso:
-                tk.Label(inner, text="✅ Impreso",
-                         font=("Segoe UI", 8), bg=bg,
-                         fg=C["success"]).pack(side="left", padx=4, fill="both", expand=True)
+                col_data.append(("✅ Impreso", "accion", C["success"]))
             elif ped.get("shipping_id"):
-                tk.Button(inner, text="🏷 Etiqueta",
-                          font=("Segoe UI Semibold", 8),
-                          bg=borde_color, fg="white",
-                          activebackground=C["accent2"],
-                          activeforeground="white",
-                          relief="flat", cursor="hand2",
-                          padx=8, pady=2, bd=0,
-                          command=lambda oid=ped["order_id"]: self._ml_ver_etiqueta(oid)
-                          ).pack(side="left", padx=4, fill="both", expand=True)
+                col_data.append(("🏷 Etiqueta", "accion_btn", borde_color))
+            else:
+                col_data.append(("—", "accion", C["text_lo"]))
+
+            # Renderizar columnas con pesos proporcionales
+            for (txt, col_type, col_color), peso in zip(col_data, col_weights):
+                col_frame = tk.Frame(inner, bg=bg)
+                col_frame.pack(side="left", fill="both", expand=True, padx=0)
+
+                if col_type == "chip":
+                    # Chip de tipo
+                    tk.Label(col_frame, text=txt, font=("Segoe UI Semibold", 9),
+                             bg=col_color, fg="white", anchor="center",
+                             padx=6, pady=3).pack(fill="both", expand=True, padx=3, pady=2)
+                elif col_type == "accion_btn":
+                    # Botón etiqueta
+                    tk.Button(col_frame, text=txt, font=("Segoe UI Semibold", 9),
+                              bg=col_color, fg="white", relief="flat", cursor="hand2",
+                              highlightthickness=0, padx=6, pady=3, bd=0,
+                              command=lambda oid=ped["order_id"]: self._ml_ver_etiqueta(oid)
+                              ).pack(fill="both", expand=True, padx=3, pady=2)
+                else:
+                    # Label normal
+                    font = ("Consolas", 10) if col_type == "sku" else \
+                           ("Segoe UI Semibold", 10) if col_type in ("pedido", "comprador") else FONT_SMALL
+                    tk.Label(col_frame, text=txt, font=font, bg=bg, fg=col_color,
+                             anchor="w", justify="left", wraplength=180
+                             ).pack(fill="both", expand=True, padx=3, pady=2)
 
         self.canvas_ml.yview_moveto(0)
         # Hacer scrollable todos los widgets del frame_ml
@@ -2331,9 +2356,15 @@ class AsistenteDepositoApp:
         threading.Thread(target=_worker, daemon=True).start()
 
     def _notificar_pedidos_nuevos(self, cantidad):
-        """Muestra indicador discreto de pedidos nuevos en la topbar."""
+        """Muestra indicador discreto de pedidos nuevos y notificación Windows."""
         try:
             plural = "pedido nuevo" if cantidad == 1 else "pedidos nuevos"
+            
+            # Enviar notificación nativa de Windows
+            titulo = "🔔 Logibot · Nuevos Pedidos"
+            mensaje = f"{cantidad} {plural} en MercadoLibre\n¡Ábrelos ahora!"
+            self._enviar_notificacion_nuevo_pedido(titulo, mensaje)
+            
             # Actualizar badge en la pestaña ML
             if hasattr(self, "_btn_tab_ml"):
                 self._btn_tab_ml.config(
@@ -3103,11 +3134,11 @@ class AsistenteDepositoApp:
         for txt, accion, color in [
             ("📦  Pedidos ML",   "ml",      C["accent"]),
             ("🔍  Picking",      "picking", C["success"]),
-            ("📄  Cargar PDF",   "pdf",     "#7C3AED"),
+            ("📊  Gestor Stock", "stock",   "#10B981"),
             ("⚙   Configuración","cfg",     C["text_lo"]),
         ]:
             def _cmd(a=accion):
-                if   a == "pdf": self._switch_tab("picking"); self.cargar_pdf()
+                if   a == "stock": self._abrir_gestor_stock()
                 elif a == "cfg": self.abrir_configuracion()
                 else:            self._switch_tab(a)
             tk.Button(acc_f, text=txt,
@@ -3194,19 +3225,19 @@ class AsistenteDepositoApp:
                  font=("Segoe UI", 8, "bold"), bg=C["panel"],
                  fg=C["text_lo"]).pack(anchor="w", pady=(0, 8))
 
-        self.btn_cargar = tk.Button(
-            sec1, text="📄  Cargar PDF",
-            command=self.cargar_pdf, font=("Segoe UI Semibold", 10),
-            bg=C["accent"], fg="white", activebackground=C["accent2"],
+        self.btn_stock = tk.Button(
+            sec1, text="📊  Gestor de Stock",
+            command=self._abrir_gestor_stock, font=("Segoe UI Semibold", 10),
+            bg="#10B981", fg="white", activebackground="#059669",
             activeforeground="white", relief="flat", cursor="hand2",
             pady=9, bd=0)
-        self.btn_cargar.pack(fill="x")
+        self.btn_stock.pack(fill="x")
 
-        self.lbl_estado_pdf = tk.Label(
-            sec1, text="Esperando archivo PDF...",
+        self.lbl_estado_stock = tk.Label(
+            sec1, text="Haz clic para gestionar stock del Excel",
             fg=C["text_lo"], bg=C["panel"], font=FONT_SMALL,
             wraplength=360, justify="left")
-        self.lbl_estado_pdf.pack(anchor="w", pady=(6, 0))
+        self.lbl_estado_stock.pack(anchor="w", pady=(6, 0))
 
         tk.Frame(sec1, bg=C["border"], height=1).pack(fill="x", pady=(12, 8))
 
@@ -3374,6 +3405,23 @@ class AsistenteDepositoApp:
     # =========================================================================
     # MÉTODOS DE LÓGICA
     # =========================================================================
+
+    def _enviar_notificacion_nuevo_pedido(self, titulo, mensaje):
+        """Envía notificación nativa de Windows para nuevos pedidos."""
+        if not _notificador_windows:
+            return
+        try:
+            threading.Thread(
+                target=lambda: _notificador_windows.show_toast(
+                    titulo,
+                    mensaje,
+                    duration=10,
+                    threaded=True
+                ),
+                daemon=True
+            ).start()
+        except Exception as e:
+            print(f"[NOTIF] Error: {e}")
 
     def _texto_impresora(self):
         imp = self.config.get("impresora", "")
@@ -3670,6 +3718,212 @@ class AsistenteDepositoApp:
         ruta_nueva = nueva.get("excel_path", "")
         if ruta_nueva and ruta_nueva != ruta_anterior:
             self._cargar_excel_desde_ruta(ruta_nueva)
+
+    def _abrir_gestor_stock(self):
+        """Abre ventana para gestionar stock del Excel."""
+        win = tk.Toplevel(self.root)
+        win.title("Gestor de Stock")
+        win.geometry("900x500")
+        win.config(bg=C["bg_dark"])
+        win.grab_set()
+        win.lift()
+
+        # Header
+        hdr = tk.Frame(win, bg=C["accent"], pady=12)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="📊  Gestor de Stock", font=("Segoe UI Black", 14),
+                 bg=C["accent"], fg="white").pack()
+        tk.Label(hdr, text="Administra el stock de productos del Excel",
+                 font=("Segoe UI", 9), bg=C["accent"], fg="#BFDBFE").pack(pady=(2,0))
+
+        # Body
+        body = tk.Frame(win, bg=C["panel"], padx=16, pady=16)
+        body.pack(fill="both", expand=True)
+
+        # Tabla de stock actual
+        tk.Label(body, text="Stock Actual (desde Excel):",
+                 font=("Segoe UI Semibold", 11), bg=C["panel"],
+                 fg=C["text_hi"]).pack(anchor="w", pady=(0, 10))
+
+        # Frame con scroll para la tabla
+        tabla_frame = tk.Frame(body, bg=C["card"], relief="solid", bd=1)
+        tabla_frame.pack(fill="both", expand=True, pady=(0, 16))
+
+        # Canvas scrollable
+        canvas = tk.Canvas(tabla_frame, bg=C["card"], highlightthickness=0)
+        scroll = tk.Scrollbar(tabla_frame, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg=C["card"])
+
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+
+        # Encabezado tabla
+        hdr_tabla = tk.Frame(scroll_frame, bg=C["border"])
+        hdr_tabla.pack(fill="x")
+        for txt, ancho in [("SKU", 20), ("Nombre", 40), ("Stock", 12), ("Acción", 12)]:
+            tk.Label(hdr_tabla, text=txt, font=("Segoe UI Semibold", 10),
+                     bg=C["border"], fg=C["text_hi"], width=ancho,
+                     anchor="w").pack(side="left", padx=4, pady=6)
+
+        # Mostrar productos del Excel
+        if self.db_nombres:
+            for sku, info in sorted(self.db_nombres.items())[:50]:
+                row = tk.Frame(scroll_frame, bg=C["card"], height=35)
+                row.pack(fill="x", pady=2, padx=4)
+
+                # SKU
+                tk.Label(row, text=sku, font=("Consolas", 9),
+                         bg=C["card"], fg=C["accent"], width=20,
+                         anchor="w").pack(side="left", padx=4, pady=4)
+
+                # Nombre
+                nombre = info.get("nombre", "") if isinstance(info, dict) else str(info)
+                tk.Label(row, text=nombre[:40], font=("Segoe UI", 9),
+                         bg=C["card"], fg=C["text_hi"], width=40,
+                         anchor="w").pack(side="left", padx=4, pady=4)
+
+                # Stock
+                stock = info.get("stock", 0) if isinstance(info, dict) else 0
+                tk.Label(row, text=str(stock), font=("Segoe UI", 9),
+                         bg=C["card"], fg=C["success"], width=12,
+                         anchor="center").pack(side="left", padx=4, pady=4)
+
+                # Botón editar
+                tk.Button(row, text="✏", font=("Segoe UI", 9),
+                          bg=C["border"], fg=C["accent"],
+                          relief="flat", cursor="hand2", width=3, bd=0,
+                          command=lambda s=sku: self._editar_stock(s)
+                          ).pack(side="left", padx=4, pady=4)
+        else:
+            tk.Label(scroll_frame, text="No hay productos cargados en el Excel",
+                     font=("Segoe UI", 10), bg=C["card"],
+                     fg=C["text_lo"]).pack(pady=20)
+
+        # Actualizar región scroll
+        def _on_frame_configure(event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        scroll_frame.bind("<Configure>", _on_frame_configure)
+
+        # Footer con botones
+        footer = tk.Frame(body, bg=C["panel"])
+        footer.pack(fill="x", pady=(16, 0))
+
+        tk.Button(footer, text="➕  Agregar Producto", font=("Segoe UI Semibold", 10),
+                  bg=C["success"], fg="white", relief="flat", cursor="hand2",
+                  padx=16, pady=8, bd=0, highlightthickness=0,
+                  command=self._agregar_producto_stock
+                  ).pack(side="left", padx=(0, 8))
+
+        tk.Button(footer, text="💾  Guardar Excel", font=("Segoe UI Semibold", 10),
+                  bg=C["accent"], fg="white", relief="flat", cursor="hand2",
+                  padx=16, pady=8, bd=0, highlightthickness=0,
+                  command=lambda: self._guardar_excel_stock(win)
+                  ).pack(side="left", padx=(0, 8))
+
+        tk.Button(footer, text="⬇️  Descargar Excel", font=("Segoe UI Semibold", 10),
+                  bg="#F59E0B", fg="white", relief="flat", cursor="hand2",
+                  padx=16, pady=8, bd=0, highlightthickness=0,
+                  command=self._descargar_excel
+                  ).pack(side="left")
+
+        tk.Button(footer, text="Cerrar", font=("Segoe UI", 10),
+                  bg=C["border"], fg=C["text_hi"], relief="flat", cursor="hand2",
+                  padx=16, pady=8, bd=0, highlightthickness=0,
+                  command=win.destroy
+                  ).pack(side="right")
+
+    def _editar_stock(self, sku):
+        """Abre diálogo para editar stock de un SKU."""
+        win = tk.Toplevel(self.root)
+        win.title(f"Editar Stock - {sku}")
+        win.geometry("400x200")
+        win.config(bg=C["panel"])
+        win.grab_set()
+        win.lift()
+
+        info = self.db_nombres.get(sku, {})
+        nombre = info.get("nombre", "") if isinstance(info, dict) else str(info)
+        stock_actual = info.get("stock", 0) if isinstance(info, dict) else 0
+
+        tk.Label(win, text=f"Editar Stock", font=("Segoe UI Black", 12),
+                 bg=C["panel"], fg=C["text_hi"]).pack(pady=(16, 8))
+
+        tk.Label(win, text=f"SKU: {sku}", font=("Segoe UI", 10),
+                 bg=C["panel"], fg=C["text_mid"]).pack()
+
+        tk.Label(win, text=f"Producto: {nombre}", font=("Segoe UI", 10),
+                 bg=C["panel"], fg=C["text_mid"]).pack(pady=(0, 16))
+
+        tk.Label(win, text="Stock:", font=("Segoe UI Semibold", 10),
+                 bg=C["panel"], fg=C["text_hi"]).pack(anchor="w", padx=30)
+
+        entry = tk.Entry(win, font=("Segoe UI", 11), bg=C["card"],
+                         fg=C["text_hi"], relief="solid", bd=1, width=15)
+        entry.insert(0, str(stock_actual))
+        entry.pack(padx=30, pady=8)
+        entry.focus()
+
+        def _guardar():
+            try:
+                nuevo_stock = int(entry.get())
+                if isinstance(self.db_nombres[sku], dict):
+                    self.db_nombres[sku]["stock"] = nuevo_stock
+                messagebox.showinfo("Éxito", f"Stock actualizado a {nuevo_stock}")
+                win.destroy()
+            except ValueError:
+                messagebox.showerror("Error", "Ingresa un número válido")
+
+        tk.Button(win, text="Guardar", font=("Segoe UI Semibold", 10),
+                  bg=C["success"], fg="white", relief="flat", cursor="hand2",
+                  padx=16, pady=8, bd=0, command=_guardar
+                  ).pack(pady=16)
+
+    def _descargar_excel(self):
+        """Descarga una copia del Excel a ubicación elegida."""
+        if not self.config.get("excel_path", "").strip():
+            messagebox.showerror("Error", "No hay Excel cargado")
+            return
+
+        ruta_origen = self.config["excel_path"]
+        if not os.path.exists(ruta_origen):
+            messagebox.showerror("Error", f"Excel no encontrado: {ruta_origen}")
+            return
+
+        # Diálogo para elegir dónde guardar
+        ruta_descarga = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            initialfile=f"stock_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+
+        if not ruta_descarga:
+            return
+
+        try:
+            import shutil
+            shutil.copy2(ruta_origen, ruta_descarga)
+            messagebox.showinfo("Éxito", f"Excel descargado en:\n{ruta_descarga}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo descargar: {e}")
+
+    def _agregar_producto_stock(self):
+        """Abre diálogo para agregar nuevo producto."""
+        messagebox.showinfo("Próximamente", 
+                           "La función para agregar productos estará disponible pronto.\n\n"
+                           "Por ahora, edita el Excel directamente.")
+
+    def _guardar_excel_stock(self, win):
+        """Guarda cambios en el Excel."""
+        try:
+            self._guardar_db_interna()
+            messagebox.showinfo("Éxito", "Stock guardado en el Excel")
+            self.lbl_estado_stock.config(text="✅ Stock actualizado")
+            self.root.after(3000, lambda: self.lbl_estado_stock.config(
+                text="Haz clic para gestionar stock del Excel"))
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo guardar: {e}")
 
     def cargar_pdf(self):
         ruta = filedialog.askopenfilename(filetypes=[("Archivos PDF", "*.pdf")])
