@@ -1999,6 +1999,45 @@ def escanear():
                     "msg": f"✔ {nuevo}/{req}" if nuevo >= req else f"{nuevo}/{req}"})
 
 
+@app.route("/api/estado-picking", methods=["GET"])
+def estado_picking():
+    """Retorna el estado actual del picking para sincronización en tiempo real."""
+    with _lock:
+        if not _estado.get("cargado"):
+            return jsonify({"cargado": False, "colecta": {}, "grupos": []})
+        
+        # Reconstruir grupos con estado de colecta actual
+        grupos_con_estado = []
+        colecta = _estado.get("colecta", {})
+        
+        for grupo in _estado.get("grupos", []):
+            items_con_estado = []
+            for item in grupo.get("items", []):
+                sku = item["sku"]
+                collected = colecta.get(sku, 0)
+                items_con_estado.append({
+                    "sku": sku,
+                    "nombre": item.get("nombre", ""),
+                    "pasillo": item.get("pasillo", ""),
+                    "estanteria": item.get("estanteria", ""),
+                    "req": item.get("req", 1),
+                    "collected": collected
+                })
+            
+            grupos_con_estado.append({
+                "nombre": grupo.get("nombre", ""),
+                "items": items_con_estado
+            })
+        
+        return jsonify({
+            "cargado": True,
+            "colecta": colecta,
+            "grupos": grupos_con_estado,
+            "colecta_completa": _estado.get("colecta_completa", False),
+            "timestamp": _estado.get("ultima_actualizacion", _ts())
+        })
+
+
 @app.route("/api/reset_sku", methods=["POST"])
 def reset_sku():
     data = request.get_json(force=True)
@@ -2182,13 +2221,41 @@ def leer_producto():
         if pasillo:
             texto += f", pasillo {pasillo}"
         
+        print(f"[TTS] Generando audio para: {texto}")
+        
         # Generar audio con gTTS
-        tts = gTTS(text=texto, lang="es", slow=False)
+        try:
+            tts = gTTS(text=texto, lang="es", slow=False)
+            print(f"[TTS] gTTS creado OK")
+        except Exception as e:
+            print(f"[TTS] Error creando gTTS: {e}")
+            # Fallback a pyttsx3 si gTTS falla
+            import pyttsx3
+            engine = pyttsx3.init()
+            engine.setProperty('rate', 150)
+            
+            audio_buffer = io.BytesIO()
+            # pyttsx3 requiere archivo real, no buffer
+            temp_file = f"/tmp/tts_{sku}.mp3"
+            engine.save_to_file(texto, temp_file)
+            engine.runAndWait()
+            with open(temp_file, 'rb') as f:
+                audio_buffer = io.BytesIO(f.read())
+            audio_buffer.seek(0)
+            
+            return send_file(
+                audio_buffer,
+                mimetype="audio/mpeg",
+                as_attachment=False,
+                download_name=f"producto_{sku}.mp3"
+            )
         
         # Guardar en buffer
         audio_buffer = io.BytesIO()
         tts.write_to_fp(audio_buffer)
         audio_buffer.seek(0)
+        
+        print(f"[TTS] Audio generado OK ({audio_buffer.getbuffer().nbytes} bytes)")
         
         return send_file(
             audio_buffer,
@@ -2197,7 +2264,9 @@ def leer_producto():
             download_name=f"producto_{sku}.mp3"
         )
     except Exception as e:
-        print(f"[TTS] Error: {e}")
+        print(f"[TTS] Error fatal: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
@@ -3894,6 +3963,8 @@ function vib(p) { if (navigator.vibrate) navigator.vibrate(p); }
 
 async function leerProducto(texto) {
   try {
+    console.log('[VOZ] Pidiendo audio para:', texto);
+    
     const r = await fetch('/api/leer-producto', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3904,14 +3975,33 @@ async function leerProducto(texto) {
       })
     });
     
-    if (!r.ok) return;
+    console.log('[VOZ] Respuesta servidor:', r.status);
+    
+    if (!r.ok) {
+      console.error('[VOZ] Error del servidor:', r.status, r.statusText);
+      return;
+    }
     
     const blob = await r.blob();
+    console.log('[VOZ] Blob recibido:', blob.size, 'bytes');
+    
     const url = URL.createObjectURL(blob);
+    console.log('[VOZ] URL creada:', url);
+    
     const audio = new Audio(url);
-    audio.play().catch(e => console.log('No se pudo reproducir audio'));
+    
+    audio.onplay = () => console.log('[VOZ] Audio reproduciendo...');
+    audio.onended = () => console.log('[VOZ] Audio finalizado');
+    audio.onerror = (e) => console.error('[VOZ] Error de audio:', e);
+    
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => console.log('[VOZ] Play OK'))
+        .catch(e => console.error('[VOZ] Play error:', e));
+    }
   } catch (e) {
-    console.log('Error lectura de voz:', e);
+    console.error('[VOZ] Error fatal:', e);
   }
 }
 

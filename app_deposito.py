@@ -1458,6 +1458,8 @@ class AsistenteDepositoApp:
         self.root.after(600, self._verificar_primera_vez)
         # Auto-refresh de pedidos ML cada 3 minutos
         self.root.after(60_000, self._auto_refresh_ml)
+        # Sincronizar colecta desde servidor picking cada 2 segundos
+        self.root.after(2_000, self._sync_colecta_servidor)
 
     def _build_ui(self):
         # TOPBAR
@@ -2292,6 +2294,34 @@ class AsistenteDepositoApp:
         if hasattr(self, "lbl_refresh_countdown") and \
            self.lbl_refresh_countdown.winfo_exists():
             self.lbl_refresh_countdown.config(text="↻ 1:00", fg=C["text_lo"])
+
+    def _sync_colecta_servidor(self):
+        """Sincroniza el estado de colecta desde el servidor picking en tiempo real."""
+        try:
+            import requests
+            url = f"{RAILWAY_URL.rstrip('/')}/api/estado-picking"
+            r = requests.get(url, timeout=2)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("cargado"):
+                    # Actualizar colecta_global con valores del servidor
+                    colecta_servidor = data.get("colecta", {})
+                    
+                    # Verificar si hay cambios
+                    cambios = False
+                    for sku, cantidad in colecta_servidor.items():
+                        if self.colecta_global.get(sku, 0) != cantidad:
+                            self.colecta_global[sku] = cantidad
+                            cambios = True
+                    
+                    # Si hay cambios, redibujar Fase 1
+                    if cambios and hasattr(self, 'fase1_items'):
+                        self._redraw_fase1()
+        except Exception as e:
+            pass  # Silencioso — es solo sincronización
+        finally:
+            # Re-programar en 2 segundos
+            self.root.after(2_000, self._sync_colecta_servidor)
 
     def _auto_refresh_ml(self):
         """Auto-refresh de pedidos ML cada 3 minutos. Silencioso."""
