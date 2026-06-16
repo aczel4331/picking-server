@@ -2165,6 +2165,42 @@ def _startup():
 _startup()
 
 
+@app.route("/api/leer-producto", methods=["POST"])
+def leer_producto():
+    """Genera audio con gTTS para leer producto y pasillo."""
+    try:
+        from gtts import gTTS
+        import io
+        
+        data = request.get_json() or {}
+        sku = data.get("sku", "")
+        producto = data.get("producto", "Producto desconocido")
+        pasillo = data.get("pasillo", "")
+        
+        # Construir texto a leer
+        texto = f"{producto}"
+        if pasillo:
+            texto += f", pasillo {pasillo}"
+        
+        # Generar audio con gTTS
+        tts = gTTS(text=texto, lang="es", slow=False)
+        
+        # Guardar en buffer
+        audio_buffer = io.BytesIO()
+        tts.write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
+        
+        return send_file(
+            audio_buffer,
+            mimetype="audio/mpeg",
+            as_attachment=False,
+            download_name=f"producto_{sku}.mp3"
+        )
+    except Exception as e:
+        print(f"[TTS] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/")
 def index():
     if not _token_valido():
@@ -3521,6 +3557,12 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
   justify-content:center;z-index:50;transition:transform .15s}
 #btn-cam:active{transform:scale(.9)}
+#btn-voz{position:fixed;bottom:150px;right:16px;background:#10B981;color:#fff;border:none;
+  border-radius:50%;width:52px;height:52px;font-size:22px;cursor:pointer;
+  box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
+  justify-content:center;z-index:50;transition:transform .15s}
+#btn-voz:active{transform:scale(.9)}
+#btn-voz.desactivado{background:#94A3B8;opacity:.6}
 #cam-torch{margin-top:10px;padding:8px 20px;border-radius:20px;border:1px solid rgba(255,255,255,.3);
   background:transparent;color:#fff;font-size:13px;cursor:pointer;display:none}
 
@@ -3615,6 +3657,9 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <!-- Botón cámara flotante -->
 <button id="btn-cam" onclick="abrirCamara()" title="Escanear con cámara">📷</button>
 
+<!-- Botón lectura de voz -->
+<button id="btn-voz" onclick="toggleVoz()" title="Activar/desactivar lectura de voz">🔊</button>
+
 <!-- LISTA -->
 <div class="content" id="content">
   <div class="empty">
@@ -3636,6 +3681,14 @@ async function load() {
     const r = await fetch('/api/estado');
     if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
     E = await r.json();
+    
+    // Cargar preferencia de lectura de voz
+    E.leer_voz = localStorage.getItem('leer_voz') === '1';
+    const btn = document.getElementById('btn-voz');
+    if (btn && !E.leer_voz) {
+      btn.classList.add('desactivado');
+    }
+    
     console.log('[MOVIL] cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
     render();
   } catch(e) {
@@ -3791,6 +3844,22 @@ async function scan(raw) {
         setTimeout(() => el.classList.remove('recien'), 700);
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
+
+      // Leer producto en voz alta si está activado
+      if (E.leer_voz) {
+        // Si es un pasillo diferente al anterior, menciona el pasillo
+        if (d.pasillo && d.pasillo !== (E.pasillo_anterior || '')) {
+          leerProducto(`${d.nombre || sku}, pasillo ${d.pasillo}`);
+          E.pasillo_anterior = d.pasillo;
+        } else if (d.pasillo) {
+          // Mismo pasillo → solo menciona el producto
+          leerProducto(d.nombre || sku);
+        } else {
+          // Sin información de pasillo
+          leerProducto(d.nombre || sku);
+        }
+        updateVozButton();
+      }
     }
   } catch(e) {
     fb('err', '❌ Error de conexión');
@@ -3822,6 +3891,54 @@ function flash(t) {
 }
 
 function vib(p) { if (navigator.vibrate) navigator.vibrate(p); }
+
+async function leerProducto(texto) {
+  try {
+    const r = await fetch('/api/leer-producto', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        sku: 'tts',
+        producto: texto,
+        pasillo: ''
+      })
+    });
+    
+    if (!r.ok) return;
+    
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.play().catch(e => console.log('No se pudo reproducir audio'));
+  } catch (e) {
+    console.log('Error lectura de voz:', e);
+  }
+}
+
+function toggleVoz() {
+  E.leer_voz = !E.leer_voz;
+  localStorage.setItem('leer_voz', E.leer_voz ? '1' : '0');
+  const btn = document.getElementById('btn-voz');
+  if (E.leer_voz) {
+    btn.classList.remove('desactivado');
+    toast('🔊 Lectura de pasillos activada', 'ok');
+  } else {
+    btn.classList.add('desactivado');
+    toast('🔇 Lectura desactivada', 'warn');
+  }
+  updateVozButton();
+}
+
+function updateVozButton() {
+  const btn = document.getElementById('btn-voz');
+  if (!btn) return;
+  
+  if (E.pasillo_anterior) {
+    btn.title = `🔊 Lectura (Pasillo: ${E.pasillo_anterior})`;
+  } else {
+    btn.title = '🔊 Activar lectura de pasillos';
+  }
+}
 
 // ── INIT ───────────────────────────────────────────────────────────────────
 let _tecladoVisible = false;
