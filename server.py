@@ -2204,113 +2204,7 @@ def _startup():
 _startup()
 
 
-@app.route("/api/leer-producto", methods=["POST"])
-def leer_producto():
-    """Genera audio con gTTS para leer producto y pasillo."""
-    try:
-        import io
-        
-        data = request.get_json() or {}
-        sku = data.get("sku", "")
-        producto = data.get("producto", "Producto desconocido")
-        pasillo = data.get("pasillo", "")
-        
-        # Construir texto a leer
-        texto = f"{producto}"
-        if pasillo:
-            texto += f", pasillo {pasillo}"
-        
-        print(f"[TTS] Generando audio para: {texto}")
-        
-        audio_data = None
-        
-        # OPCIÓN 1: Intenta gTTS (requiere internet)
-        try:
-            print(f"[TTS] Intentando gTTS...")
-            from gtts import gTTS
-            tts = gTTS(text=texto, lang="es", slow=False)
-            
-            buffer = io.BytesIO()
-            tts.write_to_fp(buffer)
-            buffer.seek(0)
-            audio_data = buffer
-            
-            print(f"[TTS] ✅ gTTS OK ({len(buffer.getvalue())} bytes)")
-        except Exception as e:
-            print(f"[TTS] ❌ gTTS falló: {e}")
-            
-            # OPCIÓN 2: Intenta pyttsx3 (local)
-            try:
-                print(f"[TTS] Intentando pyttsx3...")
-                import pyttsx3
-                import tempfile
-                import os
-                
-                engine = pyttsx3.init()
-                engine.setProperty('rate', 150)
-                
-                # Crear archivo temporal
-                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
-                    temp_path = f.name
-                
-                engine.save_to_file(texto, temp_path)
-                engine.runAndWait()
-                
-                # Leer archivo temporal
-                if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-                    with open(temp_path, 'rb') as f:
-                        buffer = io.BytesIO(f.read())
-                    audio_data = buffer
-                    os.remove(temp_path)
-                    print(f"[TTS] ✅ pyttsx3 OK ({len(buffer.getvalue())} bytes)")
-                else:
-                    raise Exception("pyttsx3 no generó archivo")
-                    
-            except Exception as e2:
-                print(f"[TTS] ❌ pyttsx3 también falló: {e2}")
-                
-                # OPCIÓN 3: Fallback - generar silencio (WAV simple)
-                print(f"[TTS] Usando fallback de silencio...")
-                try:
-                    import wave
-                    
-                    # Generar 1 segundo de silencio en WAV
-                    buffer = io.BytesIO()
-                    sample_rate = 44100
-                    duration = 1
-                    
-                    with wave.open(buffer, 'wb') as wav_file:
-                        wav_file.setnchannels(1)  # Mono
-                        wav_file.setsampwidth(2)  # 16-bit
-                        wav_file.setframerate(sample_rate)
-                        wav_file.writeframes(b'\x00' * (sample_rate * duration * 2))
-                    
-                    buffer.seek(0)
-                    audio_data = buffer
-                    print(f"[TTS] ⚠️  Fallback WAV ({len(buffer.getvalue())} bytes)")
-                except Exception as e3:
-                    print(f"[TTS] Fallback también falló: {e3}")
-                    raise e3
-        
-        if audio_data is None:
-            raise Exception("No se pudo generar audio en ningún formato")
-        
-        return send_file(
-            audio_data,
-            mimetype="audio/mpeg",
-            as_attachment=False,
-            download_name=f"producto_{sku}.mp3"
-        )
-        
-    except Exception as e:
-        print(f"[TTS] 💥 Error fatal: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            "error": str(e),
-            "tipo": "TTS_ERROR",
-            "detalles": "Fallaron gTTS y pyttsx3"
-        }), 500
+
 
 
 @app.route("/")
@@ -4020,62 +3914,34 @@ function flash(t) {
 
 function vib(p) { if (navigator.vibrate) navigator.vibrate(p); }
 
-async function leerProducto(texto) {
-  try {
-    console.log('[VOZ] Pidiendo audio para:', texto);
-    
-    if (!texto || texto.trim() === '') {
-      console.log('[VOZ] Texto vacío, ignorando');
-      return;
-    }
-    
-    const r = await fetch('/api/leer-producto', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        sku: 'tts',
-        producto: texto.trim(),
-        pasillo: ''
-      })
-    });
-    
-    console.log('[VOZ] Respuesta servidor:', r.status, r.statusText);
-    
-    if (!r.ok) {
-      console.error('[VOZ] Error del servidor:', r.status);
-      return;
-    }
-    
-    const blob = await r.blob();
-    console.log('[VOZ] Blob recibido:', blob.size, 'bytes, tipo:', blob.type);
-    
-    if (blob.size === 0) {
-      console.error('[VOZ] Blob vacío');
-      return;
-    }
-    
-    const url = URL.createObjectURL(blob);
-    console.log('[VOZ] URL creada:', url.substring(0, 50) + '...');
-    
-    const audio = new Audio(url);
-    
-    audio.onplay = () => console.log('[VOZ] ▶️ Reproduciendo...');
-    audio.onended = () => {
-      console.log('[VOZ] ✅ Finalizado');
-      URL.revokeObjectURL(url);
-    };
-    audio.onerror = (e) => console.error('[VOZ] ❌ Error de audio:', e);
-    
-    // Reproducir con manejo de promesa
-    const playPromise = audio.play();
-    if (playPromise !== undefined) {
-      playPromise
-        .then(() => console.log('[VOZ] Play ejecutado OK'))
-        .catch(e => console.error('[VOZ] Play error:', e.name, e.message));
-    }
-  } catch (e) {
-    console.error('[VOZ] Error fatal:', e);
+function leerProducto(texto) {
+  // Usar Web Speech API del navegador (sin servidor, sin internet)
+  if (!texto || texto.trim() === '') return;
+  
+  if (!window.speechSynthesis) {
+    console.warn('[VOZ] Web Speech API no disponible en este navegador');
+    return;
   }
+  
+  // Cancelar cualquier lectura anterior
+  window.speechSynthesis.cancel();
+  
+  const utterance = new SpeechSynthesisUtterance(texto.trim());
+  utterance.lang = 'es-UY';   // Español Uruguay
+  utterance.rate = 0.95;       // Velocidad natural
+  utterance.pitch = 1.0;       // Tono normal
+  utterance.volume = 1.0;      // Volumen máximo
+  
+  // Buscar voz en español si está disponible
+  const voces = window.speechSynthesis.getVoices();
+  const vozEsp = voces.find(v => v.lang.startsWith('es')) || voces[0];
+  if (vozEsp) utterance.voice = vozEsp;
+  
+  utterance.onstart  = () => console.log('[VOZ] ▶️ Leyendo:', texto);
+  utterance.onend    = () => console.log('[VOZ] ✅ Finalizado');
+  utterance.onerror  = (e) => console.error('[VOZ] ❌ Error:', e.error);
+  
+  window.speechSynthesis.speak(utterance);
 }
 
 function toggleVoz() {
@@ -4085,11 +3951,27 @@ function toggleVoz() {
   if (E.leer_voz) {
     btn.classList.remove('desactivado');
     toast('🔊 Lectura de pasillos activada', 'ok');
+    // Prueba de voz al activar
+    leerProducto('Lectura activada');
   } else {
     btn.classList.add('desactivado');
+    window.speechSynthesis && window.speechSynthesis.cancel();
     toast('🔇 Lectura desactivada', 'warn');
   }
   updateVozButton();
+}
+
+// Pre-cargar voces del sistema (necesario en algunos navegadores)
+function inicializarVoces() {
+  if (!window.speechSynthesis) return;
+  // Chrome necesita este evento para cargar las voces
+  window.speechSynthesis.onvoiceschanged = () => {
+    const voces = window.speechSynthesis.getVoices();
+    const esp = voces.filter(v => v.lang.startsWith('es'));
+    console.log('[VOZ] Voces en español disponibles:', esp.map(v => v.name + ' (' + v.lang + ')'));
+  };
+  // Forzar carga inicial
+  window.speechSynthesis.getVoices();
 }
 
 function updateVozButton() {
@@ -4255,6 +4137,7 @@ function toggleTeclado() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  inicializarVoces();
   load();
   const inp = $('sku');
 
