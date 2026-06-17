@@ -3008,8 +3008,8 @@ class AsistenteDepositoApp:
         self._subir_a_nube_async()
         self.root.after(5000, self._sincronizar_desde_nube)
 
-        # Cambiar a la pestaña de Picking
-        self._switch_tab("picking")
+        # ✅ CAMBIAR A LA PESTAÑA DE PICKING (OBLIGATORIO)
+        self.root.after(100, lambda: self._switch_tab("picking"))
         self.entrada_sku.focus()
 
         n_sin = sin_bd
@@ -4629,6 +4629,7 @@ class AsistenteDepositoApp:
             self._ejecutar_transicion_fase2()
 
     def _ejecutar_transicion_fase2(self):
+        """Transición automática a Fase 2 cuando se completa la colecta."""
         self.fase_actual = 2
 
         for d in self.pedidos.values():
