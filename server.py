@@ -2208,7 +2208,6 @@ _startup()
 def leer_producto():
     """Genera audio con gTTS para leer producto y pasillo."""
     try:
-        from gtts import gTTS
         import io
         
         data = request.get_json() or {}
@@ -2223,51 +2222,95 @@ def leer_producto():
         
         print(f"[TTS] Generando audio para: {texto}")
         
-        # Generar audio con gTTS
+        audio_data = None
+        
+        # OPCIÓN 1: Intenta gTTS (requiere internet)
         try:
+            print(f"[TTS] Intentando gTTS...")
+            from gtts import gTTS
             tts = gTTS(text=texto, lang="es", slow=False)
-            print(f"[TTS] gTTS creado OK")
+            
+            buffer = io.BytesIO()
+            tts.write_to_fp(buffer)
+            buffer.seek(0)
+            audio_data = buffer
+            
+            print(f"[TTS] ✅ gTTS OK ({len(buffer.getvalue())} bytes)")
         except Exception as e:
-            print(f"[TTS] Error creando gTTS: {e}")
-            # Fallback a pyttsx3 si gTTS falla
-            import pyttsx3
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 150)
+            print(f"[TTS] ❌ gTTS falló: {e}")
             
-            audio_buffer = io.BytesIO()
-            # pyttsx3 requiere archivo real, no buffer
-            temp_file = f"/tmp/tts_{sku}.mp3"
-            engine.save_to_file(texto, temp_file)
-            engine.runAndWait()
-            with open(temp_file, 'rb') as f:
-                audio_buffer = io.BytesIO(f.read())
-            audio_buffer.seek(0)
-            
-            return send_file(
-                audio_buffer,
-                mimetype="audio/mpeg",
-                as_attachment=False,
-                download_name=f"producto_{sku}.mp3"
-            )
+            # OPCIÓN 2: Intenta pyttsx3 (local)
+            try:
+                print(f"[TTS] Intentando pyttsx3...")
+                import pyttsx3
+                import tempfile
+                import os
+                
+                engine = pyttsx3.init()
+                engine.setProperty('rate', 150)
+                
+                # Crear archivo temporal
+                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
+                    temp_path = f.name
+                
+                engine.save_to_file(texto, temp_path)
+                engine.runAndWait()
+                
+                # Leer archivo temporal
+                if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                    with open(temp_path, 'rb') as f:
+                        buffer = io.BytesIO(f.read())
+                    audio_data = buffer
+                    os.remove(temp_path)
+                    print(f"[TTS] ✅ pyttsx3 OK ({len(buffer.getvalue())} bytes)")
+                else:
+                    raise Exception("pyttsx3 no generó archivo")
+                    
+            except Exception as e2:
+                print(f"[TTS] ❌ pyttsx3 también falló: {e2}")
+                
+                # OPCIÓN 3: Fallback - generar silencio (WAV simple)
+                print(f"[TTS] Usando fallback de silencio...")
+                try:
+                    import wave
+                    
+                    # Generar 1 segundo de silencio en WAV
+                    buffer = io.BytesIO()
+                    sample_rate = 44100
+                    duration = 1
+                    
+                    with wave.open(buffer, 'wb') as wav_file:
+                        wav_file.setnchannels(1)  # Mono
+                        wav_file.setsampwidth(2)  # 16-bit
+                        wav_file.setframerate(sample_rate)
+                        wav_file.writeframes(b'\x00' * (sample_rate * duration * 2))
+                    
+                    buffer.seek(0)
+                    audio_data = buffer
+                    print(f"[TTS] ⚠️  Fallback WAV ({len(buffer.getvalue())} bytes)")
+                except Exception as e3:
+                    print(f"[TTS] Fallback también falló: {e3}")
+                    raise e3
         
-        # Guardar en buffer
-        audio_buffer = io.BytesIO()
-        tts.write_to_fp(audio_buffer)
-        audio_buffer.seek(0)
-        
-        print(f"[TTS] Audio generado OK ({audio_buffer.getbuffer().nbytes} bytes)")
+        if audio_data is None:
+            raise Exception("No se pudo generar audio en ningún formato")
         
         return send_file(
-            audio_buffer,
+            audio_data,
             mimetype="audio/mpeg",
             as_attachment=False,
             download_name=f"producto_{sku}.mp3"
         )
+        
     except Exception as e:
-        print(f"[TTS] Error fatal: {e}")
+        print(f"[TTS] 💥 Error fatal: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": str(e),
+            "tipo": "TTS_ERROR",
+            "detalles": "Fallaron gTTS y pyttsx3"
+        }), 500
 
 
 @app.route("/")
