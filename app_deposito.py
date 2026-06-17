@@ -2301,27 +2301,44 @@ class AsistenteDepositoApp:
             import requests
             url = f"{RAILWAY_URL.rstrip('/')}/api/estado-picking"
             r = requests.get(url, timeout=2)
+            
             if r.status_code == 200:
                 data = r.json()
                 if data.get("cargado"):
-                    # Actualizar colecta_global con valores del servidor
                     colecta_servidor = data.get("colecta", {})
                     
-                    # Verificar si hay cambios
-                    cambios = False
-                    for sku, cantidad in colecta_servidor.items():
-                        if self.colecta_global.get(sku, 0) != cantidad:
-                            self.colecta_global[sku] = cantidad
-                            cambios = True
-                    
-                    # Si hay cambios, redibujar Fase 1
-                    if cambios and hasattr(self, 'fase1_items'):
-                        self._redraw_fase1()
+                    # Actualizar cada SKU visible
+                    if hasattr(self, 'fase1_items') and self.fase1_items:
+                        for sku in list(self.fase1_items.keys()):
+                            cantidad_servidor = colecta_servidor.get(sku, 0)
+                            cantidad_local = self.colecta_global.get(sku, 0)
+                            
+                            # Si hay cambio
+                            if cantidad_servidor != cantidad_local:
+                                self.colecta_global[sku] = cantidad_servidor
+                                item = self.fase1_items[sku]
+                                
+                                # Actualizar label
+                                lbl = item.get("lbl_cnt")
+                                if lbl and lbl.winfo_exists():
+                                    req = item.get("req", 1)
+                                    lbl.config(text=f"{cantidad_servidor}/{req}")
+                                
+                                # Actualizar checkbox
+                                chk = item.get("checkbox")
+                                if chk and chk.winfo_exists():
+                                    if cantidad_servidor >= req:
+                                        chk.config(fg=C["success"])
+                                        # Animar
+                                        self._animar_checkmark(sku)
+                                    else:
+                                        chk.config(fg=C["text_lo"])
         except Exception as e:
-            pass  # Silencioso — es solo sincronización
+            print(f"[SYNC] Error: {e}")
         finally:
             # Re-programar en 2 segundos
-            self.root.after(2_000, self._sync_colecta_servidor)
+            if hasattr(self, 'root') and self.root.winfo_exists():
+                self.root.after(2_000, self._sync_colecta_servidor)
 
     def _auto_refresh_ml(self):
         """Auto-refresh de pedidos ML cada 3 minutos. Silencioso."""
