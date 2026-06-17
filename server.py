@@ -3870,23 +3870,40 @@ async function scan(raw) {
       if (E.leer_voz) {
         const nombre  = d.nombre || sku;
         const pasillo = d.pasillo || '';
+        const col     = E.colecta || {};
         let texto;
 
         if (d.tipo === 'completo') {
-          // Último escaneo del producto → confirmar y decir siguiente
           texto = `Listo, ${nombre}`;
-          const siguiente = _siguientePendiente(sku);
-          if (siguiente) {
-            texto += `. Siguiente: ${siguiente.nombre}`;
-            if (siguiente.pasillo && siguiente.pasillo !== pasillo) {
-              texto += `, pasillo ${_limpiarPasillo(siguiente.pasillo)}`;
+
+          // Verificar si terminamos todos los pendientes de este pasillo
+          const grupoActual = (E.grupos || []).find(g =>
+            (g.items || []).some(it => it.sku === sku)
+          );
+          if (grupoActual) {
+            const pendientesEnPasillo = (grupoActual.items || [])
+              .filter(it => it.sku !== sku && (col[it.sku] || 0) < it.req);
+
+            if (pendientesEnPasillo.length === 0 && !d.todo_completo) {
+              // Pasillo terminado → decir el siguiente
+              const siguiente = _siguientePendiente(sku);
+              if (siguiente && siguiente.pasillo !== pasillo) {
+                const nomSig = _limpiarPasillo(siguiente.pasillo);
+                texto += `. Perfecto, pasillo terminado. Pasemos al pasillo ${nomSig}`;
+              } else if (siguiente) {
+                texto += `. Siguiente: ${siguiente.nombre}`;
+              }
+            } else if (pendientesEnPasillo.length > 0) {
+              // Quedan productos en el mismo pasillo
+              texto += `. Siguiente: ${pendientesEnPasillo[0].nombre}`;
+            } else if (d.todo_completo) {
+              texto = `Listo, ${nombre}. ¡Colecta completa! Excelente trabajo`;
             }
-          } else if (d.todo_completo) {
-            texto += '. ¡Colecta completa!';
           }
         } else {
-          // Escaneo parcial → confirmar cantidad
-          texto = `${nombre}, ${d.collected} de ${d.req}`;
+          // Escaneo parcial → decir cuántas faltan
+          const faltan = d.req - d.collected;
+          texto = `${nombre}, quedan ${faltan} unidad${faltan > 1 ? 'es' : ''}`;
         }
 
         leerProducto(texto);
@@ -3982,7 +3999,6 @@ function toggleVoz() {
 
 function _limpiarPasillo(pasillo) {
   // "Pasillo 1 · Belleza-Gym" → "uno, Belleza Gym"
-  // "Piso · Climatización"    → "piso, Climatización"
   if (!pasillo) return '';
   const nums = {'1':'uno','2':'dos','3':'tres','4':'cuatro','5':'cinco',
                 '6':'seis','7':'siete','8':'ocho','9':'nueve','10':'diez'};
@@ -3995,23 +4011,33 @@ function _limpiarPasillo(pasillo) {
 }
 
 function _siguientePendiente(skuActual) {
-  // Devuelve el primer item pendiente después del actual (por orden de pasillo)
-  const col = E.colecta || {};
-  const todos = (E.grupos || []).flatMap(g =>
-    (g.items || []).map(it => ({ ...it, pasillo: g.pasillo || it.pasillo || '' }))
-  );
+  // Devuelve el primer item pendiente después del actual (en orden de pasillo)
+  const col  = E.colecta || {};
+  const todos = (E.grupos || [])
+    .sort((a, b) => _ordenPasillo(a.pasillo) - _ordenPasillo(b.pasillo))
+    .flatMap(g => (g.items || []).map(it => ({
+      ...it,
+      pasillo: it.pasillo || g.pasillo || ''
+    })));
+
   let encontrado = false;
   for (const it of todos) {
     if (it.sku === skuActual) { encontrado = true; continue; }
     if (!encontrado) continue;
     if ((col[it.sku] || 0) < it.req) return it;
   }
-  // Si no hay siguiente después, buscar desde el principio
+  // Buscar desde el principio si no hay después
   for (const it of todos) {
     if (it.sku === skuActual) break;
     if ((col[it.sku] || 0) < it.req) return it;
   }
   return null;
+}
+
+function _ordenPasillo(pasillo) {
+  if (!pasillo) return 999;
+  const m = pasillo.match(/(\d+)/);
+  return m ? parseInt(m[1]) : 998;
 }
 
 // Cola de utterances para leer en secuencia sin solapar
@@ -4023,15 +4049,15 @@ function _vozSiguiente() {
   _vozHablando = true;
   const texto = _vozCola.shift();
   const u = new SpeechSynthesisUtterance(texto);
-  u.lang    = 'es-UY';
-  u.rate    = 0.95;
-  u.pitch   = 1.0;
-  u.volume  = 1.0;
+  u.lang   = 'es-UY';
+  u.rate   = 0.92;
+  u.pitch  = 1.0;
+  u.volume = 1.0;
   const voces = window.speechSynthesis.getVoices();
-  const esp = voces.find(v => v.lang.startsWith('es')) || voces[0];
+  const esp   = voces.find(v => v.lang.startsWith('es')) || voces[0];
   if (esp) u.voice = esp;
-  u.onend   = () => setTimeout(_vozSiguiente, 250);
-  u.onerror = () => setTimeout(_vozSiguiente, 250);
+  u.onend  = () => setTimeout(_vozSiguiente, 300);
+  u.onerror= () => setTimeout(_vozSiguiente, 300);
   window.speechSynthesis.speak(u);
 }
 
@@ -4046,42 +4072,57 @@ function leerProducto(texto) {
   if (!_vozHablando) _vozSiguiente();
 }
 
-// Leer resumen del picking al cargar: pasillo por pasillo
+// Leer resumen ordenado del picking: pasillo por pasillo
 function leerResumenPicking() {
   if (!window.speechSynthesis || !E.leer_voz) return;
 
   window.speechSynthesis.cancel();
-  _vozCola = [];
+  _vozCola    = [];
   _vozHablando = false;
 
-  const col    = E.colecta || {};
-  const grupos = (E.grupos || []).filter(g =>
-    (g.items || []).some(it => (col[it.sku] || 0) < it.req)
-  );
+  const col = E.colecta || {};
+
+  // Ordenar grupos por número de pasillo
+  const grupos = (E.grupos || [])
+    .slice()
+    .sort((a, b) => _ordenPasillo(a.pasillo) - _ordenPasillo(b.pasillo))
+    .filter(g => (g.items || []).some(it => (col[it.sku] || 0) < it.req));
 
   if (grupos.length === 0) {
     leerProducto('Colecta ya completada');
     return;
   }
 
-  leerProducto(`Picking cargado. ${grupos.length} pasillo${grupos.length > 1 ? 's' : ''}`);
+  // Total de SKUs pendientes
+  const totalSkus = grupos.reduce((acc, g) =>
+    acc + g.items.filter(it => (col[it.sku] || 0) < it.req).length, 0);
 
-  for (const g of grupos) {
+  leerProducto(`Picking cargado. ${totalSkus} productos en ${grupos.length} pasillo${grupos.length > 1 ? 's' : ''}`);
+
+  grupos.forEach((g, gi) => {
     const pendientes = (g.items || []).filter(it => (col[it.sku] || 0) < it.req);
-    if (pendientes.length === 0) continue;
+    if (pendientes.length === 0) return;
 
     const nombrePasillo = _limpiarPasillo(g.pasillo || 'Sin pasillo');
 
     // Anunciar pasillo
-    leerProducto(`En pasillo ${nombrePasillo}`);
+    leerProducto(`Pasillo ${nombrePasillo}: hay que buscar ${pendientes.length} producto${pendientes.length > 1 ? 's' : ''}`);
 
-    // Leer cada producto pendiente
-    for (const it of pendientes) {
+    // Leer cada producto
+    pendientes.forEach((it, ii) => {
       const falta = it.req - (col[it.sku] || 0);
       const cant  = falta > 1 ? `, ${falta} unidades` : '';
       leerProducto(`${it.nombre}${cant}`);
+    });
+
+    // Si no es el último pasillo → decir transición
+    if (gi < grupos.length - 1) {
+      const siguientePasillo = _limpiarPasillo(grupos[gi + 1].pasillo || '');
+      leerProducto(`Perfecto. Pasemos al siguiente pasillo: ${siguientePasillo}`);
+    } else {
+      leerProducto('Eso es todo. ¡A por ellos!');
     }
-  }
+  });
 }
 
 function inicializarVoces() {

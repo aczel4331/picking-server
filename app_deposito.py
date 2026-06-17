@@ -3181,12 +3181,10 @@ class AsistenteDepositoApp:
         for txt, accion, color in [
             ("📦  Pedidos ML",   "ml",      C["accent"]),
             ("🔍  Picking",      "picking", C["success"]),
-            ("📊  Gestor Stock", "stock",   "#10B981"),
             ("⚙   Configuración","cfg",     C["text_lo"]),
         ]:
             def _cmd(a=accion):
-                if   a == "stock": self._abrir_gestor_stock()
-                elif a == "cfg": self.abrir_configuracion()
+                if   a == "cfg": self.abrir_configuracion()
                 else:            self._switch_tab(a)
             tk.Button(acc_f, text=txt,
                       font=("Segoe UI Semibold", 10),
@@ -3272,21 +3270,7 @@ class AsistenteDepositoApp:
                  font=("Segoe UI", 8, "bold"), bg=C["panel"],
                  fg=C["text_lo"]).pack(anchor="w", pady=(0, 8))
 
-        self.btn_stock = tk.Button(
-            sec1, text="📊  Gestor de Stock",
-            command=self._abrir_gestor_stock, font=("Segoe UI Semibold", 10),
-            bg="#10B981", fg="white", activebackground="#059669",
-            activeforeground="white", relief="flat", cursor="hand2",
-            pady=9, bd=0)
-        self.btn_stock.pack(fill="x")
-
-        self.lbl_estado_stock = tk.Label(
-            sec1, text="Haz clic para gestionar stock del Excel",
-            fg=C["text_lo"], bg=C["panel"], font=FONT_SMALL,
-            wraplength=360, justify="left")
-        self.lbl_estado_stock.pack(anchor="w", pady=(6, 0))
-
-        tk.Frame(sec1, bg=C["border"], height=1).pack(fill="x", pady=(12, 8))
+        tk.Frame(sec1, bg=C["border"], height=1).pack(fill="x", pady=(8, 8))
 
         # Estado de la base Excel (carga automática)
         excel_hdr = tk.Frame(sec1, bg=C["panel"])
