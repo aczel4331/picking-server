@@ -3770,7 +3770,17 @@ async function loadQ() {
   try {
     const r = await fetch('/api/estado');
     if (!r.ok) return;
+    
+    // Guardar estado de voz ANTES de actualizar E
+    const leer_voz_guardado = E.leer_voz;
+    const pasillo_anterior_guardado = E.pasillo_anterior;
+    
     E = await r.json();
+    
+    // Restaurar estado de voz DESPUÉS de actualizar E
+    E.leer_voz = leer_voz_guardado;
+    E.pasillo_anterior = pasillo_anterior_guardado;
+    
     render(true);
   } catch(e) {}
 }
@@ -3916,18 +3926,24 @@ async function scan(raw) {
 
       // Leer producto en voz alta si está activado
       if (E.leer_voz) {
+        console.log('[VOZ] 🔊 Lectura ACTIVADA. Leyendo:', d.nombre || sku);
         // Si es un pasillo diferente al anterior, menciona el pasillo
         if (d.pasillo && d.pasillo !== (E.pasillo_anterior || '')) {
+          console.log('[VOZ] Nuevo pasillo:', d.pasillo);
           leerProducto(`${d.nombre || sku}, pasillo ${d.pasillo}`);
           E.pasillo_anterior = d.pasillo;
         } else if (d.pasillo) {
           // Mismo pasillo → solo menciona el producto
+          console.log('[VOZ] Mismo pasillo:', d.pasillo);
           leerProducto(d.nombre || sku);
         } else {
           // Sin información de pasillo
+          console.log('[VOZ] Sin información de pasillo');
           leerProducto(d.nombre || sku);
         }
         updateVozButton();
+      } else {
+        console.log('[VOZ] 🔇 Lectura DESACTIVADA');
       }
     }
   } catch(e) {
@@ -3965,40 +3981,54 @@ async function leerProducto(texto) {
   try {
     console.log('[VOZ] Pidiendo audio para:', texto);
     
+    if (!texto || texto.trim() === '') {
+      console.log('[VOZ] Texto vacío, ignorando');
+      return;
+    }
+    
     const r = await fetch('/api/leer-producto', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         sku: 'tts',
-        producto: texto,
+        producto: texto.trim(),
         pasillo: ''
       })
     });
     
-    console.log('[VOZ] Respuesta servidor:', r.status);
+    console.log('[VOZ] Respuesta servidor:', r.status, r.statusText);
     
     if (!r.ok) {
-      console.error('[VOZ] Error del servidor:', r.status, r.statusText);
+      console.error('[VOZ] Error del servidor:', r.status);
       return;
     }
     
     const blob = await r.blob();
-    console.log('[VOZ] Blob recibido:', blob.size, 'bytes');
+    console.log('[VOZ] Blob recibido:', blob.size, 'bytes, tipo:', blob.type);
+    
+    if (blob.size === 0) {
+      console.error('[VOZ] Blob vacío');
+      return;
+    }
     
     const url = URL.createObjectURL(blob);
-    console.log('[VOZ] URL creada:', url);
+    console.log('[VOZ] URL creada:', url.substring(0, 50) + '...');
     
     const audio = new Audio(url);
     
-    audio.onplay = () => console.log('[VOZ] Audio reproduciendo...');
-    audio.onended = () => console.log('[VOZ] Audio finalizado');
-    audio.onerror = (e) => console.error('[VOZ] Error de audio:', e);
+    audio.onplay = () => console.log('[VOZ] ▶️ Reproduciendo...');
+    audio.onended = () => {
+      console.log('[VOZ] ✅ Finalizado');
+      URL.revokeObjectURL(url);
+    };
+    audio.onerror = (e) => console.error('[VOZ] ❌ Error de audio:', e);
     
+    // Reproducir con manejo de promesa
     const playPromise = audio.play();
     if (playPromise !== undefined) {
       playPromise
-        .then(() => console.log('[VOZ] Play OK'))
-        .catch(e => console.error('[VOZ] Play error:', e));
+        .then(() => console.log('[VOZ] Play ejecutado OK'))
+        .catch(e => console.error('[VOZ] Play error:', e.name, e.message));
     }
   } catch (e) {
     console.error('[VOZ] Error fatal:', e);
