@@ -3697,6 +3697,11 @@ async function load() {
     
     console.log('[MOVIL] cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
     render();
+
+    // Si hay lote cargado y voz activa → leer todos los pasillos al inicio
+    if (E.cargado && E.leer_voz && (E.grupos||[]).length > 0) {
+      setTimeout(() => leerResumenPicking(), 800);
+    }
   } catch(e) {
     console.error('[MOVIL] load error:', e);
     fb('err', '❌ Sin conexión al servidor');
@@ -3861,26 +3866,31 @@ async function scan(raw) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
 
-      // Leer producto en voz alta si está activado
+      // Leer confirmación del escaneo
       if (E.leer_voz) {
-        console.log('[VOZ] 🔊 Lectura ACTIVADA. Leyendo:', d.nombre || sku);
-        // Si es un pasillo diferente al anterior, menciona el pasillo
-        if (d.pasillo && d.pasillo !== (E.pasillo_anterior || '')) {
-          console.log('[VOZ] Nuevo pasillo:', d.pasillo);
-          leerProducto(`${d.nombre || sku}, pasillo ${d.pasillo}`);
-          E.pasillo_anterior = d.pasillo;
-        } else if (d.pasillo) {
-          // Mismo pasillo → solo menciona el producto
-          console.log('[VOZ] Mismo pasillo:', d.pasillo);
-          leerProducto(d.nombre || sku);
+        const nombre  = d.nombre || sku;
+        const pasillo = d.pasillo || '';
+        let texto;
+
+        if (d.tipo === 'completo') {
+          // Último escaneo del producto → confirmar y decir siguiente
+          texto = `Listo, ${nombre}`;
+          const siguiente = _siguientePendiente(sku);
+          if (siguiente) {
+            texto += `. Siguiente: ${siguiente.nombre}`;
+            if (siguiente.pasillo && siguiente.pasillo !== pasillo) {
+              texto += `, pasillo ${_limpiarPasillo(siguiente.pasillo)}`;
+            }
+          } else if (d.todo_completo) {
+            texto += '. ¡Colecta completa!';
+          }
         } else {
-          // Sin información de pasillo
-          console.log('[VOZ] Sin información de pasillo');
-          leerProducto(d.nombre || sku);
+          // Escaneo parcial → confirmar cantidad
+          texto = `${nombre}, ${d.collected} de ${d.req}`;
         }
+
+        leerProducto(texto);
         updateVozButton();
-      } else {
-        console.log('[VOZ] 🔇 Lectura DESACTIVADA');
       }
     }
   } catch(e) {
@@ -3950,18 +3960,130 @@ function toggleVoz() {
   const btn = document.getElementById('btn-voz');
   if (E.leer_voz) {
     btn.classList.remove('desactivado');
-    toast('🔊 Lectura de pasillos activada', 'ok');
-    // Prueba de voz al activar
-    leerProducto('Lectura activada');
+    toast('🔊 Lectura activada', 'ok');
+    // Si hay lote cargado → leer resumen completo
+    if (E.cargado && (E.grupos||[]).length > 0) {
+      setTimeout(() => leerResumenPicking(), 300);
+    } else {
+      leerProducto('Lectura activada');
+    }
   } else {
     btn.classList.add('desactivado');
     window.speechSynthesis && window.speechSynthesis.cancel();
+    _vozCola = [];
+    _vozHablando = false;
     toast('🔇 Lectura desactivada', 'warn');
   }
   updateVozButton();
 }
 
 // Pre-cargar voces del sistema (necesario en algunos navegadores)
+// ── LECTURA DE VOZ ─────────────────────────────────────────────────────────
+
+function _limpiarPasillo(pasillo) {
+  // "Pasillo 1 · Belleza-Gym" → "uno, Belleza Gym"
+  // "Piso · Climatización"    → "piso, Climatización"
+  if (!pasillo) return '';
+  const nums = {'1':'uno','2':'dos','3':'tres','4':'cuatro','5':'cinco',
+                '6':'seis','7':'siete','8':'ocho','9':'nueve','10':'diez'};
+  return pasillo
+    .replace(/Pasillo\s*(\d+)\s*[·\-]?\s*/i, (_, n) => (nums[n] || n) + ', ')
+    .replace(/Piso\s*[·\-]?\s*/i, 'piso, ')
+    .replace(/[·\-]/g, ',')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function _siguientePendiente(skuActual) {
+  // Devuelve el primer item pendiente después del actual (por orden de pasillo)
+  const col = E.colecta || {};
+  const todos = (E.grupos || []).flatMap(g =>
+    (g.items || []).map(it => ({ ...it, pasillo: g.pasillo || it.pasillo || '' }))
+  );
+  let encontrado = false;
+  for (const it of todos) {
+    if (it.sku === skuActual) { encontrado = true; continue; }
+    if (!encontrado) continue;
+    if ((col[it.sku] || 0) < it.req) return it;
+  }
+  // Si no hay siguiente después, buscar desde el principio
+  for (const it of todos) {
+    if (it.sku === skuActual) break;
+    if ((col[it.sku] || 0) < it.req) return it;
+  }
+  return null;
+}
+
+// Cola de utterances para leer en secuencia sin solapar
+let _vozCola = [];
+let _vozHablando = false;
+
+function _vozSiguiente() {
+  if (_vozCola.length === 0) { _vozHablando = false; return; }
+  _vozHablando = true;
+  const texto = _vozCola.shift();
+  const u = new SpeechSynthesisUtterance(texto);
+  u.lang    = 'es-UY';
+  u.rate    = 0.95;
+  u.pitch   = 1.0;
+  u.volume  = 1.0;
+  const voces = window.speechSynthesis.getVoices();
+  const esp = voces.find(v => v.lang.startsWith('es')) || voces[0];
+  if (esp) u.voice = esp;
+  u.onend   = () => setTimeout(_vozSiguiente, 250);
+  u.onerror = () => setTimeout(_vozSiguiente, 250);
+  window.speechSynthesis.speak(u);
+}
+
+function leerProducto(texto) {
+  if (!texto || texto.trim() === '') return;
+  if (!window.speechSynthesis) {
+    console.warn('[VOZ] Web Speech API no disponible');
+    return;
+  }
+  console.log('[VOZ] ▶️', texto);
+  _vozCola.push(texto.trim());
+  if (!_vozHablando) _vozSiguiente();
+}
+
+// Leer resumen del picking al cargar: pasillo por pasillo
+function leerResumenPicking() {
+  if (!window.speechSynthesis || !E.leer_voz) return;
+
+  window.speechSynthesis.cancel();
+  _vozCola = [];
+  _vozHablando = false;
+
+  const col    = E.colecta || {};
+  const grupos = (E.grupos || []).filter(g =>
+    (g.items || []).some(it => (col[it.sku] || 0) < it.req)
+  );
+
+  if (grupos.length === 0) {
+    leerProducto('Colecta ya completada');
+    return;
+  }
+
+  leerProducto(`Picking cargado. ${grupos.length} pasillo${grupos.length > 1 ? 's' : ''}`);
+
+  for (const g of grupos) {
+    const pendientes = (g.items || []).filter(it => (col[it.sku] || 0) < it.req);
+    if (pendientes.length === 0) continue;
+
+    const nombrePasillo = _limpiarPasillo(g.pasillo || 'Sin pasillo');
+
+    // Anunciar pasillo
+    leerProducto(`En pasillo ${nombrePasillo}`);
+
+    // Leer cada producto pendiente
+    for (const it of pendientes) {
+      const falta = it.req - (col[it.sku] || 0);
+      const cant  = falta > 1 ? `, ${falta} unidades` : '';
+      leerProducto(`${it.nombre}${cant}`);
+    }
+  }
+}
+
 function inicializarVoces() {
   if (!window.speechSynthesis) return;
   // Chrome necesita este evento para cargar las voces
