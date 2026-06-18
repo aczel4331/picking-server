@@ -975,7 +975,7 @@ def _refresh_pedidos_worker():
 def _auto_refresh_loop():
     """Refresca pedidos de todas las cuentas cada 2 minutos."""
     while True:
-        time.sleep(60)
+        time.sleep(120)
         if _cuentas:
             _refresh_pedidos_worker()
 
@@ -1999,45 +1999,6 @@ def escanear():
                     "msg": f"✔ {nuevo}/{req}" if nuevo >= req else f"{nuevo}/{req}"})
 
 
-@app.route("/api/estado-picking", methods=["GET"])
-def estado_picking():
-    """Retorna el estado actual del picking para sincronización en tiempo real."""
-    with _lock:
-        if not _estado.get("cargado"):
-            return jsonify({"cargado": False, "colecta": {}, "grupos": []})
-        
-        # Reconstruir grupos con estado de colecta actual
-        grupos_con_estado = []
-        colecta = _estado.get("colecta", {})
-        
-        for grupo in _estado.get("grupos", []):
-            items_con_estado = []
-            for item in grupo.get("items", []):
-                sku = item["sku"]
-                collected = colecta.get(sku, 0)
-                items_con_estado.append({
-                    "sku": sku,
-                    "nombre": item.get("nombre", ""),
-                    "pasillo": item.get("pasillo", ""),
-                    "estanteria": item.get("estanteria", ""),
-                    "req": item.get("req", 1),
-                    "collected": collected
-                })
-            
-            grupos_con_estado.append({
-                "nombre": grupo.get("nombre", ""),
-                "items": items_con_estado
-            })
-        
-        return jsonify({
-            "cargado": True,
-            "colecta": colecta,
-            "grupos": grupos_con_estado,
-            "colecta_completa": _estado.get("colecta_completa", False),
-            "timestamp": _estado.get("ultima_actualizacion", _ts())
-        })
-
-
 @app.route("/api/reset_sku", methods=["POST"])
 def reset_sku():
     data = request.get_json(force=True)
@@ -2204,115 +2165,6 @@ def _startup():
 _startup()
 
 
-@app.route("/api/leer-producto", methods=["POST"])
-def leer_producto():
-    """Genera audio con gTTS para leer producto y pasillo."""
-    try:
-        import io
-        
-        data = request.get_json() or {}
-        sku = data.get("sku", "")
-        producto = data.get("producto", "Producto desconocido")
-        pasillo = data.get("pasillo", "")
-        
-        # Construir texto a leer
-        texto = f"{producto}"
-        if pasillo:
-            texto += f", pasillo {pasillo}"
-        
-        print(f"[TTS] Generando audio para: {texto}")
-        
-        audio_data = None
-        
-        # OPCIÓN 1: Intenta gTTS (requiere internet)
-        try:
-            print(f"[TTS] Intentando gTTS...")
-            from gtts import gTTS
-            tts = gTTS(text=texto, lang="es", slow=False)
-            
-            buffer = io.BytesIO()
-            tts.write_to_fp(buffer)
-            buffer.seek(0)
-            audio_data = buffer
-            
-            print(f"[TTS] ✅ gTTS OK ({len(buffer.getvalue())} bytes)")
-        except Exception as e:
-            print(f"[TTS] ❌ gTTS falló: {e}")
-            
-            # OPCIÓN 2: Intenta pyttsx3 (local)
-            try:
-                print(f"[TTS] Intentando pyttsx3...")
-                import pyttsx3
-                import tempfile
-                import os
-                
-                engine = pyttsx3.init()
-                engine.setProperty('rate', 150)
-                
-                # Crear archivo temporal
-                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
-                    temp_path = f.name
-                
-                engine.save_to_file(texto, temp_path)
-                engine.runAndWait()
-                
-                # Leer archivo temporal
-                if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-                    with open(temp_path, 'rb') as f:
-                        buffer = io.BytesIO(f.read())
-                    audio_data = buffer
-                    os.remove(temp_path)
-                    print(f"[TTS] ✅ pyttsx3 OK ({len(buffer.getvalue())} bytes)")
-                else:
-                    raise Exception("pyttsx3 no generó archivo")
-                    
-            except Exception as e2:
-                print(f"[TTS] ❌ pyttsx3 también falló: {e2}")
-                
-                # OPCIÓN 3: Fallback - generar silencio (WAV simple)
-                print(f"[TTS] Usando fallback de silencio...")
-                try:
-                    import wave
-                    
-                    # Generar 1 segundo de silencio en WAV
-                    buffer = io.BytesIO()
-                    sample_rate = 44100
-                    duration = 1
-                    
-                    with wave.open(buffer, 'wb') as wav_file:
-                        wav_file.setnchannels(1)  # Mono
-                        wav_file.setsampwidth(2)  # 16-bit
-                        wav_file.setframerate(sample_rate)
-                        wav_file.writeframes(b'\x00' * (sample_rate * duration * 2))
-                    
-                    buffer.seek(0)
-                    audio_data = buffer
-                    print(f"[TTS] ⚠️  Fallback WAV ({len(buffer.getvalue())} bytes)")
-                except Exception as e3:
-                    print(f"[TTS] Fallback también falló: {e3}")
-                    raise e3
-        
-        if audio_data is None:
-            raise Exception("No se pudo generar audio en ningún formato")
-        
-        return send_file(
-            audio_data,
-            mimetype="audio/mpeg",
-            as_attachment=False,
-            download_name=f"producto_{sku}.mp3"
-        )
-        
-    except Exception as e:
-        print(f"[TTS] 💥 Error fatal: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            "error": str(e),
-            "tipo": "TTS_ERROR",
-            "detalles": "Fallaron gTTS y pyttsx3"
-        }), 500
-
-
 @app.route("/")
 def index():
     if not _token_valido():
@@ -2352,8 +2204,8 @@ HTML_APP = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Logibot · Logibot · Sistema de Picking Pro</title>
 <style>
-:root{--bg:#F8FAFC;--panel:#FFFFFF;--card:#F1F5F9;--border:#E2E8F0;
-  --accent:#06B6D4;--accent2:#0891B2;--success:#10B981;--warning:#F59E0B;
+:root{--bg:#111318;--panel:#1C2030;--card:#161B27;--border:#2A3352;
+  --accent:#2563EB;--accent2:#1D4ED8;--success:#0EA5E9;--warning:#F59E0B;
   --danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F;
   --ml:#FFE600}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -3568,8 +3420,8 @@ HTML_MOVIL = r"""<!DOCTYPE html>
 <link rel="manifest" href="/manifest.json">
 <title>Logibot · Picking</title>
 <style>
-:root{--bg:#F8FAFC;--panel:#FFFFFF;--card:#F1F5F9;--border:#E2E8F0;
-  --accent:#06B6D4;--accent2:#0891B2;--success:#10B981;
+:root{--bg:#111318;--panel:#1C2030;--card:#161B27;--border:#2A3352;
+  --accent:#2563EB;--accent2:#1D4ED8;--success:#0EA5E9;
   --warning:#F59E0B;--danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;
@@ -3636,11 +3488,8 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .chk.ok{color:var(--success)}
 .chk.pend{color:var(--lo)}
 .ibody{flex:1;min-width:0}
-.isku-badge{display:inline-block;background:var(--accent);color:#fff;font-family:monospace;
-  font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px;letter-spacing:.5px;
-  margin-bottom:4px}
-.iname{font-size:14px;font-weight:600;color:var(--fg);white-space:normal;line-height:1.3}
-.irow{display:flex;align-items:center;gap:10px;margin-top:4px}
+.iname{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.irow{display:flex;align-items:center;gap:10px;margin-top:3px}
 .isku{font-family:monospace;font-size:12px;color:var(--mid)}
 .icnt{font-size:14px;font-weight:800}
 .icnt.ok{color:var(--success)}
@@ -3672,12 +3521,6 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
   justify-content:center;z-index:50;transition:transform .15s}
 #btn-cam:active{transform:scale(.9)}
-#btn-voz{position:fixed;bottom:150px;right:16px;background:#10B981;color:#fff;border:none;
-  border-radius:50%;width:52px;height:52px;font-size:22px;cursor:pointer;
-  box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
-  justify-content:center;z-index:50;transition:transform .15s}
-#btn-voz:active{transform:scale(.9)}
-#btn-voz.desactivado{background:#94A3B8;opacity:.6}
 #cam-torch{margin-top:10px;padding:8px 20px;border-radius:20px;border:1px solid rgba(255,255,255,.3);
   background:transparent;color:#fff;font-size:13px;cursor:pointer;display:none}
 
@@ -3772,9 +3615,6 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <!-- Botón cámara flotante -->
 <button id="btn-cam" onclick="abrirCamara()" title="Escanear con cámara">📷</button>
 
-<!-- Botón lectura de voz -->
-<button id="btn-voz" onclick="toggleVoz()" title="Activar/desactivar lectura de voz">🔊</button>
-
 <!-- LISTA -->
 <div class="content" id="content">
   <div class="empty">
@@ -3796,20 +3636,8 @@ async function load() {
     const r = await fetch('/api/estado');
     if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
     E = await r.json();
-    
-    // Cargar preferencia de lectura de voz
-    E.leer_voz = localStorage.getItem('leer_voz') === '1';
-    const btn = document.getElementById('btn-voz');
-    if (btn && !E.leer_voz) {
-      btn.classList.add('desactivado');
-    }
-    
     console.log('[MOVIL] cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
     render();
-    // Si hay lote cargado y voz activa → leer resumen por pasillos
-    if (E.cargado && E.leer_voz && (E.grupos||[]).length > 0) {
-      setTimeout(() => leerResumenPicking(), 800);
-    }
   } catch(e) {
     console.error('[MOVIL] load error:', e);
     fb('err', '❌ Sin conexión al servidor');
@@ -3820,17 +3648,7 @@ async function loadQ() {
   try {
     const r = await fetch('/api/estado');
     if (!r.ok) return;
-    
-    // Guardar estado de voz ANTES de actualizar E
-    const leer_voz_guardado = E.leer_voz;
-    const pasillo_anterior_guardado = E.pasillo_anterior;
-    
     E = await r.json();
-    
-    // Restaurar estado de voz DESPUÉS de actualizar E
-    E.leer_voz = leer_voz_guardado;
-    E.pasillo_anterior = pasillo_anterior_guardado;
-    
     render(true);
   } catch(e) {}
 }
@@ -3906,12 +3724,12 @@ function render(quiet = false) {
             return `<div class="item ${ok?'done':''}" id="item-${it.sku}">
               <div class="chk ${ok?'ok':'pend'}">${ok ? '✔' : '○'}</div>
               <div class="ibody">
-                <span class="isku-badge">${it.sku}</span>
-                <div class="iname">${it.nombre || '—'}</div>
+                <div class="iname">${it.nombre || it.sku}</div>
                 <div class="irow">
+                  <span class="isku">${it.sku}</span>
                   <span class="icnt ${ok?'ok':'pend'}">${c} / ${it.req}</span>
-                  ${it.estanteria ? `<span class="iest">🗂 ${it.estanteria}</span>` : ''}
                 </div>
+                ${it.estanteria ? `<div class="iest">🗂 ${it.estanteria}</div>` : ''}
               </div>
             </div>`;
           }).join('')}
@@ -3973,45 +3791,6 @@ async function scan(raw) {
         setTimeout(() => el.classList.remove('recien'), 700);
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
-
-      // Leer confirmación del escaneo
-      if (E.leer_voz) {
-        const nombre  = d.nombre || sku;
-        const pasillo = d.pasillo || '';
-        const col     = E.colecta || {};
-        let texto;
-
-        if (d.tipo === 'completo') {
-          texto = `Listo, ${nombre}`;
-          // Ver si terminamos el pasillo
-          const grupoActual = (E.grupos || []).find(g =>
-            (g.items || []).some(it => it.sku === sku)
-          );
-          if (grupoActual) {
-            const pendientesEnPasillo = (grupoActual.items || [])
-              .filter(it => it.sku !== sku && (col[it.sku] || 0) < it.req);
-            if (pendientesEnPasillo.length === 0 && !d.todo_completo) {
-              const siguiente = _siguientePendiente(sku);
-              if (siguiente && siguiente.pasillo !== pasillo) {
-                const nomSig = _limpiarPasillo(siguiente.pasillo);
-                texto += `. Perfecto, pasillo terminado. Pasemos al pasillo ${nomSig}`;
-              } else if (siguiente) {
-                texto += `. Siguiente: ${siguiente.nombre}`;
-              }
-            } else if (pendientesEnPasillo.length > 0) {
-              texto += `. Siguiente: ${pendientesEnPasillo[0].nombre}`;
-            } else if (d.todo_completo) {
-              texto = `Listo, ${nombre}. ¡Colecta completa! Excelente trabajo`;
-            }
-          }
-        } else {
-          const faltan = d.req - d.collected;
-          texto = `${nombre}, quedan ${faltan} unidad${faltan > 1 ? 'es' : ''}`;
-        }
-
-        leerProducto(texto);
-        updateVozButton();
-      }
     }
   } catch(e) {
     fb('err', '❌ Error de conexión');
@@ -4043,148 +3822,6 @@ function flash(t) {
 }
 
 function vib(p) { if (navigator.vibrate) navigator.vibrate(p); }
-
-// ── LECTURA DE VOZ (Web Speech API) ────────────────────────────────────────
-
-function _limpiarPasillo(pasillo) {
-  if (!pasillo) return '';
-  const nums = {'1':'uno','2':'dos','3':'tres','4':'cuatro','5':'cinco',
-                '6':'seis','7':'siete','8':'ocho','9':'nueve','10':'diez'};
-  return pasillo
-    .replace(/Pasillo\s*(\d+)\s*[·\-]?\s*/i, (_, n) => (nums[n] || n) + ', ')
-    .replace(/Piso\s*[·\-]?\s*/i, 'piso, ')
-    .replace(/[·\-]/g, ',')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function _ordenPasillo(pasillo) {
-  if (!pasillo) return 999;
-  const m = pasillo.match(/(\d+)/);
-  return m ? parseInt(m[1]) : 998;
-}
-
-function _siguientePendiente(skuActual) {
-  const col  = E.colecta || {};
-  const todos = (E.grupos || [])
-    .slice()
-    .sort((a, b) => _ordenPasillo(a.pasillo) - _ordenPasillo(b.pasillo))
-    .flatMap(g => (g.items || []).map(it => ({
-      ...it, pasillo: it.pasillo || g.pasillo || ''
-    })));
-  let encontrado = false;
-  for (const it of todos) {
-    if (it.sku === skuActual) { encontrado = true; continue; }
-    if (!encontrado) continue;
-    if ((col[it.sku] || 0) < it.req) return it;
-  }
-  for (const it of todos) {
-    if (it.sku === skuActual) break;
-    if ((col[it.sku] || 0) < it.req) return it;
-  }
-  return null;
-}
-
-// Cola secuencial para no solapar frases
-let _vozCola     = [];
-let _vozHablando = false;
-
-function _vozSiguiente() {
-  if (_vozCola.length === 0) { _vozHablando = false; return; }
-  _vozHablando = true;
-  const texto = _vozCola.shift();
-  const u = new SpeechSynthesisUtterance(texto);
-  u.lang   = 'es-UY';
-  u.rate   = 0.92;
-  u.pitch  = 1.0;
-  u.volume = 1.0;
-  const voces = window.speechSynthesis.getVoices();
-  const esp   = voces.find(v => v.lang.startsWith('es')) || voces[0];
-  if (esp) u.voice = esp;
-  u.onend  = () => setTimeout(_vozSiguiente, 300);
-  u.onerror= () => setTimeout(_vozSiguiente, 300);
-  window.speechSynthesis.speak(u);
-}
-
-function leerProducto(texto) {
-  if (!texto || texto.trim() === '') return;
-  if (!window.speechSynthesis) return;
-  console.log('[VOZ]', texto);
-  _vozCola.push(texto.trim());
-  if (!_vozHablando) _vozSiguiente();
-}
-
-// Leer resumen ordenado al cargar o activar voz
-function leerResumenPicking() {
-  if (!window.speechSynthesis || !E.leer_voz) return;
-  window.speechSynthesis.cancel();
-  _vozCola     = [];
-  _vozHablando = false;
-
-  const col    = E.colecta || {};
-  const grupos = (E.grupos || [])
-    .slice()
-    .sort((a, b) => _ordenPasillo(a.pasillo) - _ordenPasillo(b.pasillo))
-    .filter(g => (g.items || []).some(it => (col[it.sku] || 0) < it.req));
-
-  if (grupos.length === 0) { leerProducto('Colecta ya completada'); return; }
-
-  const totalSkus = grupos.reduce((acc, g) =>
-    acc + g.items.filter(it => (col[it.sku] || 0) < it.req).length, 0);
-
-  leerProducto(`Picking cargado. ${totalSkus} producto${totalSkus > 1 ? 's' : ''} en ${grupos.length} pasillo${grupos.length > 1 ? 's' : ''}`);
-
-  grupos.forEach((g, gi) => {
-    const pendientes = (g.items || []).filter(it => (col[it.sku] || 0) < it.req);
-    if (pendientes.length === 0) return;
-
-    const nomPasillo = _limpiarPasillo(g.pasillo || 'Sin pasillo');
-    leerProducto(`Pasillo ${nomPasillo}: ${pendientes.length} producto${pendientes.length > 1 ? 's' : ''}`);
-
-    // Leer cada producto: SKU + nombre
-    pendientes.forEach(it => {
-      const falta = it.req - (col[it.sku] || 0);
-      const cant  = falta > 1 ? `, ${falta} unidades` : '';
-      leerProducto(`${it.sku}: ${it.nombre || 'sin nombre'}${cant}`);
-    });
-
-    // Transición al siguiente pasillo
-    if (gi < grupos.length - 1) {
-      const nomSig = _limpiarPasillo(grupos[gi + 1].pasillo || '');
-      leerProducto(`Perfecto. Pasemos al pasillo ${nomSig}`);
-    } else {
-      leerProducto('Eso es todo. ¡A por ellos!');
-    }
-  });
-}
-
-function toggleVoz() {
-  E.leer_voz = !E.leer_voz;
-  localStorage.setItem('leer_voz', E.leer_voz ? '1' : '0');
-  const btn = document.getElementById('btn-voz');
-  if (E.leer_voz) {
-    btn.classList.remove('desactivado');
-    toast('🔊 Lectura activada', 'ok');
-    if (E.cargado && (E.grupos||[]).length > 0) {
-      setTimeout(() => leerResumenPicking(), 300);
-    } else {
-      leerProducto('Lectura activada');
-    }
-  } else {
-    btn.classList.add('desactivado');
-    window.speechSynthesis && window.speechSynthesis.cancel();
-    _vozCola     = [];
-    _vozHablando = false;
-    toast('🔇 Lectura desactivada', 'warn');
-  }
-  updateVozButton();
-}
-
-function updateVozButton() {
-  const btn = document.getElementById('btn-voz');
-  if (!btn) return;
-  btn.title = E.leer_voz ? '🔊 Desactivar lectura' : '🔊 Activar lectura de pasillos';
-}
 
 // ── INIT ───────────────────────────────────────────────────────────────────
 let _tecladoVisible = false;
@@ -4354,8 +3991,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Fallback: si el escáner NO manda Enter, procesar cuando deja de escribir (150ms)
-  // Los escáneres escriben muy rápido (<50ms) — 150ms asegura que terminó
+  // Fallback: si el escáner NO manda Enter, procesar cuando deja de escribir (60ms)
+  // Los escáneres escriben muy rápido (<50ms) — 60ms asegura que terminó
   let _scanTimer = null;
   inp.addEventListener('input', () => {
     clearTimeout(_scanTimer);
@@ -4364,8 +4001,24 @@ document.addEventListener('DOMContentLoaded', () => {
     if (_tecladoVisible) return;  // en modo teclado manual, esperar Enter o botón ✓
     _scanTimer = setTimeout(() => {
       const v2 = inp.value.trim();
-      if (v2.length >= 3) { scan(v2); inp.value = ''; }
-    }, 150);
+      if (v2.length >= 3) { 
+        scan(v2);
+        inp.value = '';
+        inp.focus();  // restaurar foco para próximo escaneo
+      }
+    }, 60);  // ← reducido de 150ms a 60ms para respuesta más rápida
+  });
+
+  // Bonus: cuando el input pierde foco (si tiene valor), procesa automáticamente
+  inp.addEventListener('blur', () => {
+    if (!_tecladoVisible && !_camaraActiva) {
+      const v = inp.value.trim();
+      if (v.length >= 3) {
+        scan(v);
+        inp.value = '';
+        setTimeout(() => inp.focus(), 100);  // restaurar foco tras procesar
+      }
+    }
   });
 
   // Clic en contenido → foco (excepto botones interactivos)
