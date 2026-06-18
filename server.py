@@ -3528,7 +3528,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .chk.ok{color:var(--success)}
 .chk.pend{color:var(--lo)}
 .ibody{flex:1;min-width:0}
-.iname{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.iname{font-size:14px;font-weight:600;color:#0F172A;white-space:normal;line-height:1.3;margin-top:3px}
 .irow{display:flex;align-items:center;gap:10px;margin-top:3px}
 .isku{font-family:monospace;font-size:12px;color:var(--mid)}
 .icnt{font-size:14px;font-weight:800}
@@ -3764,12 +3764,12 @@ function render(quiet = false) {
             return `<div class="item ${ok?'done':''}" id="item-${it.sku}">
               <div class="chk ${ok?'ok':'pend'}">${ok ? '✔' : '○'}</div>
               <div class="ibody">
-                <div class="iname">${it.nombre || it.sku}</div>
+                <span class="isku-badge">${it.sku}</span>
+                <div class="iname">${it.nombre || '—'}</div>
                 <div class="irow">
-                  <span class="isku">${it.sku}</span>
                   <span class="icnt ${ok?'ok':'pend'}">${c} / ${it.req}</span>
+                  ${it.estanteria ? `<span class="iest">🗂 ${it.estanteria}</span>` : ''}
                 </div>
-                ${it.estanteria ? `<div class="iest">🗂 ${it.estanteria}</div>` : ''}
               </div>
             </div>`;
           }).join('')}
