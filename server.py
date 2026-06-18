@@ -3979,44 +3979,51 @@ document.addEventListener('DOMContentLoaded', () => {
   const inp = $('sku');
 
   // ── ESCÁNER LÁSER HARDWARE ─────────────────────────────────────────────
-  // El escáner láser de Android manda el código + Enter (como teclado físico)
-  // inputmode="none" = no abre teclado virtual pero SÍ recibe input del escáner
+  // El escáner manda el código como si fuera un teclado físico + Enter al final.
+  // inputmode="none" = no abre teclado virtual pero SÍ recibe input del escáner.
 
-  // Enter → procesar inmediatamente (escáner láser siempre manda Enter al final)
+  let _scanTimer = null;
+
+  // Enter → procesar INMEDIATAMENTE sin esperar nada
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.keyCode === 13) {
-      e.preventDefault();
       const v = inp.value.trim();
-      if (v) { scan(v); inp.value = ''; }
+      if (v) {
+        e.preventDefault();  // evitar submit solo si hay valor
+        clearTimeout(_scanTimer);
+        scan(v);
+        inp.value = '';
+        inp.focus();
+      }
     }
   });
 
-  // Fallback: si el escáner NO manda Enter, procesar cuando deja de escribir (60ms)
-  // Los escáneres escriben muy rápido (<50ms) — 60ms asegura que terminó
-  let _scanTimer = null;
+  // Fallback: escáneres que NO mandan Enter → procesar al dejar de escribir (50ms)
+  // Los escáneres escriben muy rápido (<30ms total) — 50ms es más que suficiente
   inp.addEventListener('input', () => {
     clearTimeout(_scanTimer);
     const v = inp.value.trim();
     if (!v) return;
-    if (_tecladoVisible) return;  // en modo teclado manual, esperar Enter o botón ✓
+    if (_tecladoVisible) return;  // modo teclado manual: esperar Enter o botón ✓
     _scanTimer = setTimeout(() => {
       const v2 = inp.value.trim();
-      if (v2.length >= 3) { 
+      if (v2.length >= 2) {
         scan(v2);
         inp.value = '';
-        inp.focus();  // restaurar foco para próximo escaneo
+        inp.focus();
       }
-    }, 60);  // ← reducido de 150ms a 60ms para respuesta más rápida
+    }, 50);
   });
 
-  // Bonus: cuando el input pierde foco (si tiene valor), procesa automáticamente
+  // Edge case Android: si el input pierde foco con valor → procesar igual
   inp.addEventListener('blur', () => {
     if (!_tecladoVisible && !_camaraActiva) {
       const v = inp.value.trim();
-      if (v.length >= 3) {
+      if (v.length >= 2) {
+        clearTimeout(_scanTimer);
         scan(v);
         inp.value = '';
-        setTimeout(() => inp.focus(), 100);  // restaurar foco tras procesar
+        setTimeout(() => inp.focus(), 80);
       }
     }
   });
