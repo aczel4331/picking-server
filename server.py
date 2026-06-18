@@ -2641,7 +2641,7 @@ document.addEventListener('DOMContentLoaded', () => {
   cargarPedidos();
   document.getElementById('movil-url').textContent = location.origin + '/movil';
   setInterval(cargarPedidosQuiet, 120000);  // auto-refresh cada 2 min
-  setInterval(syncEstadoPicking, 5000);     // sync picking cada 5s
+  setInterval(syncEstadoPicking, 2000);     // sync picking cada 2s (tiempo real)
 });
 
 async function cargarStatus() {
@@ -3114,10 +3114,38 @@ async function syncEstadoPicking() {
     const r = await fetch('/api/estado');
     const d = await r.json();
     if (!d.cargado) return;
+
+    const colectaAntes = JSON.stringify(COLECTA);
     ESTADO_PK = d; COLECTA = d.colecta||{}; FASE_ACTUAL = d.fase||1;
+
+    // Siempre actualizar stats (visible en cualquier pestaña)
     renderPickingStats();
-    renderPickingLista();
+
+    // Solo re-renderizar lista si hubo cambios en la colecta
+    if (JSON.stringify(COLECTA) !== colectaAntes) {
+      renderPickingLista();
+      // Actualizar badge del tab Picking con progreso
+      _actualizarBadgePicking();
+    }
   } catch(e) {}
+}
+
+function _actualizarBadgePicking() {
+  if (!ESTADO_PK) return;
+  const grupos = ESTADO_PK.grupos || [];
+  let tot = 0, done = 0;
+  grupos.forEach(g => (g.items||[]).forEach(it => {
+    tot++;
+    if ((COLECTA[it.sku]||0) >= it.req) done++;
+  }));
+  // Actualizar el tab de picking con contador
+  const tabPicking = document.querySelector('.tab[onclick="showTab('picking')"]');
+  if (tabPicking) {
+    const pct = tot > 0 ? Math.round(done/tot*100) : 0;
+    const color = done === tot ? '#10B981' : done > 0 ? '#F59E0B' : '';
+    tabPicking.innerHTML = `📦 Picking <span style="background:${color||'#475569'};color:#fff;
+      font-size:10px;padding:1px 6px;border-radius:10px;margin-left:4px">${done}/${tot}</span>`;
+  }
 }
 
 function renderPicking() { syncEstadoPicking(); }
@@ -3145,19 +3173,31 @@ function renderPickingLista() {
     lista.innerHTML='<div class="empty" style="padding:40px 20px"><div class="empty-i">📋</div><div style="font-size:13px">Sin lote activo</div></div>';
     return;
   }
+
+  // Recordar qué grupos estaban colapsados antes de re-renderizar
+  const colapsados = new Set();
+  lista.querySelectorAll('.grupo-hdr').forEach(hdr => {
+    const body = hdr.nextElementSibling;
+    if (body && body.classList.contains('hidden')) {
+      colapsados.add(hdr.querySelector('.grupo-nombre')?.textContent?.trim());
+    }
+  });
+
   lista.innerHTML = grupos.map(g => {
-    const col   = COLECTA;
-    const done  = g.items.filter(it=>(col[it.sku]||0)>=it.req).length;
-    const gDone = done === g.items.length;
+    const col     = COLECTA;
+    const done    = g.items.filter(it=>(col[it.sku]||0)>=it.req).length;
+    const gDone   = done === g.items.length;
+    const nombre  = '📦 ' + (g.pasillo||'Sin pasillo');
+    const hidden  = colapsados.has(nombre) ? 'hidden' : '';
     return `<div>
       <div class="grupo-hdr" onclick="this.nextElementSibling.classList.toggle('hidden')">
-        <div><div class="grupo-nombre">📦 ${g.pasillo||'Sin pasillo'}</div>
+        <div><div class="grupo-nombre">${nombre}</div>
           <div style="font-size:10px;color:var(--mid)">${g.items.length} SKUs</div></div>
         <div class="grupo-prog ${gDone?'done':''}">${done}/${g.items.length}</div>
       </div>
-      <div>${g.items.map(it=>{
+      <div class="${hidden}">${g.items.map(it=>{
         const c=col[it.sku]||0, ok=c>=it.req;
-        return`<div class="sku-row ${ok?'done':''}">
+        return`<div class="sku-row ${ok?'done':''}" id="desk-sku-${it.sku}">
           <div class="sku-chk ${ok?'ok':''}">${ok?'✔':'○'}</div>
           <div class="sku-body">
             <div class="sku-name">${it.nombre||it.sku}</div>
