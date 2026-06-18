@@ -2808,7 +2808,10 @@ function renderPedidos(filtro='') {
   const soloPend = document.getElementById('chk-solo-pendientes');
   if (soloPend && soloPend.checked)
     peds = peds.filter(p => !p.impreso);
-    const q = filtro.toLowerCase();
+
+  // Filtrar por texto de búsqueda
+  const q = filtro.toLowerCase();
+  if (q) {
     peds = peds.filter(p =>
       p.comprador.toLowerCase().includes(q) ||
       p.order_id.includes(q) ||
@@ -3003,44 +3006,6 @@ async function verEtiqueta(orderId) {
 function abrirEtiqueta() { if (etiquetaUrlActual) window.open(etiquetaUrlActual,'_blank'); }
 function cerrarModal(id) { document.getElementById(id).classList.remove('open'); }
 
-  const r = await fetch(`/api/etiqueta/${orderId}`);
-  const d = await r.json();
-  if (d.ok !== undefined && !d.ok) {
-    // Error con diagnóstico mejorado
-    const estado   = d.estado    ? `<br><b>Estado envío:</b> ${d.estado} / ${d.substatus||'—'}` : '';
-    const logType  = d.logistic_type ? `<br><b>Logística:</b> ${d.logistic_type}` : '';
-    const hint     = d.hint ? `<div style="margin-top:10px;padding:10px;background:var(--bar);
-      border-radius:6px;font-size:12px;color:var(--mid)">${d.hint}</div>` : '';
-    document.getElementById('modal-etiqueta-body').innerHTML =
-      `<div style="color:var(--danger);margin-bottom:8px">❌ ${d.msg}</div>
-       <div style="font-size:12px;color:var(--mid)">${estado}${logType}</div>
-       ${hint}`;
-    document.getElementById('btn-abrir-etiqueta').style.display = 'none';
-  } else {
-    // Éxito — el proxy devuelve el PDF directamente
-    // Usar la URL del proxy que ya tiene el token embebido en el servidor
-    const pdfUrl = `/api/etiqueta/${orderId}`;
-    etiquetaUrlActual = pdfUrl;
-    const p = PEDIDOS[orderId];
-    document.getElementById('modal-etiqueta-body').innerHTML =
-      `<div style="margin-bottom:10px">
-         <b>#${orderId}</b> — ${p.comprador}<br>
-         <span style="font-size:11px;color:var(--mid)">
-           ${p.items.map(it=>`${it.sku||'?'} · ${it.titulo.substring(0,28)}`).join(' | ')}
-         </span>
-       </div>
-       <div style="background:var(--bar);border-radius:6px;padding:8px 12px;
-            font-size:11px;color:var(--mid);margin-bottom:10px">
-         ✅ La etiqueta NO se marca como impresa en MercadoLibre
-       </div>
-       <iframe src="${pdfUrl}" style="width:100%;height:400px;border:none;
-       border-radius:8px;background:#fff"></iframe>`;
-    document.getElementById('btn-abrir-etiqueta').style.display = '';
-    // NO llamar a marcar_impreso
-  }
-function abrirEtiqueta() { if (etiquetaUrlActual) window.open(etiquetaUrlActual,'_blank'); }
-function cerrarModal(id) { document.getElementById(id).classList.remove('open'); }
-
 // ════════════════════════════════════════════════════════════
 // GENERAR LOTE DE PICKING
 // ════════════════════════════════════════════════════════════
@@ -3115,19 +3080,24 @@ async function syncEstadoPicking() {
     const d = await r.json();
     if (!d.cargado) return;
 
-    const colectaAntes = JSON.stringify(COLECTA);
-    ESTADO_PK = d; COLECTA = d.colecta||{}; FASE_ACTUAL = d.fase||1;
+    // Comparar totales colectados para detectar cambio real
+    const totalAntes = Object.values(COLECTA).reduce((a,b)=>a+b,0);
+    const totalNuevo = Object.values(d.colecta||{}).reduce((a,b)=>a+b,0);
+    const faseAntes  = FASE_ACTUAL;
 
-    // Siempre actualizar stats (visible en cualquier pestaña)
+    ESTADO_PK   = d;
+    COLECTA     = d.colecta || {};
+    FASE_ACTUAL = d.fase || 1;
+
+    // Siempre actualizar stats y badge
     renderPickingStats();
+    _actualizarBadgePicking();
 
-    // Solo re-renderizar lista si hubo cambios en la colecta
-    if (JSON.stringify(COLECTA) !== colectaAntes) {
+    // Re-renderizar lista si hubo escaneos nuevos o cambio de fase
+    if (totalNuevo !== totalAntes || faseAntes !== FASE_ACTUAL) {
       renderPickingLista();
-      // Actualizar badge del tab Picking con progreso
-      _actualizarBadgePicking();
     }
-  } catch(e) {}
+  } catch(e) { console.error('[SYNC]', e); }
 }
 
 function _actualizarBadgePicking() {
@@ -3256,14 +3226,48 @@ async function procesarScan(sku) {
 
 async function pasarFase2() {
   if (!confirm('¿Pasar a Fase 2 (Armado de pedidos)?')) return;
-  FASE_ACTUAL = 2;
-  const est = await (await fetch('/api/estado')).json();
+
+  // Tomar el estado ACTUAL del servidor (con la colecta real del móvil)
+  const r = await fetch('/api/estado');
+  const est = await r.json();
+
+  if (!est.cargado) { toast('No hay lote activo', 'err'); return; }
+
+  // Solo cambiar la fase — preservar TODO lo demás tal cual está en el servidor
   est.fase = 2;
-  await fetch('/api/subir_estado', {method:'POST',
-    headers:{'Content-Type':'application/json','X-API-Key':'everest2024'},
-    body:JSON.stringify(est)});
+
+  await fetch('/api/subir_estado', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-API-Key':'everest2024'},
+    body: JSON.stringify(est)
+  });
+
+  FASE_ACTUAL = 2;
+  ESTADO_PK   = est;
+  COLECTA     = est.colecta || {};
   renderPickingStats();
-  toast('✅ Pasado a Fase 2', 'ok');
+  toast('✅ Pasado a Fase 2 — imprimiendo etiquetas…', 'ok');
+
+  // Imprimir etiquetas de todos los pedidos del lote
+  await imprimirEtiquetasFase2();
+}
+
+async function imprimirEtiquetasFase2() {
+  // Tomar los pedidos pendientes (no impresos)
+  const pendientes = Object.values(PEDIDOS).filter(p => !p.impreso && p.shipping_id);
+  if (!pendientes.length) {
+    toast('Sin etiquetas pendientes de impresión', 'warn');
+    return;
+  }
+  toast(`Abriendo ${pendientes.length} etiqueta(s)…`, 'ok');
+  // Abrir etiqueta de cada pedido (una por una con delay para no bloquear)
+  for (let i = 0; i < pendientes.length; i++) {
+    const p = pendientes[i];
+    await new Promise(res => setTimeout(res, i === 0 ? 300 : 800));
+    verEtiqueta(p.order_id);
+    // Solo abrir la primera automáticamente; el usuario cierra y sigue
+    if (i === 0) break;
+  }
 }
 
 // UTILS
