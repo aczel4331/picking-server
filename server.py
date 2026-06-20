@@ -60,6 +60,10 @@ _pedidos_ml     = {}
 _estado = {
     "fase": 1, "grupos": [], "colecta": {}, "colecta_completa": False,
     "total_skus": 0, "total_uds": 0, "ultima_actualizacion": "", "cargado": False,
+    # Fase 2: pedidos del lote { order_id: {comprador, shipping_id, items:[{sku,req}], _cuenta} }
+    "pedidos": {},
+    # order_ids cuya etiqueta ya fue marcada como impresa en esta sesion de fase 2
+    "etiquetas_impresas": [],
 }
 _colectores          = {}
 # Cache de etiquetas PDF: { order_id: { pdf: bytes, ts: str, shipping_id: str } }
@@ -1924,8 +1928,9 @@ def subir_estado():
     if not data or "grupos" not in data:
         return jsonify({"ok": False, "msg": "Datos inválidos"}), 400
     with _lock:
+        nueva_fase = data.get("fase", 1)
         _estado.update({
-            "fase":             data.get("fase", 1),
+            "fase":             nueva_fase,
             "grupos":           data.get("grupos", []),
             "total_skus":       data.get("total_skus", 0),
             "total_uds":        data.get("total_uds", 0),
@@ -1934,6 +1939,12 @@ def subir_estado():
             "ultima_actualizacion": _ts(),
             "cargado":          True,
         })
+        # Guardar pedidos del lote si vienen (para Fase 2 — impresion por pedido)
+        if "pedidos" in data and isinstance(data["pedidos"], dict):
+            _estado["pedidos"] = data["pedidos"]
+        # Si es un lote nuevo (fase 1 desde cero), resetear etiquetas impresas
+        if nueva_fase == 1 and not data.get("colecta"):
+            _estado["etiquetas_impresas"] = []
     # Persistir en /tmp para sobrevivir reinicios de Railway
     try:
         import json as _j
@@ -1952,6 +1963,105 @@ def get_estado():
     # Asegurar que cargado sea boolean, no string
     estado["cargado"] = bool(estado.get("cargado", False))
     return jsonify(estado)
+
+
+def _pedidos_completos_segun_colecta():
+    """
+    Calcula que pedidos del lote estan completos segun la colecta actual.
+
+    Criterio correcto para deposito con pedidos individuales:
+    la colecta global de cada SKU se REPARTE entre los pedidos que lo necesitan,
+    en orden. Un pedido esta completo cuando para CADA uno de sus SKUs hay
+    stock colectado suficiente asignado a el.
+
+    Ejemplo: 3 clientes piden SKU "6104" (1 c/u). req_total = 3.
+      - Colecta 1 unidad → pedido #1 listo (los otros 2 esperan)
+      - Colecta 2 unidades → pedidos #1 y #2 listos
+      - Colecta 3 unidades → los 3 listos
+
+    Devuelve lista de dicts:
+      [{order_id, comprador, shipping_id, _cuenta, items, recien_completado}]
+    """
+    pedidos = _estado.get("pedidos", {})
+    colecta = dict(_estado.get("colecta", {}))  # copia para ir descontando
+    impresas = set(_estado.get("etiquetas_impresas", []))
+
+    # Stock disponible por SKU (lo que se colecto)
+    disponible = {}
+    for s, c in colecta.items():
+        disponible[str(s).upper()] = int(c)
+
+    resultado = []
+    # Procesar pedidos en orden estable (por order_id) para reparto consistente
+    for oid in sorted(pedidos.keys()):
+        ped = pedidos[oid]
+        items = ped.get("items", [])
+        if not items:
+            continue
+
+        # Verificar si hay stock suficiente para TODOS los SKUs de este pedido
+        completo = True
+        for it in items:
+            s    = str(it.get("sku","")).upper()
+            need = int(it.get("req", it.get("cantidad", 1)))
+            if disponible.get(s, 0) < need:
+                completo = False
+                break
+
+        if completo:
+            # Descontar el stock asignado a este pedido
+            for it in items:
+                s    = str(it.get("sku","")).upper()
+                need = int(it.get("req", it.get("cantidad", 1)))
+                disponible[s] = disponible.get(s, 0) - need
+
+            recien = oid not in impresas
+            resultado.append({
+                "order_id":    oid,
+                "comprador":   ped.get("comprador",""),
+                "shipping_id": ped.get("shipping_id",""),
+                "_cuenta":     ped.get("_cuenta","cuenta_0"),
+                "items":       items,
+                "recien_completado": recien,
+            })
+    return resultado
+
+
+@app.route("/api/fase2/pedidos-completos", methods=["GET"])
+def fase2_pedidos_completos():
+    """
+    Devuelve los pedidos completos segun la colecta y cuales son nuevos
+    (para imprimir su etiqueta automaticamente).
+    La app desktop hace polling aqui durante la Fase 2.
+    """
+    with _lock:
+        completos = _pedidos_completos_segun_colecta()
+        fase = _estado.get("fase", 1)
+        impresas = list(_estado.get("etiquetas_impresas", []))
+    return jsonify({
+        "ok": True,
+        "fase": fase,
+        "completos": completos,
+        "ya_impresas": impresas,
+    })
+
+
+@app.route("/api/fase2/marcar-impresa/<order_id>", methods=["POST"])
+def fase2_marcar_impresa(order_id):
+    """Marca un pedido como ya impreso en Fase 2 para no reimprimir."""
+    with _lock:
+        if order_id not in _estado.get("etiquetas_impresas", []):
+            _estado.setdefault("etiquetas_impresas", []).append(order_id)
+        # Tambien marcar el pedido ML como impreso si existe
+        if order_id in _pedidos_ml:
+            _pedidos_ml[order_id]["impreso"] = True
+        try:
+            import json as _j
+            with open("/tmp/lote_estado.json","w") as f:
+                _j.dump(dict(_estado), f)
+        except Exception:
+            pass
+    return jsonify({"ok": True, "order_id": order_id})
 
 
 @app.route("/api/escanear", methods=["POST"])
@@ -1980,6 +2090,10 @@ def escanear():
         todo = all(colecta.get(it["sku"],0) >= it["req"]
                    for g in _estado["grupos"] for it in g["items"])
         _estado["colecta_completa"] = todo
+        # Si se completo toda la colecta → pasar automaticamente a Fase 2
+        if todo and _estado.get("fase", 1) == 1:
+            _estado["fase"] = 2
+            print("[FASE] Colecta completa → pasando a Fase 2 automaticamente")
         nuevo = colecta[sku]
     # Persistir colecta actualizada
     try:
@@ -2630,6 +2744,11 @@ let PEDIDOS     = {};
 let ESTADO_PK   = null;
 let FASE_ACTUAL = 1;
 let COLECTA     = {};
+// Estado del monitor de Fase 2 (impresion automatica de etiquetas)
+let _fase2Activo      = false;
+let _fase2Cola        = [];        // order_ids pendientes de imprimir
+let _fase2Imprimiendo = false;
+let _fase2YaImpresas  = new Set();
 let LOTE_IDS    = [];   // order_ids incluidos en el lote actual
 let etiquetaUrlActual = "";
 
@@ -3048,9 +3167,26 @@ async function generarLotePicking() {
   const totalUds  = Object.values(totalReq).reduce((a,b)=>a+b,0);
   const sinBD     = Object.keys(totalReq).filter(s=>!SKU_DB[s]).length;
 
+  // Construir mapa de pedidos para Fase 2 (order_id → items con sku+req)
+  const pedidosLote = {};
+  peds.forEach(p => {
+    const items = p.items.map(it => ({
+      sku: (it.sku || it.item_id || '').toUpperCase(),
+      req: it.cantidad || 1,
+      titulo: it.titulo || ''
+    }));
+    pedidosLote[p.order_id] = {
+      comprador:   p.comprador || '',
+      shipping_id: p.shipping_id || '',
+      _cuenta:     p._cuenta || 'cuenta_0',
+      items:       items,
+    };
+  });
+
   const payload = {
     fase: 1, grupos, colecta: {}, colecta_completa: false,
     total_skus: totalSkus, total_uds: totalUds,
+    pedidos: pedidosLote,
   };
 
   const r = await fetch('/api/subir_estado', {
@@ -3096,6 +3232,19 @@ async function syncEstadoPicking() {
     // Re-renderizar lista si hubo escaneos nuevos o cambio de fase
     if (totalNuevo !== totalAntes || faseAntes !== FASE_ACTUAL) {
       renderPickingLista();
+    }
+
+    // Si pasamos a Fase 2 (por boton o automatico al completar) → activar monitor
+    if (FASE_ACTUAL === 2) {
+      if (!_fase2Activo) {
+        if (faseAntes === 1) toast('🎉 Colecta completa → Fase 2: Armado', 'ok');
+        iniciarMonitorFase2();
+      } else {
+        // Ya activo → seguir chequeando pedidos completos para imprimir
+        chequearPedidosCompletos();
+      }
+    } else if (FASE_ACTUAL === 1 && _fase2Activo) {
+      detenerMonitorFase2();
     }
   } catch(e) { console.error('[SYNC]', e); }
 }
@@ -3225,17 +3374,12 @@ async function procesarScan(sku) {
 }
 
 async function pasarFase2() {
-  if (!confirm('¿Pasar a Fase 2 (Armado de pedidos)?')) return;
-
-  // Tomar el estado ACTUAL del servidor (con la colecta real del móvil)
+  // Pasar manualmente a Fase 2 (el boton). Tambien se pasa solo al completar colecta.
   const r = await fetch('/api/estado');
   const est = await r.json();
-
   if (!est.cargado) { toast('No hay lote activo', 'err'); return; }
 
-  // Solo cambiar la fase — preservar TODO lo demás tal cual está en el servidor
   est.fase = 2;
-
   await fetch('/api/subir_estado', {
     method: 'POST',
     headers: {'Content-Type':'application/json','X-API-Key':'everest2024'},
@@ -3246,28 +3390,140 @@ async function pasarFase2() {
   ESTADO_PK   = est;
   COLECTA     = est.colecta || {};
   renderPickingStats();
-  toast('✅ Pasado a Fase 2 — imprimiendo etiquetas…', 'ok');
-
-  // Imprimir etiquetas de todos los pedidos del lote
-  await imprimirEtiquetasFase2();
+  toast('✅ Fase 2 — armado de pedidos', 'ok');
+  iniciarMonitorFase2();
 }
 
-async function imprimirEtiquetasFase2() {
-  // Tomar los pedidos pendientes (no impresos)
-  const pendientes = Object.values(PEDIDOS).filter(p => !p.impreso && p.shipping_id);
-  if (!pendientes.length) {
-    toast('Sin etiquetas pendientes de impresión', 'warn');
-    return;
+// ── MONITOR DE FASE 2 — imprime etiquetas automaticamente ──────────────────
+function iniciarMonitorFase2() {
+  if (_fase2Activo) return;
+  _fase2Activo = true;
+  console.log('[FASE2] Monitor de impresion automatica iniciado');
+  chequearPedidosCompletos();  // chequeo inmediato
+}
+
+function detenerMonitorFase2() {
+  _fase2Activo = false;
+  _fase2Cola = [];
+  _fase2Imprimiendo = false;
+}
+
+async function chequearPedidosCompletos() {
+  if (FASE_ACTUAL !== 2) return;
+  try {
+    const r = await fetch('/api/fase2/pedidos-completos');
+    const d = await r.json();
+    if (!d.ok) return;
+
+    // Sincronizar las ya impresas del servidor
+    (d.ya_impresas || []).forEach(oid => _fase2YaImpresas.add(oid));
+
+    // Encolar los recien completados que aun no se imprimieron
+    (d.completos || []).forEach(c => {
+      if (c.recien_completado && !_fase2YaImpresas.has(c.order_id)
+          && !_fase2Cola.includes(c.order_id)) {
+        _fase2Cola.push(c.order_id);
+        console.log('[FASE2] Pedido completo encolado:', c.order_id);
+      }
+    });
+
+    // Procesar la cola
+    procesarColaFase2();
+
+    // Mostrar progreso de armado
+    renderProgresoFase2(d.completos || []);
+  } catch(e) { console.error('[FASE2]', e); }
+}
+
+async function procesarColaFase2() {
+  if (_fase2Imprimiendo || !_fase2Cola.length) return;
+  _fase2Imprimiendo = true;
+
+  while (_fase2Cola.length) {
+    const orderId = _fase2Cola.shift();
+    if (_fase2YaImpresas.has(orderId)) continue;
+
+    const p = PEDIDOS[orderId];
+    const comprador = p ? p.comprador : orderId;
+    toast(`🖨️ Imprimiendo etiqueta: ${comprador}`, 'ok');
+
+    // Abrir la etiqueta automaticamente
+    await imprimirEtiquetaAuto(orderId);
+
+    // Marcar como impresa en el servidor
+    try {
+      await fetch(`/api/fase2/marcar-impresa/${orderId}`, {method:'POST'});
+    } catch(e) {}
+    _fase2YaImpresas.add(orderId);
+
+    // Pequeno delay entre impresiones
+    await new Promise(res => setTimeout(res, 1200));
   }
-  toast(`Abriendo ${pendientes.length} etiqueta(s)…`, 'ok');
-  // Abrir etiqueta de cada pedido (una por una con delay para no bloquear)
-  for (let i = 0; i < pendientes.length; i++) {
-    const p = pendientes[i];
-    await new Promise(res => setTimeout(res, i === 0 ? 300 : 800));
-    verEtiqueta(p.order_id);
-    // Solo abrir la primera automáticamente; el usuario cierra y sigue
-    if (i === 0) break;
+
+  _fase2Imprimiendo = false;
+}
+
+// Abrir e imprimir una etiqueta automaticamente (sin clic del usuario)
+async function imprimirEtiquetaAuto(orderId) {
+  try {
+    const r = await fetch(`/api/etiqueta/${orderId}`);
+    const ct = r.headers.get('Content-Type') || '';
+    if (ct.includes('application/pdf')) {
+      const blob = await r.blob();
+      const url  = URL.createObjectURL(blob);
+      // Abrir en ventana nueva para imprimir
+      const win = window.open(url, '_blank');
+      if (win) {
+        // Intentar disparar impresion automatica
+        win.addEventListener('load', () => {
+          setTimeout(() => { try { win.print(); } catch(e) {} }, 700);
+        });
+      } else {
+        // Popup bloqueado → mostrar en modal como fallback
+        toast('⚠ Permití pop-ups para impresión automática', 'warn');
+        verEtiqueta(orderId);
+      }
+    } else {
+      // No hay PDF disponible — mostrar diagnostico
+      console.warn('[FASE2] Etiqueta no disponible para', orderId);
+      verEtiqueta(orderId);
+    }
+  } catch(e) {
+    console.error('[FASE2] Error imprimiendo', orderId, e);
   }
+}
+
+// Mostrar progreso de armado en el panel derecho
+function renderProgresoFase2(completos) {
+  const cont = document.getElementById('resumen-pedidos-picking');
+  if (!cont) return;
+  const totalPedidos = Object.keys(ESTADO_PK?.pedidos || {}).length;
+  const listos = completos.length;
+
+  let html = `<div style="background:var(--card);border:1px solid var(--border);
+    border-radius:8px;padding:12px;margin-bottom:12px">
+    <div style="font-size:22px;font-weight:800;color:var(--success)">${listos}/${totalPedidos}</div>
+    <div style="font-size:10px;color:var(--lo)">PEDIDOS ARMADOS</div>
+  </div>`;
+
+  const pedidos = ESTADO_PK?.pedidos || {};
+  html += Object.entries(pedidos).map(([oid, ped]) => {
+    const completo = completos.some(c => c.order_id === oid);
+    const impreso  = _fase2YaImpresas.has(oid);
+    const color = impreso ? 'var(--success)' : completo ? 'var(--warning)' : 'var(--lo)';
+    const icon  = impreso ? '🖨️' : completo ? '✅' : '⏳';
+    const estado = impreso ? 'Impreso' : completo ? 'Listo' : 'Armando';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;
+      padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+      <div>
+        <div style="font-weight:600;color:${color}">${icon} ${ped.comprador||oid}</div>
+        <div style="font-size:10px;color:var(--lo)">#${oid} · ${ped.items.length} item(s)</div>
+      </div>
+      <span style="color:${color};font-size:10px;font-weight:700">${estado}</span>
+    </div>`;
+  }).join('');
+
+  cont.innerHTML = html;
 }
 
 // UTILS
