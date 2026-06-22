@@ -1781,20 +1781,7 @@ class AsistenteDepositoApp:
         tk.Frame(sub_tabs, bg=C["border"], width=1).pack(
             side="left", fill="y", padx=10, pady=4)
 
-        # Toggle "Solo pendientes" — ACTIVO POR DEFECTO
-        self.var_solo_pendientes = tk.BooleanVar(value=True)
-        chk = tk.Checkbutton(
-            sub_tabs, text="⏳ Solo pendientes",
-            variable=self.var_solo_pendientes,
-            font=("Segoe UI Semibold", 9),
-            bg=C["bg_dark"], fg=C["warning"],
-            activebackground=C["bg_dark"],
-            selectcolor=C["card"],
-            relief="flat", cursor="hand2", bd=0,
-            command=self._ml_filtrar)
-        chk.pack(side="left", padx=4)
-
-        # Toggle "Ver impresos"
+        # Toggle "Ver impresos" — por defecto oculto; al marcarlo aparecen debajo de pendientes
         self.var_ver_impresos = tk.BooleanVar(value=False)
         chk2 = tk.Checkbutton(
             sub_tabs, text="✅ Ver impresos",
@@ -1912,8 +1899,6 @@ class AsistenteDepositoApp:
         q            = self.var_buscar_ml.get().strip().lower()
         tipo         = self._ml_filtro_tipo.get()
         cta          = getattr(self, "_ml_cuenta_filtro", "todas")
-        solo_pend    = getattr(self, "var_solo_pendientes",
-                               tk.BooleanVar(value=True)).get()
         ver_impresos = getattr(self, "var_ver_impresos",
                                tk.BooleanVar(value=False)).get()
 
@@ -1932,34 +1917,30 @@ class AsistenteDepositoApp:
                          q in it.get("sku","").lower()
                          for it in p.get("items",[]))]
 
-        # Separar pendientes e impresos
-        ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
+        # Separar en dos grupos bien definidos (sin solapamientos)
+        ESTADOS_FINALES     = {"shipped","delivered","cancelled","not_delivered"}
         SUBESTADOS_IMPRESOS = {"printed"}
 
-        pendientes = [p for p in todos
-                      if not p.get("impreso", False)
-                      and p.get("estado_envio","") not in ESTADOS_FINALES
-                      and p.get("substatus","") not in SUBESTADOS_IMPRESOS]
-        impresos   = [p for p in todos
-                      if p.get("impreso", False)
-                      or p.get("substatus","") in SUBESTADOS_IMPRESOS
-                      or p.get("estado_envio","") in ESTADOS_FINALES]
+        def _es_impreso(p):
+            return (p.get("impreso", False)
+                    or p.get("substatus","") in SUBESTADOS_IMPRESOS
+                    or p.get("estado_envio","") in ESTADOS_FINALES)
 
-        # Decidir qué mostrar
-        if solo_pend and not ver_impresos:
-            peds = pendientes
-        elif ver_impresos and not solo_pend:
-            peds = impresos
-        elif ver_impresos and solo_pend:
+        pendientes = [p for p in todos if not _es_impreso(p)]
+        impresos   = [p for p in todos if _es_impreso(p)]
+
+        # Regla simple: pendientes siempre visibles.
+        # Impresos solo aparecen si el usuario activa el toggle.
+        if ver_impresos:
             peds = pendientes + impresos
         else:
-            peds = todos
+            peds = pendientes
 
-        # Filtrar por tipo
+        # Filtrar por tipo de logística
         if tipo != "todos":
             peds = [p for p in peds if self._tipo_logistica(p) == tipo]
 
-        # Actualizar badges con pendientes por tipo
+        # Actualizar badges de conteo por tipo (solo pendientes)
         for key, badge_attr in [("flex","lbl_flex_badge"),("me2","lbl_me2_badge")]:
             n   = sum(1 for p in pendientes if self._tipo_logistica(p) == key)
             lbl = getattr(self, badge_attr, None)
