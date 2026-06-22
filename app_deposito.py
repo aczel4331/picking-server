@@ -2301,47 +2301,43 @@ class AsistenteDepositoApp:
             self.lbl_refresh_countdown.config(text="↻ 1:00", fg=C["text_lo"])
 
     def _sync_colecta_servidor(self):
-        """Sincroniza el estado de colecta desde el servidor picking en tiempo real."""
+        """Sincroniza el estado de colecta leyendo estado_picking.json (escrito por servidor_movil.py)."""
         try:
-            import requests
-            url = f"{RAILWAY_URL.rstrip('/')}/api/estado-picking"
-            r = requests.get(url, timeout=2)
-            
-            if r.status_code == 200:
-                data = r.json()
-                if data.get("cargado"):
-                    colecta_servidor = data.get("colecta", {})
-                    
-                    # Actualizar cada SKU visible
-                    if hasattr(self, 'fase1_items') and self.fase1_items:
-                        for sku in list(self.fase1_items.keys()):
-                            cantidad_servidor = colecta_servidor.get(sku, 0)
-                            cantidad_local = self.colecta_global.get(sku, 0)
-                            
-                            # Si hay cambio
-                            if cantidad_servidor != cantidad_local:
-                                self.colecta_global[sku] = cantidad_servidor
-                                item = self.fase1_items[sku]
-                                
-                                # Actualizar label
-                                lbl = item.get("lbl_cnt")
-                                if lbl and lbl.winfo_exists():
-                                    req = item.get("req", 1)
-                                    lbl.config(text=f"{cantidad_servidor}/{req}")
-                                
-                                # Actualizar checkbox
-                                chk = item.get("checkbox")
-                                if chk and chk.winfo_exists():
-                                    if cantidad_servidor >= req:
-                                        chk.config(fg=C["success"])
-                                        # Animar
-                                        self._animar_checkmark(sku)
-                                    else:
-                                        chk.config(fg=C["text_lo"])
+            estado_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "estado_picking.json")
+            if not os.path.exists(estado_path):
+                return
+
+            with open(estado_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if data.get("cargado"):
+                colecta_servidor = data.get("colecta", {})
+
+                if hasattr(self, 'fase1_items') and self.fase1_items:
+                    for sku in list(self.fase1_items.keys()):
+                        cantidad_servidor = colecta_servidor.get(sku, 0)
+                        cantidad_local    = self.colecta_global.get(sku, 0)
+
+                        if cantidad_servidor != cantidad_local:
+                            self.colecta_global[sku] = cantidad_servidor
+                            item = self.fase1_items[sku]
+
+                            lbl = item.get("lbl_cnt")
+                            if lbl and lbl.winfo_exists():
+                                req = item.get("req", 1)
+                                lbl.config(text=f"{cantidad_servidor}/{req}")
+
+                            chk = item.get("checkbox")
+                            if chk and chk.winfo_exists():
+                                req = item.get("req", 1)
+                                if cantidad_servidor >= req:
+                                    chk.config(fg=C["success"])
+                                    self._animar_checkmark(sku)
+                                else:
+                                    chk.config(fg=C["text_lo"])
         except Exception as e:
-            print(f"[SYNC] Error: {e}")
+            print(f"[SYNC] Error leyendo estado_picking.json: {e}")
         finally:
-            # Re-programar en 2 segundos
             if hasattr(self, 'root') and self.root.winfo_exists():
                 self.root.after(2_000, self._sync_colecta_servidor)
 
@@ -4787,8 +4783,16 @@ class AsistenteDepositoApp:
 
     def mostrar_vista_previa(self, num_pagina):
         try:
-            documento = fitz.open(self.ruta_pdf)
-            pagina    = documento.load_page(num_pagina - 1)
+            # Modo ML: usar el PDF temporal descargado si existe
+            pdf_a_abrir = self.ruta_pdf
+            if not pdf_a_abrir:
+                tmp_ml = os.path.join(tempfile.gettempdir(), f"etiqueta_ml_{num_pagina}.pdf")
+                if os.path.exists(tmp_ml):
+                    pdf_a_abrir = tmp_ml
+                else:
+                    return  # Sin PDF disponible aún, no mostrar nada
+            documento = fitz.open(pdf_a_abrir)
+            pagina    = documento.load_page(0 if not self.ruta_pdf else num_pagina - 1)
             pix = pagina.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             documento.close()
@@ -4842,13 +4846,56 @@ class AsistenteDepositoApp:
             self.btn_saltar.config(state="disabled", bg=C["card"], fg=C["text_lo"])
             self.root.update_idletasks()
 
-            doc_o = fitz.open(self.ruta_pdf)
-            doc_p = fitz.open()
-            doc_p.insert_pdf(doc_o, from_page=p_num - 1, to_page=p_num - 1)
             tmp = os.path.join(tempfile.gettempdir(), f"etiqueta_ml_{p_num}.pdf")
-            doc_p.save(tmp)
-            doc_p.close()
-            doc_o.close()
+
+            if self.ruta_pdf:
+                # ── Modo PDF manual: extraer la página correspondiente ────────
+                doc_o = fitz.open(self.ruta_pdf)
+                doc_p = fitz.open()
+                doc_p.insert_pdf(doc_o, from_page=p_num - 1, to_page=p_num - 1)
+                doc_p.save(tmp)
+                doc_p.close()
+                doc_o.close()
+            else:
+                # ── Modo ML: descargar la etiqueta desde Railway ──────────────
+                ped      = self.pedidos.get(p_num, {})
+                order_id = ped.get("_order_id", "")
+                if not order_id:
+                    raise RuntimeError(f"Pedido #{p_num} no tiene order_id — no se puede descargar la etiqueta.")
+
+                url_base     = self.config.get("servidor_nube", RAILWAY_URL).strip() or RAILWAY_URL
+                clave_api    = self.config.get("clave_nube", "everest2024").strip()
+                etiqueta_url = url_base.rstrip("/") + f"/api/etiqueta/{order_id}"
+                self.lbl_imprimiendo.config(text="⬇  Descargando etiqueta...", fg=C["accent"])
+                self.root.update_idletasks()
+
+                import urllib.request as _ur
+                req_obj = _ur.Request(
+                    etiqueta_url,
+                    headers={"Accept": "application/pdf", "X-API-Key": clave_api}
+                )
+                with _ur.urlopen(req_obj, timeout=15) as resp:
+                    content_type = resp.headers.get("Content-Type", "")
+                    raw = resp.read()
+
+                if b"%PDF" in raw[:8]:
+                    with open(tmp, "wb") as f:
+                        f.write(raw)
+                elif b'"url"' in raw[:200]:
+                    # El endpoint devolvió JSON con una URL directa de ML
+                    import json as _json
+                    d_json = _json.loads(raw)
+                    pdf_url = d_json.get("url") or d_json.get("pdf_url", "")
+                    if not pdf_url:
+                        raise RuntimeError(f"El servidor no devolvió URL de etiqueta para pedido #{order_id}.")
+                    with _ur.urlopen(pdf_url, timeout=15) as r2:
+                        with open(tmp, "wb") as f:
+                            f.write(r2.read())
+                else:
+                    raise RuntimeError(
+                        f"Respuesta inesperada del servidor para pedido #{order_id}.\n"
+                        f"Content-Type: {content_type}\n"
+                        f"Primeros bytes: {raw[:60]}")
 
             ok = self._enviar_a_impresora(tmp, impresora)
 
@@ -4892,7 +4939,12 @@ class AsistenteDepositoApp:
                 self.entrada_sku.focus()
 
         except Exception as e:
-            self.lbl_imprimiendo.config(text="")
+            print(f"[IMPRIMIR] Error: {e}")
+            self.lbl_imprimiendo.config(text=f"❌  {e}", fg=C["danger"])
+            messagebox.showerror(
+                "Error de impresión",
+                str(e),
+                parent=self.root)
             if self.pedido_en_proceso:
                 self.btn_cancelar.config(state="normal", bg=C["danger"], fg="white")
                 self.btn_saltar.config(state="normal", bg=C["warning"], fg="white")
@@ -4957,9 +5009,9 @@ class AsistenteDepositoApp:
             hdc.DeleteDC()
             return True
         except ImportError:
-            pass
-        except Exception:
-            pass
+            print("[IMPR M0] win32print/win32ui no instalado, pasando al siguiente método.")
+        except Exception as _e0:
+            print(f"[IMPR M0] win32print falló: {_e0}")
 
         # ── Método 1: SumatraPDF ────────────────────────────────────────────
         for ruta_s in [
@@ -4973,9 +5025,11 @@ class AsistenteDepositoApp:
                         [ruta_s, "-print-to", impresora,
                          "-print-settings", "fit", "-silent", ruta_pdf],
                         capture_output=True, timeout=30)
-                    return r.returncode == 0
-                except Exception:
-                    pass
+                    if r.returncode == 0:
+                        return True
+                    print(f"[IMPR M1] SumatraPDF salió con código {r.returncode}: {r.stderr.strip()}")
+                except Exception as _e1:
+                    print(f"[IMPR M1] SumatraPDF falló: {_e1}")
 
         # ── Método 2: PowerShell System.Drawing.Printing ────────────────────
         # Convierte el PDF a PNG y lo imprime vía .NET sin depender del visor PDF.
@@ -5018,8 +5072,9 @@ try {{
 """
             if self._ps_encoded(script2, timeout=30):
                 return True
-        except Exception:
-            pass
+            print("[IMPR M2] PowerShell System.Drawing falló (returncode != 0).")
+        except Exception as _e2:
+            print(f"[IMPR M2] PowerShell System.Drawing excepción: {_e2}")
         finally:
             try:
                 if tmp_png and os.path.exists(tmp_png):
@@ -5033,9 +5088,9 @@ try {{
             win32api.ShellExecute(0, "printto", ruta_pdf, f'"{impresora}"', ".", 0)
             return True
         except ImportError:
-            pass
-        except Exception:
-            pass
+            print("[IMPR M3] win32api no instalado.")
+        except Exception as _e3:
+            print(f"[IMPR M3] win32api.ShellExecute falló: {_e3}")
 
         # ── Método 4: Start-Process -Verb PrintTo ───────────────────────────
         script4 = f"""
