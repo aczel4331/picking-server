@@ -582,8 +582,7 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();  // evitar submit solo si hay valor
         clearTimeout(_scanTimer);
         scan(v);
-        inp.value = '';
-        inp.focus();
+        setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
       }
     }
   });
@@ -599,8 +598,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const v2 = inp.value.trim();
       if (v2.length >= 2) {
         scan(v2);
-        inp.value = '';
-        inp.focus();
+        setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
       }
     }, 50);
   });
@@ -612,8 +610,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (v.length >= 2) {
         clearTimeout(_scanTimer);
         scan(v);
-        inp.value = '';
-        setTimeout(() => inp.focus(), 80);
+        setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
       }
     }
   });
@@ -649,8 +646,9 @@ document.addEventListener('DOMContentLoaded', () => {
         clearTimeout(_gTimer);
         const v = _gBuf;
         _gBuf = '';
-        inp.value = '';
+        inp.value = v; // mostrar el código escaneado brevemente
         scan(v);
+        setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
       }
       return;
     }
@@ -662,8 +660,9 @@ document.addEventListener('DOMContentLoaded', () => {
       _gTimer = setTimeout(() => {
         if (_gBuf.length >= 2) {
           const v = _gBuf;
-          _gBuf = ''; inp.value = '';
+          _gBuf = '';
           scan(v);
+          setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
         } else {
           _gBuf = ''; inp.value = '';
         }
