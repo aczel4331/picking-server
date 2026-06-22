@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#1E293B">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<title>Logibot · Picking</title>
+<style>
+:root{--bg:#111318;--panel:#1C2030;--card:#161B27;--border:#2A3352;
+  --accent:#2563EB;--accent2:#1D4ED8;--success:#0EA5E9;
+  --warning:#F59E0B;--danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;
+  min-height:100vh;display:flex;flex-direction:column}
+
+/* TOPBAR */
+.topbar{background:var(--panel);padding:10px 14px;display:flex;align-items:center;
+  justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0}
+.t-left{display:flex;align-items:center;gap:8px}
+.t-icon{font-size:20px}
+.t-title{font-size:15px;font-weight:800}
+.t-sub{font-size:10px;color:var(--mid)}
+.badge{background:var(--accent);color:#fff;font-size:13px;font-weight:800;
+  padding:5px 12px;border-radius:20px}
+.badge.done{background:var(--success)}
+.badge.warn{background:var(--warning);color:#000}
+
+/* BANNER COMPLETADO */
+#ban{display:none;background:var(--success);color:#fff;text-align:center;
+  padding:14px;font-size:16px;font-weight:800;letter-spacing:.04em;flex-shrink:0}
+#ban.show{display:block}
+
+/* CAJA DE ESCANEO */
+.scan-box{padding:10px 12px;background:var(--panel);border-bottom:1px solid var(--border);
+  flex-shrink:0}
+#sku{width:100%;background:var(--card);border:2px solid var(--accent);color:var(--hi);
+  font-size:20px;font-family:monospace;font-weight:700;padding:12px 14px;
+  border-radius:10px;outline:none;text-align:center;text-transform:uppercase;
+  caret-color:var(--accent)}
+#sku:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.25)}
+
+/* FEEDBACK — grande y claro para el depósito */
+#fb{margin-top:8px;min-height:48px;border-radius:10px;padding:10px 14px;
+  font-size:15px;font-weight:700;display:flex;align-items:center;gap:10px;
+  transition:background .15s}
+#fb.ok{background:rgba(16,185,129,.18);color:var(--success)}
+#fb.warn{background:rgba(245,158,11,.18);color:var(--warning)}
+#fb.err{background:rgba(239,68,68,.18);color:var(--danger)}
+#fb.neu{color:var(--mid)}
+
+/* LISTA POR PASILLO */
+.content{flex:1;overflow-y:auto;padding:8px 8px 80px}
+.grupo{margin-bottom:10px;border-radius:10px;overflow:hidden;border:1px solid var(--border)}
+.g-hdr{background:var(--bar);padding:10px 14px;display:flex;align-items:center;
+  justify-content:space-between;cursor:pointer;user-select:none}
+.g-left{display:flex;align-items:center;gap:8px}
+.g-name{font-size:13px;font-weight:800;color:var(--accent);text-transform:uppercase}
+.g-stats{font-size:10px;color:var(--mid)}
+.g-prog{font-size:14px;font-weight:800}
+.g-prog.done{color:var(--success)}
+.g-prog.pend{color:var(--accent)}
+.g-items{background:var(--card)}
+.g-items.col{display:none}
+
+/* ITEM DE SKU */
+.item{display:flex;align-items:center;gap:10px;padding:12px 14px;
+  border-bottom:1px solid var(--border)}
+.item:last-child{border-bottom:none}
+.item.done{opacity:.45}
+.item.recien{animation:flash_ok .6s ease}
+@keyframes flash_ok{0%,100%{background:transparent}50%{background:rgba(16,185,129,.25)}}
+
+.chk{font-size:22px;flex-shrink:0;width:28px;text-align:center}
+.chk.ok{color:var(--success)}
+.chk.pend{color:var(--lo)}
+.ibody{flex:1;min-width:0}
+.iname{font-size:14px;font-weight:600;color:#0F172A;white-space:normal;line-height:1.3;margin-top:3px}
+.irow{display:flex;align-items:center;gap:10px;margin-top:3px}
+.isku{font-family:monospace;font-size:12px;color:var(--mid)}
+.icnt{font-size:14px;font-weight:800}
+.icnt.ok{color:var(--success)}
+.icnt.pend{color:var(--accent)}
+.iest{font-size:11px;color:var(--accent2);margin-top:2px}
+
+/* FLASH OVERLAY */
+#flash{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .12s;z-index:200}
+#flash.ok{background:rgba(16,185,129,.25)}
+#flash.err{background:rgba(239,68,68,.25)}
+
+/* CAMARA SCANNER */
+#cam-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:300;
+  display:none;flex-direction:column;align-items:center;justify-content:center}
+#cam-overlay.open{display:flex}
+#cam-wrap{position:relative;width:min(92vw,400px);border-radius:16px;overflow:hidden;
+  background:#000;border:2px solid var(--accent)}
+#cam-video{width:100%;display:block;max-height:65vh;object-fit:cover}
+#cam-guide{position:absolute;inset:0;pointer-events:none;display:flex;
+  align-items:center;justify-content:center}
+#cam-guide svg{width:72%;max-width:260px;opacity:.75}
+#cam-hint{margin-top:14px;font-size:13px;color:rgba(255,255,255,.7);text-align:center}
+#cam-result{margin-top:10px;font-size:15px;font-weight:700;color:var(--success);
+  min-height:22px;text-align:center}
+#btn-close-cam{margin-top:16px;padding:10px 32px;border-radius:30px;border:none;
+  background:var(--danger);color:#fff;font-size:15px;font-weight:700;cursor:pointer}
+#btn-cam{position:fixed;bottom:88px;right:16px;background:#7C3AED;color:#fff;border:none;
+  border-radius:50%;width:52px;height:52px;font-size:22px;cursor:pointer;
+  box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
+  justify-content:center;z-index:50;transition:transform .15s}
+#btn-cam:active{transform:scale(.9)}
+#cam-torch{margin-top:10px;padding:8px 20px;border-radius:20px;border:1px solid rgba(255,255,255,.3);
+  background:transparent;color:#fff;font-size:13px;cursor:pointer;display:none}
+
+/* FAB */
+.fab{position:fixed;bottom:20px;right:16px;background:var(--accent);color:#fff;border:none;
+  border-radius:50%;width:56px;height:56px;font-size:24px;cursor:pointer;
+  box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
+  justify-content:center;z-index:50;transition:transform .15s}
+.fab:active{transform:scale(.9)}
+.spin{animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* TOAST */
+#toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(60px);
+  background:var(--panel);border:1px solid var(--border);color:var(--hi);
+  padding:12px 24px;border-radius:30px;font-size:14px;font-weight:700;z-index:999;
+  transition:transform .25s,opacity .25s;opacity:0;white-space:nowrap;
+  box-shadow:0 4px 20px rgba(0,0,0,.4)}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+#toast.ok{border-color:var(--success);color:var(--success)}
+#toast.err{border-color:var(--danger);color:var(--danger)}
+
+/* EMPTY */
+.empty{text-align:center;padding:60px 20px;color:var(--lo)}
+.empty-i{font-size:52px;margin-bottom:12px}
+.empty-t{font-size:15px;line-height:1.5}
+</style>
+</head>
+<body>
+<div id="flash"></div>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="t-left">
+    <span class="t-icon">⬡</span>
+    <div>
+      <div class="t-title">PICKING · FASE 1</div>
+      <div class="t-sub" id="t-sub">Colecta en depósito</div>
+    </div>
+  </div>
+  <div id="badge" class="badge">— / —</div>
+</div>
+
+<!-- BANNER COMPLETADO -->
+<div id="ban">🎉 ¡COLECTA COMPLETA! Avisá al supervisor.</div>
+
+<!-- ESCANEO -->
+<div class="scan-box">
+  <div style="display:flex;gap:8px;margin-bottom:8px">
+    <input id="sku" type="text"
+           inputmode="none"
+           autocomplete="off" autocorrect="off" autocapitalize="characters"
+           spellcheck="false" enterkeyhint="send"
+           placeholder="Apuntá el escáner aquí"
+           style="flex:1">
+    <button id="btn-confirmar"
+            style="background:var(--success);color:#fff;border:none;border-radius:10px;
+            padding:0 18px;font-size:20px;font-weight:800;cursor:pointer;flex-shrink:0"
+            onclick="confirmarManual()">✓</button>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <div id="fb" class="neu" style="flex:1">🔫 Listo para escanear</div>
+    <button id="btn-teclado"
+            onclick="toggleTeclado()"
+            style="background:var(--panel);border:1px solid var(--border);color:var(--mid);
+            border-radius:8px;padding:5px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
+            title="Abrir teclado manual">⌨</button>
+  </div>
+</div>
+
+<!-- MODAL CAMARA -->
+<div id="cam-overlay">
+  <div id="cam-wrap">
+    <video id="cam-video" autoplay playsinline muted></video>
+    <div id="cam-guide">
+      <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1" y="1" width="198" height="198" rx="8" stroke="white" stroke-width="1.5" stroke-dasharray="6 4"/>
+        <path d="M1 40 L1 1 L40 1" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+        <path d="M160 1 L199 1 L199 40" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+        <path d="M1 160 L1 199 L40 199" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+        <path d="M160 199 L199 199 L199 160" stroke="#3B82F6" stroke-width="4" stroke-linecap="round"/>
+        <line x1="1" y1="100" x2="199" y2="100" stroke="#3B82F6" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.6"/>
+      </svg>
+    </div>
+  </div>
+  <div id="cam-hint">Apuntá al código de barras</div>
+  <div id="cam-result"></div>
+  <button id="cam-torch" onclick="toggleTorch()">🔦 Linterna</button>
+  <button id="btn-close-cam" onclick="cerrarCamara()">✕ Cerrar</button>
+</div>
+
+<!-- Botón cámara flotante -->
+<button id="btn-cam" onclick="abrirCamara()" title="Escanear con cámara">📷</button>
+
+<!-- LISTA -->
+<div class="content" id="content">
+  <div class="empty">
+    <div class="empty-i">📦</div>
+    <div class="empty-t">Cargando…</div>
+  </div>
+</div>
+
+<button class="fab" id="fab" title="Actualizar">🔄</button>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let E = null, last = null;
+
+// ── CARGA ──────────────────────────────────────────────────────────────────
+async function load() {
+  try {
+    const r = await fetch('/api/estado');
+    if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
+    E = await r.json();
+    console.log('[MOVIL] cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
+    render();
+  } catch(e) {
+    console.error('[MOVIL] load error:', e);
+    fb('err', '❌ Sin conexión al servidor');
+  }
+}
+
+async function loadQ() {
+  try {
+    const r = await fetch('/api/estado');
+    if (!r.ok) return;
+    E = await r.json();
+    render(true);
+  } catch(e) {}
+}
+
+// ── RENDER ─────────────────────────────────────────────────────────────────
+function render(quiet = false) {
+  try {
+    if (!E) return;
+    const gs  = E.grupos  || [];
+    const col = E.colecta || {};
+    const cargado = E.cargado === true || E.cargado === 'true' || E.cargado === 1;
+
+    const content = document.getElementById('content');
+    const badge   = document.getElementById('badge');
+    const tsub    = document.getElementById('t-sub');
+    const ban     = document.getElementById('ban');
+
+    if (!cargado || !gs.length) {
+      if (content) content.innerHTML = `<div class="empty">
+        <div class="empty-i">📋</div>
+        <div class="empty-t">Esperando lote del supervisor…<br>
+        <small style="color:var(--lo)">Cuando el supervisor genere el lote<br>aparecerá aquí automáticamente.</small>
+        </div></div>`;
+      if (badge) { badge.textContent = '— / —'; badge.className = 'badge'; }
+      if (tsub)  tsub.textContent = 'Esperando lote…';
+      return;
+    }
+
+    // Totales
+    let tot = 0, done = 0, uds_done = 0, uds_tot = 0;
+    gs.forEach(g => (g.items||[]).forEach(it => {
+      const c = col[it.sku] || 0;
+      tot++;
+      uds_tot  += it.req || 0;
+      uds_done += Math.min(c, it.req || 0);
+      if (c >= it.req) done++;
+    }));
+
+    if (badge) {
+      badge.textContent = `${done} / ${tot}`;
+      badge.className   = done === tot ? 'badge done' : (done > 0 ? 'badge warn' : 'badge');
+    }
+    if (tsub) tsub.textContent = `${uds_done} / ${uds_tot} unidades`;
+    if (ban)  ban.className    = E.colecta_completa ? 'show' : '';
+
+    // Recordar grupos colapsados
+    const colaps = new Set();
+    document.querySelectorAll('.grupo').forEach(el => {
+      if (el.querySelector('.g-items.col')) colaps.add(el.dataset.p);
+    });
+
+    if (content) content.innerHTML = gs.map(g => {
+      const p     = g.pasillo || 'Sin pasillo';
+      const its   = g.items || [];
+      const d     = its.filter(it => (col[it.sku] || 0) >= it.req).length;
+      const gDone = d === its.length;
+      const cl    = colaps.has(p) ? 'col' : '';
+      return `<div class="grupo" data-p="${p}">
+        <div class="g-hdr" onclick="tog(this)">
+          <div class="g-left">
+            <span style="font-size:18px">📦</span>
+            <div>
+              <div class="g-name">${p}</div>
+              <div class="g-stats">${its.length} SKU${its.length>1?'s':''} · ${its.reduce((s,i)=>s+(i.req||0),0)} ud.</div>
+            </div>
+          </div>
+          <div class="g-prog ${gDone?'done':'pend'}">${d}/${its.length}</div>
+        </div>
+        <div class="g-items ${cl}">
+          ${its.map(it => {
+            const c  = col[it.sku] || 0;
+            const ok = c >= it.req;
+            return `<div class="item ${ok?'done':''}" id="item-${it.sku}">
+              <div class="chk ${ok?'ok':'pend'}">${ok ? '✔' : '○'}</div>
+              <div class="ibody">
+                <span class="isku-badge">${it.sku}</span>
+                <div class="iname">${it.nombre || '—'}</div>
+                <div class="irow">
+                  <span class="icnt ${ok?'ok':'pend'}">${c} / ${it.req}</span>
+                  ${it.estanteria ? `<span class="iest">🗂 ${it.estanteria}</span>` : ''}
+                </div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }).join('');
+  } catch(err) {
+    console.error('[MOVIL] render error:', err);
+  }
+}
+
+function tog(h) { h.nextElementSibling.classList.toggle('col'); }
+
+// ── ESCANEO ────────────────────────────────────────────────────────────────
+async function scan(raw) {
+  const sku = raw.trim().toUpperCase();
+  if (!sku || sku.length < 2) return;
+
+  // Anti-doble lectura 200ms
+  if (last === sku) return;
+  last = sku;
+  setTimeout(() => last = null, 200);
+
+  try {
+    const r = await fetch('/api/escanear', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ sku })
+    });
+    const d = await r.json();
+
+    if (!d.ok) {
+      flash('err'); vib([200, 80, 200]);
+      fb('err', `❌ ${d.msg}`);
+    } else if (d.tipo === 'ya_completo') {
+      vib([80]);
+      fb('warn', `⚠ ${d.nombre || sku} — ya estaba completo`);
+    } else {
+      flash('ok'); vib([60]);
+      const txt = d.tipo === 'completo'
+        ? `✔  ${d.nombre || sku}  —  ¡Completo! (${d.req}/${d.req})`
+        : `${d.nombre || sku}  ${d.collected}/${d.req}`;
+      fb('ok', txt);
+
+      if (!E.colecta) E.colecta = {};
+      E.colecta[sku] = d.collected;
+
+      if (d.todo_completo) {
+        E.colecta_completa = true;
+        toast('🎉 ¡Colecta completa!', 'ok');
+      }
+
+      render(true);
+
+      // Resaltar el item escaneado y hacer scroll
+      const el = document.getElementById(`item-${sku}`);
+      if (el) {
+        el.classList.add('recien');
+        setTimeout(() => el.classList.remove('recien'), 700);
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  } catch(e) {
+    fb('err', '❌ Error de conexión');
+  }
+}
+
+// ── HELPERS ────────────────────────────────────────────────────────────────
+function fb(t, m) {
+  const el = $('fb');
+  el.className = t;
+  el.textContent = m;
+}
+
+function toast(m, t = '') {
+  const el = $('toast');
+  el.textContent = m;
+  el.className   = 'show ' + t;
+  setTimeout(() => el.className = '', 3000);
+}
+
+function flash(t) {
+  const el = $('flash');
+  el.className   = t;
+  el.style.opacity = '1';
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => el.className = '', 300);
+  }, 180);
+}
+
+function vib(p) { if (navigator.vibrate) navigator.vibrate(p); }
+
+// ── INIT ───────────────────────────────────────────────────────────────────
+let _tecladoVisible = false;
+let _camaraActiva   = false;
+let _zxingReader    = null;
+let _torchTrack     = null;
+let _torchOn        = false;
+
+// ── CÁMARA ESCÁNER ─────────────────────────────────────────────────────────
+
+async function abrirCamara() {
+  const overlay = document.getElementById('cam-overlay');
+  overlay.classList.add('open');
+  _camaraActiva = true;
+
+  // Cargar ZXing si no está cargado
+  if (!window.ZXing) {
+    document.getElementById('cam-hint').textContent = 'Cargando escáner…';
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js';
+      s.onload = res;
+      s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  try {
+    const video  = document.getElementById('cam-video');
+    const hint   = document.getElementById('cam-hint');
+    const result = document.getElementById('cam-result');
+    const torch  = document.getElementById('cam-torch');
+
+    result.textContent = '';
+    hint.textContent   = 'Iniciando cámara…';
+
+    // Pedir cámara trasera
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: {ideal:1280}, height: {ideal:720} }
+    });
+    video.srcObject = stream;
+
+    // Detectar si la cámara soporta linterna
+    const [track] = stream.getVideoTracks();
+    _torchTrack = track;
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.torch) {
+      torch.style.display = 'inline-block';
+    }
+
+    hint.textContent = 'Apuntá el código de barras al recuadro azul';
+
+    // Iniciar ZXing
+    _zxingReader = new ZXing.BrowserMultiFormatReader();
+    _zxingReader.decodeFromVideoElement(video, (res, err) => {
+      if (!_camaraActiva) return;
+      if (res) {
+        const codigo = res.getText();
+        result.textContent = '✅ ' + codigo;
+        // Vibrar si disponible
+        if (navigator.vibrate) navigator.vibrate([60, 30, 60]);
+        // Pequeño delay para que el usuario vea el resultado
+        setTimeout(() => {
+          cerrarCamara();
+          // Procesar el código escaneado
+          scan(codigo);
+        }, 600);
+      }
+    });
+
+  } catch (e) {
+    document.getElementById('cam-hint').textContent =
+      e.name === 'NotAllowedError'
+        ? '❌ Permiso de cámara denegado. Habilitalo en la configuración del navegador.'
+        : '❌ No se pudo acceder a la cámara: ' + e.message;
+  }
+}
+
+function cerrarCamara() {
+  _camaraActiva = false;
+  const video = document.getElementById('cam-video');
+
+  // Detener ZXing
+  if (_zxingReader) {
+    try { _zxingReader.reset(); } catch(e) {}
+    _zxingReader = null;
+  }
+
+  // Apagar linterna si estaba encendida
+  if (_torchTrack && _torchOn) {
+    try { _torchTrack.applyConstraints({advanced:[{torch:false}]}); } catch(e) {}
+    _torchOn = false;
+  }
+
+  // Detener stream de video
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+  }
+
+  document.getElementById('cam-overlay').classList.remove('open');
+  document.getElementById('cam-result').textContent = '';
+  document.getElementById('cam-torch').style.display = 'none';
+
+  // Restaurar foco al input
+  const inp = $('sku');
+  if (inp) setTimeout(() => inp.focus(), 100);
+}
+
+function toggleTorch() {
+  if (!_torchTrack) return;
+  _torchOn = !_torchOn;
+  try {
+    _torchTrack.applyConstraints({advanced: [{torch: _torchOn}]});
+    document.getElementById('cam-torch').textContent =
+      _torchOn ? '🔦 Linterna ON' : '🔦 Linterna';
+  } catch(e) {
+    console.warn('Linterna no disponible:', e);
+  }
+}
+
+function confirmarManual() {
+  const inp = $('sku');
+  const v   = inp.value.trim();
+  if (v) { scan(v); inp.value = ''; inp.focus(); }
+  else   { inp.focus(); }
+}
+
+function toggleTeclado() {
+  const inp = $('sku');
+  const btn = $('btn-teclado');
+  _tecladoVisible = !_tecladoVisible;
+
+  if (_tecladoVisible) {
+    // Modo teclado manual — abre teclado virtual
+    inp.setAttribute('inputmode', 'text');
+    inp.focus(); inp.click();
+    if (btn) { btn.style.background='var(--accent)'; btn.style.color='#fff'; }
+    const f = $('fb');
+    if (f) { f.textContent='⌨ Escribí el SKU y tocá ✓'; f.className='neu'; }
+  } else {
+    // Modo escáner láser — no abre teclado virtual
+    inp.setAttribute('inputmode', 'none');
+    inp.value = '';
+    inp.blur();
+    setTimeout(() => inp.focus(), 80);
+    if (btn) { btn.style.background='var(--panel)'; btn.style.color='var(--mid)'; }
+    const f = $('fb');
+    if (f) { f.textContent='🔫 Listo para escanear'; f.className='neu'; }
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  load();
+  const inp = $('sku');
+
+  // ── ESCÁNER LÁSER HARDWARE ─────────────────────────────────────────────
+  // El escáner manda el código como si fuera un teclado físico + Enter al final.
+  // inputmode="none" = no abre teclado virtual pero SÍ recibe input del escáner.
+
+  let _scanTimer = null;
+
+  // Enter → procesar INMEDIATAMENTE sin esperar nada
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.keyCode === 13) {
+      const v = inp.value.trim();
+      if (v) {
+        e.preventDefault();  // evitar submit solo si hay valor
+        clearTimeout(_scanTimer);
+        scan(v);
+        inp.value = '';
+        inp.focus();
+      }
+    }
+  });
+
+  // Fallback: escáneres que NO mandan Enter → procesar al dejar de escribir (50ms)
+  // Los escáneres escriben muy rápido (<30ms total) — 50ms es más que suficiente
+  inp.addEventListener('input', () => {
+    clearTimeout(_scanTimer);
+    const v = inp.value.trim();
+    if (!v) return;
+    if (_tecladoVisible) return;  // modo teclado manual: esperar Enter o botón ✓
+    _scanTimer = setTimeout(() => {
+      const v2 = inp.value.trim();
+      if (v2.length >= 2) {
+        scan(v2);
+        inp.value = '';
+        inp.focus();
+      }
+    }, 50);
+  });
+
+  // Edge case Android: si el input pierde foco con valor → procesar igual
+  inp.addEventListener('blur', () => {
+    if (!_tecladoVisible && !_camaraActiva) {
+      const v = inp.value.trim();
+      if (v.length >= 2) {
+        clearTimeout(_scanTimer);
+        scan(v);
+        inp.value = '';
+        setTimeout(() => inp.focus(), 80);
+      }
+    }
+  });
+
+  // Clic en contenido → foco (excepto botones interactivos)
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#btn-teclado') &&
+        !e.target.closest('#btn-confirmar') &&
+        !e.target.closest('#btn-cam') &&
+        !e.target.closest('#cam-overlay') &&
+        !e.target.closest('.g-hdr')) {
+      if (!_tecladoVisible && !_camaraActiva) inp.focus();
+    }
+  });
+
+  // Foco inicial
+  inp.focus();
+
+  // Botón cámara: solo en dispositivos táctiles
+  const btnCam = document.getElementById('btn-cam');
+  if (btnCam) {
+    const esMovil = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+    btnCam.style.display = esMovil ? 'flex' : 'none';
+  }
+
+  // Botón refresh
+  $('fab').addEventListener('click', () => {
+    $('fab').classList.add('spin');
+    load().finally(() => setTimeout(() => $('fab').classList.remove('spin'), 500));
+  });
+
+  // Auto-refresh del estado cada 5 segundos (silencioso)
+  setInterval(loadQ, 5000);
+
+  // Mantener foco en el input cada 3s — asegura que el escáner siempre funcione
+  // Solo si el teclado manual y la cámara no están activos
+  setInterval(() => {
+    if (!_tecladoVisible && !_camaraActiva && document.activeElement !== inp) {
+      inp.focus();
+    }
+  }, 3000);
+});
+</script>
+</body>
+</html>

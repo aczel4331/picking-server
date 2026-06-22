@@ -1,0 +1,1391 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logibot · Logibot · Sistema de Picking Pro</title>
+<style>
+:root{--bg:#111318;--panel:#1C2030;--card:#161B27;--border:#2A3352;
+  --accent:#2563EB;--accent2:#1D4ED8;--success:#0EA5E9;--warning:#F59E0B;
+  --danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F;
+  --ml:#FFE600}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;height:100vh;display:flex;flex-direction:column}
+/* TOPBAR */
+.topbar{background:var(--panel);border-bottom:1px solid var(--border);
+  padding:0 20px;height:56px;display:flex;align-items:center;gap:12px;flex-shrink:0}
+.logo{font-size:22px}
+.topbar-title{font-size:15px;font-weight:800;color:var(--hi)}
+.topbar-sub{font-size:11px;color:var(--mid)}
+.spacer{flex:1}
+.user-chip{background:var(--card);border:1px solid var(--border);border-radius:20px;
+  padding:4px 12px;font-size:12px;color:var(--mid);display:flex;align-items:center;gap:6px}
+.ml-dot{width:8px;height:8px;border-radius:50%;background:var(--ml)}
+.btn{border:none;border-radius:8px;padding:7px 16px;font-size:13px;font-weight:700;
+  cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:#2563EB}
+.btn-success{background:var(--success);color:#fff}
+.btn-success:hover{background:#059669}
+.btn-warn{background:var(--warning);color:#000}
+.btn-danger{background:var(--danger);color:#fff}
+.btn-ghost{background:var(--card);color:var(--mid);border:1px solid var(--border)}
+.btn-ghost:hover{background:var(--border)}
+.btn-ghost.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-ml{background:var(--ml);color:#000}
+.btn-ml:hover{background:#EAD700}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+/* TABS */
+.tabs{background:var(--panel);border-bottom:1px solid var(--border);
+  display:flex;padding:0 20px;flex-shrink:0}
+.tab{padding:12px 20px;font-size:13px;font-weight:700;color:var(--mid);
+  cursor:pointer;border-bottom:3px solid transparent;transition:.15s}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab:hover:not(.active){color:var(--hi)}
+/* CONTENT */
+.content{flex:1;overflow:hidden;display:flex;flex-direction:column}
+.tab-panel{display:none;flex:1;overflow:hidden}
+.tab-panel.active{display:flex;flex-direction:column}
+/* TOOLBAR */
+.toolbar{padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex-shrink:0}
+.search-input{background:var(--card);border:1px solid var(--border);color:var(--hi);
+  border-radius:8px;padding:7px 12px;font-size:13px;outline:none;width:260px}
+.search-input:focus{border-color:var(--accent)}
+.badge-count{background:var(--accent);color:#fff;font-size:11px;font-weight:700;
+  padding:2px 8px;border-radius:12px}
+/* TABLA PEDIDOS */
+.tabla-wrap{flex:1;overflow-y:auto;padding:16px 20px}
+.tabla{width:100%;border-collapse:collapse}
+.tabla th{text-align:left;font-size:11px;font-weight:700;color:var(--lo);
+  letter-spacing:.06em;padding:8px 12px;background:var(--bar);
+  border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
+.tabla td{padding:10px 12px;border-bottom:1px solid rgba(51,65,85,.5);
+  font-size:13px;vertical-align:middle}
+.tabla tr:hover td{background:rgba(59,130,246,.05)}
+.tabla tr.impreso td{opacity:.45}
+.sku-chip{background:var(--card);border:1px solid var(--border);border-radius:4px;
+  padding:1px 6px;font-family:monospace;font-size:11px;color:var(--accent);
+  display:inline-block;margin:1px}
+.estado-chip{border-radius:20px;padding:2px 10px;font-size:11px;font-weight:700;display:inline-block}
+.estado-paid{background:rgba(16,185,129,.15);color:var(--success)}
+.estado-ready{background:rgba(59,130,246,.15);color:var(--accent)}
+.estado-pending{background:rgba(245,158,11,.15);color:var(--warning)}
+/* PICKING PANEL */
+.picking-wrap{display:flex;gap:0;flex:1;overflow:hidden}
+.picking-left{width:340px;flex-shrink:0;overflow-y:auto;
+  border-right:1px solid var(--border);background:var(--panel)}
+.picking-center{flex:1;overflow-y:auto;padding:20px}
+.picking-right{width:320px;flex-shrink:0;overflow-y:auto;
+  border-left:1px solid var(--border);padding:16px;background:var(--panel)}
+/* SKU GROUP */
+.grupo-hdr{background:var(--bar);padding:8px 14px;
+  display:flex;justify-content:space-between;align-items:center;
+  cursor:pointer;border-bottom:1px solid var(--border)}
+.grupo-nombre{font-size:12px;font-weight:800;color:var(--accent);text-transform:uppercase}
+.grupo-prog{font-size:12px;font-weight:700}
+.grupo-prog.done{color:var(--success)}
+.sku-row{display:flex;align-items:center;gap:8px;padding:9px 14px;
+  border-bottom:1px solid rgba(51,65,85,.4)}
+.sku-row.done{opacity:.5}
+.sku-chk{font-size:18px;width:24px;text-align:center;flex-shrink:0}
+.sku-chk.ok{color:var(--success)}
+.sku-body{flex:1;min-width:0}
+.sku-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sku-meta{display:flex;align-items:center;gap:8px;margin-top:2px}
+.sku-code{font-family:monospace;font-size:11px;color:var(--mid)}
+.sku-cnt{font-size:12px;font-weight:700}
+.sku-cnt.ok{color:var(--success)}
+.sku-cnt.pend{color:var(--accent)}
+.sku-loc{font-size:10px;color:var(--accent2);margin-top:1px}
+/* SCAN BOX */
+.scan-section{padding:14px;background:var(--card);border-radius:10px;margin-bottom:14px;
+  border:1px solid var(--border)}
+.scan-lbl{font-size:10px;font-weight:700;color:var(--lo);letter-spacing:.08em;margin-bottom:8px}
+#scan-input{width:100%;background:var(--bg);border:2px solid var(--accent);color:var(--hi);
+  font-size:18px;font-family:monospace;font-weight:700;padding:10px 14px;
+  border-radius:8px;outline:none;text-align:center;text-transform:uppercase}
+#scan-fb{margin-top:8px;min-height:34px;border-radius:8px;padding:7px 12px;
+  font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+#scan-fb.ok{background:rgba(16,185,129,.15);color:var(--success)}
+#scan-fb.warn{background:rgba(245,158,11,.15);color:var(--warning)}
+#scan-fb.err{background:rgba(239,68,68,.15);color:var(--danger)}
+#scan-fb.neu{color:var(--mid)}
+/* FASE BADGE */
+.fase-badge{border-radius:20px;padding:4px 14px;font-size:12px;font-weight:800;display:inline-block}
+.fase-1{background:rgba(59,130,246,.2);color:var(--accent)}
+.fase-2{background:rgba(16,185,129,.2);color:var(--success)}
+/* STATS */
+.stats-row{display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:8px;
+  padding:10px 16px;min-width:110px}
+.stat-n{font-size:22px;font-weight:800;color:var(--accent)}
+.stat-l{font-size:10px;color:var(--lo);margin-top:2px}
+/* MODAL */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;
+  display:flex;align-items:center;justify-content:center;display:none}
+.modal-bg.open{display:flex}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:12px;
+  padding:24px;width:540px;max-width:95vw;max-height:90vh;overflow-y:auto}
+.modal h3{font-size:16px;margin-bottom:14px}
+/* SPINNER */
+.spin{animation:spin .7s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* TOAST */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);
+  background:var(--panel);border:1px solid var(--border);color:var(--hi);
+  padding:10px 22px;border-radius:30px;font-size:14px;font-weight:600;z-index:9999;
+  transition:transform .3s,opacity .3s;opacity:0;white-space:nowrap}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+#toast.ok{border-color:var(--success);color:var(--success)}
+#toast.err{border-color:var(--danger);color:var(--danger)}
+/* EMPTY */
+.empty{text-align:center;padding:60px 20px;color:var(--lo)}
+.empty-i{font-size:48px;margin-bottom:12px}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <span class="logo">⬡</span>
+  <div><div class="topbar-title">Sistema de Picking</div>
+    <div class="topbar-sub">MercadoLibre Uruguay</div></div>
+  <div class="spacer"></div>
+  <div class="user-chip">
+    <div class="ml-dot"></div>
+    <span id="nickname">Cargando…</span>
+  </div>
+  <button class="btn btn-ghost" onclick="location='/auth/logout'">Cerrar sesión</button>
+</div>
+
+<!-- TABS -->
+<div class="tabs">
+  <div class="tab active" onclick="showTab('pedidos')">📋 Pedidos ML</div>
+  <div class="tab" onclick="showTab('picking')">📦 Picking</div>
+  <div class="tab" onclick="showTab('skudb')">🗃 Base de SKUs</div>
+  <div class="tab" onclick="showTab('movil-link')">📱 App Móvil</div>
+</div>
+
+<div class="content">
+
+  <!-- ═══════════════════════════════════════ TAB PEDIDOS ══════════════════ -->
+  <div class="tab-panel active" id="tab-pedidos">
+
+    <!-- Filtros de fecha -->
+    <div class="toolbar" style="background:var(--panel);border-bottom:1px solid var(--border);
+         padding:8px 14px;gap:10px;flex-wrap:wrap">
+      <span style="font-size:11px;font-weight:700;color:var(--lo);letter-spacing:.06em">
+        PERIODO
+      </span>
+      <!-- Botones rápidos -->
+      <div style="display:flex;gap:4px">
+        <button class="btn btn-ghost fecha-rapida active" data-dias="0"
+                onclick="setFechaRapida(0,this)">Hoy</button>
+        <button class="btn btn-ghost fecha-rapida" data-dias="1"
+                onclick="setFechaRapida(1,this)">Ayer</button>
+        <button class="btn btn-ghost fecha-rapida" data-dias="7"
+                onclick="setFechaRapida(7,this)">7 días</button>
+        <button class="btn btn-ghost fecha-rapida" data-dias="14"
+                onclick="setFechaRapida(14,this)">14 días</button>
+        <button class="btn btn-ghost fecha-rapida" data-dias="30"
+                onclick="setFechaRapida(30,this)">30 días</button>      </div>
+      <!-- Rango personalizado -->
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--lo)">Desde</span>
+        <input type="date" id="fecha-desde"
+               style="background:var(--card);border:1px solid var(--border);
+               color:var(--hi);padding:4px 8px;border-radius:6px;font-size:12px">
+        <span style="font-size:11px;color:var(--lo)">Hasta</span>
+        <input type="date" id="fecha-hasta"
+               style="background:var(--card);border:1px solid var(--border);
+               color:var(--hi);padding:4px 8px;border-radius:6px;font-size:12px">
+        <button class="btn btn-ml" onclick="buscarConFecha()"
+                style="padding:4px 12px;font-size:12px">
+          Buscar
+        </button>
+      </div>
+      <div class="spacer"></div>
+      <span id="lbl-periodo" style="font-size:11px;color:var(--accent)"></span>
+    </div>
+
+    <div class="toolbar">
+      <input class="search-input" type="text" id="search-pedidos"
+             placeholder="🔍 Buscar por comprador, SKU, producto…"
+             oninput="filtrarPedidos()">
+      <span class="badge-count" id="badge-pedidos">0</span>
+      <div class="spacer"></div>
+      <!-- Resumen impresos vs pendientes -->
+      <span id="resumen-pedidos" style="font-size:12px;margin-right:12px"></span>
+      <button class="btn btn-ghost" onclick="refreshPedidos()" id="btn-refresh">
+        🔄 Actualizar
+      </button>
+      <button class="btn btn-success" onclick="generarLotePicking()" id="btn-lote">
+        ▶ Generar Lote de Picking
+      </button>
+    </div>
+    <!-- Sub-tabs tipo logistica + filtro impresos -->
+    <div style="display:flex;align-items:center;gap:4px;padding:6px 14px;
+                background:var(--bg);border-bottom:1px solid var(--border);flex-wrap:wrap">
+      <button class="btn btn-ghost tipo-tab active-tipo"
+              onclick="setTipoFiltro('todos',this)"
+              style="background:var(--accent);color:#fff;padding:4px 14px;font-size:12px">
+        Todos
+      </button>
+      <button class="btn btn-ghost tipo-tab" onclick="setTipoFiltro('flex',this)"
+              style="padding:4px 14px;font-size:12px">⚡ Flex</button>
+      <button class="btn btn-ghost tipo-tab" onclick="setTipoFiltro('me2',this)"
+              style="padding:4px 14px;font-size:12px">🚚 Mercado Envíos</button>
+      <button class="btn btn-ghost tipo-tab" onclick="setTipoFiltro('me1',this)"
+              style="padding:4px 14px;font-size:12px">📦 ME1</button>
+      <div style="flex:1;min-width:12px"></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;
+                    color:var(--mid);cursor:pointer;white-space:nowrap">
+        <input type="checkbox" id="chk-solo-pendientes"
+               onchange="filtrarPedidos()"
+               style="accent-color:var(--warning)">
+        ⏳ Solo pendientes
+      </label>
+    </div>
+    <div class="tabla-wrap">
+      <table class="tabla" id="tabla-pedidos">
+        <thead>
+          <tr>
+            <th>Tipo / Estado</th>
+            <th>Pedido</th>
+            <th>Comprador</th>
+            <th style="width:38%">SKU · Nombre del Producto</th>
+            <th>Estado Envío</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-pedidos">
+          <tr><td colspan="6" class="empty">
+            <div class="empty-i">⏳</div>
+            <div>Cargando pedidos…</div>
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════ TAB PICKING ══════════════════ -->
+  <div class="tab-panel" id="tab-picking">
+    <div class="toolbar">
+      <span id="fase-badge" class="fase-badge fase-1">● FASE 1: COLECTA</span>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" id="btn-fase2" onclick="pasarFase2()" disabled>
+        ▶ Pasar a Fase 2
+      </button>
+    </div>
+    <div class="picking-wrap">
+
+      <!-- Lista de SKUs por pasillo -->
+      <div class="picking-left" id="picking-lista">
+        <div class="empty" style="padding:40px 20px">
+          <div class="empty-i">📋</div>
+          <div style="font-size:13px">Generá un lote desde la pestaña Pedidos ML</div>
+        </div>
+      </div>
+
+      <!-- Centro: escaneo -->
+      <div class="picking-center">
+        <div class="stats-row" id="stats-picking"></div>
+
+        <div class="scan-section">
+          <div class="scan-lbl">ESCANEAR CÓDIGO</div>
+          <input id="scan-input" type="text" autocomplete="off"
+                 autocorrect="off" autocapitalize="characters" spellcheck="false"
+                 placeholder="SKU…" onkeydown="onScanKey(event)">
+          <div id="scan-fb" class="neu">Listo para escanear</div>
+        </div>
+
+        <div id="picking-cajas"></div>
+      </div>
+
+      <!-- Panel derecho: info -->
+      <div class="picking-right">
+        <div style="font-size:12px;font-weight:800;color:var(--lo);letter-spacing:.06em;margin-bottom:12px">
+          RESUMEN DE PEDIDOS
+        </div>
+        <div id="resumen-pedidos-picking"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════════ TAB SKU DB ════════════════════ -->
+  <div class="tab-panel" id="tab-skudb">
+    <div class="toolbar">
+      <input class="search-input" type="text" id="search-skus"
+             placeholder="🔍 Buscar por SKU, nombre o pasillo…"
+             oninput="filtrarSkus()">
+      <span class="badge-count" id="badge-skus">0</span>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" onclick="exportarSkus()">⬇ Exportar JSON</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('import-file').click()">
+        ⬆ Importar JSON
+      </button>
+      <input type="file" id="import-file" accept=".json" style="display:none"
+             onchange="importarSkus(event)">
+      <button class="btn btn-success" onclick="abrirFormSku(null)">➕ Nuevo SKU</button>
+    </div>
+
+    <!-- Tabla -->
+    <div class="tabla-wrap">
+      <table class="tabla" id="tabla-skus">
+        <thead>
+          <tr>
+            <th style="width:130px">SKU</th>
+            <th>Nombre del Producto</th>
+            <th style="width:180px">Pasillo</th>
+            <th style="width:150px">Estantería</th>
+            <th style="width:90px">Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-skus">
+          <tr><td colspan="5" class="empty">
+            <div class="empty-i">🗃</div>
+            <div>Cargando base de SKUs…</div>
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════════ TAB MÓVIL ══════════════════════ -->
+  <div class="tab-panel" id="tab-movil-link">
+    <div style="padding:40px;text-align:center">
+      <div style="font-size:48px;margin-bottom:16px">📱</div>
+      <div style="font-size:18px;font-weight:800;margin-bottom:8px">App Móvil para Operarios</div>
+      <div style="color:var(--mid);margin-bottom:24px">Compartí este enlace con los operarios del depósito</div>
+      <div id="movil-url" style="background:var(--card);border:1px solid var(--border);
+        border-radius:10px;padding:16px 24px;font-size:16px;font-family:monospace;
+        color:var(--accent);margin-bottom:20px;display:inline-block"></div>
+      <br>
+      <button class="btn btn-primary" onclick="copiarUrl()">📋 Copiar enlace</button>
+      <a id="abrir-movil" href="/movil" target="_blank">
+        <button class="btn btn-ghost" style="margin-left:8px">🔗 Abrir en nueva pestaña</button>
+      </a>
+    </div>
+  </div>
+
+</div><!-- /content -->
+
+<!-- MODAL ETIQUETA -->
+<div class="modal-bg" id="modal-etiqueta">
+  <div class="modal">
+    <h3>🏷️ Etiqueta de envío</h3>
+    <div id="modal-etiqueta-body"></div>
+    <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="cerrarModal('modal-etiqueta')">Cerrar</button>
+      <button class="btn btn-ml" id="btn-abrir-etiqueta" onclick="abrirEtiqueta()">
+        🖨️ Abrir / Imprimir PDF
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL FORM SKU -->
+<div class="modal-bg" id="modal-sku">
+  <div class="modal" style="width:480px">
+    <h3 id="modal-sku-title">➕ Nuevo SKU</h3>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--lo);letter-spacing:.06em;display:block;margin-bottom:4px">SKU *</label>
+        <input id="form-sku" class="search-input" style="width:100%" type="text"
+               placeholder="Ej: 7478" autocapitalize="characters">
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--lo);letter-spacing:.06em;display:block;margin-bottom:4px">NOMBRE DEL PRODUCTO *</label>
+        <input id="form-nombre" class="search-input" style="width:100%" type="text"
+               placeholder="Ej: Caja Organizadora De Cosméticos">
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--lo);letter-spacing:.06em;display:block;margin-bottom:4px">PASILLO</label>
+        <input id="form-pasillo" class="search-input" style="width:100%" type="text"
+               placeholder="Ej: Pasillo 1 · Belleza-Gym">
+        <div id="pasillo-sugs" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px"></div>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--lo);letter-spacing:.06em;display:block;margin-bottom:4px">ESTANTERÍA / UBICACIÓN</label>
+        <input id="form-estanteria" class="search-input" style="width:100%" type="text"
+               placeholder="Ej: Estantería A4">
+      </div>
+      <div id="form-error" style="color:var(--danger);font-size:13px;display:none"></div>
+    </div>
+    <div style="margin-top:20px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="cerrarModal('modal-sku')">Cancelar</button>
+      <button class="btn btn-success" onclick="guardarSku()">✅ Guardar SKU</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+// ESTADO LOCAL
+// ════════════════════════════════════════════════════════════
+let PEDIDOS     = {};
+let ESTADO_PK   = null;
+let FASE_ACTUAL = 1;
+let COLECTA     = {};
+// Estado del monitor de Fase 2 (impresion automatica de etiquetas)
+let _fase2Activo      = false;
+let _fase2Cola        = [];        // order_ids pendientes de imprimir
+let _fase2Imprimiendo = false;
+let _fase2YaImpresas  = new Set();
+let LOTE_IDS    = [];   // order_ids incluidos en el lote actual
+let etiquetaUrlActual = "";
+
+// ════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  cargarStatus();
+  cargarPedidos();
+  document.getElementById('movil-url').textContent = location.origin + '/movil';
+  setInterval(cargarPedidosQuiet, 120000);  // auto-refresh cada 2 min
+  setInterval(syncEstadoPicking, 2000);     // sync picking cada 2s (tiempo real)
+});
+
+async function cargarStatus() {
+  const r = await fetch('/auth/status');
+  const d = await r.json();
+  document.getElementById('nickname').textContent = d.nickname || 'Usuario ML';
+}
+
+// ════════════════════════════════════════════════════════════
+// TABS
+// ════════════════════════════════════════════════════════════
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector(`.tab[onclick="showTab('${name}')"]`).classList.add('active');
+  document.getElementById(`tab-${name}`).classList.add('active');
+  if (name === 'picking') renderPicking();
+}
+
+// ════════════════════════════════════════════════════════════
+// PEDIDOS
+// ════════════════════════════════════════════════════════════
+async function cargarPedidos() {
+  try {
+    const r = await fetch('/api/pedidos');
+    const d = await r.json();
+    if (d.ok) { PEDIDOS = {}; d.pedidos.forEach(p => PEDIDOS[p.order_id] = p); }
+    renderPedidos();
+  } catch(e) { toast('Error cargando pedidos', 'err'); }
+}
+async function cargarPedidosQuiet() {
+  try {
+    const r = await fetch('/api/pedidos'); const d = await r.json();
+    if (d.ok) { PEDIDOS = {}; d.pedidos.forEach(p => PEDIDOS[p.order_id] = p); renderPedidos(); }
+  } catch(e) {}
+}
+// ── Filtros de fecha ──────────────────────────────────────────────────────
+let FECHA_DESDE = null;
+let FECHA_HASTA = null;
+
+function hoy() {
+  return new Date().toISOString().slice(0,10);
+}
+
+function diasAtras(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0,10);
+}
+
+function setFechaRapida(dias, btn) {
+  // Resaltar botón activo
+  document.querySelectorAll('.fecha-rapida').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  if (dias === 0) {
+    FECHA_DESDE = hoy();
+    FECHA_HASTA = hoy();
+  } else if (dias === 1) {
+    FECHA_DESDE = diasAtras(1);
+    FECHA_HASTA = diasAtras(1);
+  } else {
+    FECHA_DESDE = diasAtras(dias);
+    FECHA_HASTA = hoy();
+  }
+
+  document.getElementById('fecha-desde').value = FECHA_DESDE;
+  document.getElementById('fecha-hasta').value  = FECHA_HASTA;
+  actualizarLblPeriodo();
+  refreshPedidos();
+}
+
+function buscarConFecha() {
+  FECHA_DESDE = document.getElementById('fecha-desde').value || null;
+  FECHA_HASTA = document.getElementById('fecha-hasta').value || null;
+  // Quitar resaltado de botones rápidos
+  document.querySelectorAll('.fecha-rapida').forEach(b => b.classList.remove('active'));
+  actualizarLblPeriodo();
+  refreshPedidos();
+}
+
+function actualizarLblPeriodo() {
+  const lbl = document.getElementById('lbl-periodo');
+  if (!lbl) return;
+  if (FECHA_DESDE === FECHA_HASTA && FECHA_DESDE === hoy()) {
+    lbl.textContent = 'Mostrando: Hoy';
+  } else if (FECHA_DESDE && FECHA_HASTA) {
+    lbl.textContent = `Mostrando: ${FECHA_DESDE} → ${FECHA_HASTA}`;
+  } else {
+    lbl.textContent = '';
+  }
+}
+
+async function refreshPedidos() {
+  const btn = document.getElementById('btn-refresh');
+  btn.innerHTML = '<span class="spin">🔄</span> Actualizando…';
+  btn.disabled  = true;
+
+  // Enviar filtros de fecha al servidor
+  const body = {};
+  if (FECHA_DESDE) body.fecha_desde = FECHA_DESDE;
+  if (FECHA_HASTA) body.fecha_hasta = FECHA_HASTA;
+
+  await fetch('/api/pedidos/refresh', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  await new Promise(r => setTimeout(r, 3000));
+  await cargarPedidos();
+  btn.innerHTML = '🔄 Actualizar';
+  btn.disabled  = false;
+  actualizarLblPeriodo();
+  toast(`Pedidos actualizados${FECHA_DESDE ? ' ('+FECHA_DESDE+')' : ''}`, 'ok');
+}
+
+// Inicializar fechas al cargar: mostrar hoy por defecto
+document.addEventListener('DOMContentLoaded', () => {
+  FECHA_DESDE = diasAtras(7);
+  FECHA_HASTA = hoy();
+  document.getElementById('fecha-desde').value = FECHA_DESDE;
+  document.getElementById('fecha-hasta').value  = FECHA_HASTA;
+  // Marcar "7 días" como activo por defecto
+  const btn7 = document.querySelector('.fecha-rapida[data-dias="7"]');
+  if (btn7) btn7.classList.add('active');
+  document.querySelector('.fecha-rapida[data-dias="0"]').classList.remove('active');
+  actualizarLblPeriodo();
+});
+
+function tipoLogistica(p) {
+  const log  = (p.logistica || '').toLowerCase().trim();
+  const tags = (p.tags || []).map(t => t.toLowerCase()).join(' ');
+
+  if (log === 'self_service')                                        return 'flex';
+  if (['cross_docking','drop_off','xd_drop_off',
+       'fulfillment','turbo','xd_same_day'].includes(log))          return 'me2';
+  if (['default','custom','not_specified'].includes(log))           return 'me1';
+
+  if (tags.includes('self_service') || tags.includes('flex'))      return 'flex';
+
+  const tipo = (p.tipo || '').toLowerCase();
+  if (['flex','me1','me2'].includes(tipo))                          return tipo;
+
+  // Sin info confirmada → desconocido (NO asumir me2)
+  return 'desconocido';
+}
+
+function renderPedidos(filtro='') {
+  const tbody  = document.getElementById('tbody-pedidos');
+  const tipoFiltro = window._tipoFiltroActivo || 'todos';
+  const cuentaFiltro = window._cuentaFiltroActiva || 'todas';
+
+  let peds = Object.values(PEDIDOS);
+
+  // Filtrar por cuenta
+  if (cuentaFiltro !== 'todas')
+    peds = peds.filter(p => p._cuenta === cuentaFiltro);
+
+  // Filtrar por tipo logistica
+  if (tipoFiltro !== 'todos')
+    peds = peds.filter(p => tipoLogistica(p) === tipoFiltro);
+
+  // Filtrar solo pendientes si está marcado
+  const soloPend = document.getElementById('chk-solo-pendientes');
+  if (soloPend && soloPend.checked)
+    peds = peds.filter(p => !p.impreso);
+
+  // Filtrar por texto de búsqueda
+  const q = filtro.toLowerCase();
+  if (q) {
+    peds = peds.filter(p =>
+      p.comprador.toLowerCase().includes(q) ||
+      p.order_id.includes(q) ||
+      p.items.some(it => it.titulo.toLowerCase().includes(q) ||
+                         it.sku.toLowerCase().includes(q)));
+  }
+
+  // Contar impresos vs pendientes
+  const total     = peds.length;
+  const impresos  = peds.filter(p => p.impreso).length;
+  const pendientes= total - impresos;
+
+  document.getElementById('badge-pedidos').textContent = total;
+
+  // Actualizar resumen
+  const resEl = document.getElementById('resumen-pedidos');
+  if (resEl) {
+    resEl.innerHTML =
+      `<span style="color:var(--success)">✅ ${impresos} impresos</span>` +
+      `<span style="margin:0 8px;color:var(--lo)">·</span>` +
+      `<span style="color:var(--warning)">⏳ ${pendientes} pendientes</span>` +
+      `<span style="margin:0 8px;color:var(--lo)">·</span>` +
+      `<span style="color:var(--mid)">${total} total</span>`;
+  }
+
+  if (!peds.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty">
+      <div class="empty-i">📋</div>
+      <div>Sin pedidos${filtro?' que coincidan':' en este filtro'}</div>
+    </div></td></tr>`;
+    return;
+  }
+
+  // Ordenar: pendientes primero, luego impresos
+  peds.sort((a,b) => {
+    if (a.impreso !== b.impreso) return a.impreso ? 1 : -1;
+    return b.order_id.localeCompare(a.order_id);
+  });
+
+  tbody.innerHTML = peds.map(p => {
+    const impreso = p.impreso;
+    const tipo    = tipoLogistica(p);
+
+    // Chip de tipo con color Y sub-tipo segun doc ML
+    const TIPO_CFG = {
+      flex:        {color:'#7C3AED', label:'⚡ FLEX'},
+      me2:         {color:'#2563EB', label:'🚚 ME2'},
+      me1:         {color:'#0891B2', label:'📦 ME1'},
+      desconocido: {color:'#475569', label:'—'},
+    };
+
+    // Sub-tipo especifico dentro de ME2
+    const SUBTIPO = {
+      'self_service':  '⚡ Flex',
+      'cross_docking': '🚚 Colecta',
+      'xd_drop_off':   '📍 Places',
+      'drop_off':      '🏪 Drop Off',
+      'fulfillment':   '🏭 Full',
+      'turbo':         '⚡ Turbo',
+      'default':       '📦 ME1',
+    };
+
+    const tc     = TIPO_CFG[tipo] || TIPO_CFG.desconocido;
+    const logRaw = (p.logistica || '').toLowerCase();
+    const subLabel = SUBTIPO[logRaw] || tc.label;
+    const tipoChip = `<span style="background:${tc.color};color:#fff;padding:2px 8px;
+      border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">${subLabel}</span>`;
+
+    // SKUs
+    const skus = p.items.map(it => {
+      const sku = it.sku ? `<span class="sku-chip">${it.sku}</span>` : '';
+      const nom = it.titulo ? `<span style="color:${impreso?'var(--mid)':'var(--hi)'}">${it.titulo.substring(0,28)}</span>` : '';
+      const qty = `<span style="color:var(--accent);font-size:11px"> ×${it.cantidad}</span>`;
+      return `<div style="margin-bottom:2px">${sku} ${nom}${qty}</div>`;
+    }).join('');
+
+    // Estado envio con color
+    const est = p.estado_envio || '';
+    const estColor = est === 'ready_to_ship' ? 'var(--success)'
+                   : est === 'delivered'     ? 'var(--mid)'
+                   : est                     ? 'var(--warning)' : 'var(--lo)';
+    const estChip = est
+      ? `<span style="color:${estColor};font-size:11px;font-weight:600">${est}</span>`
+      : '<span style="color:var(--lo)">—</span>';
+
+    // Botón etiqueta — diferente según impreso
+    const btnEtiq = impreso
+      ? `<button class="btn" style="font-size:11px;padding:4px 10px;
+           background:var(--card);color:var(--mid);border:1px solid var(--border)"
+           onclick="verEtiqueta('${p.order_id}')">🔁 Reimprimir</button>`
+      : `<button class="btn btn-ml" style="font-size:11px;padding:4px 10px"
+           onclick="verEtiqueta('${p.order_id}')">🏷️ Etiqueta</button>`;
+
+    // Indicador impreso
+    const estadoRow = impreso
+      ? `<span style="color:var(--success);font-size:10px;font-weight:700">✅ IMPRESO</span>`
+      : `<span style="color:var(--warning);font-size:10px;font-weight:700">⏳ PENDIENTE</span>`;
+
+    const rowBg = impreso ? 'opacity:.55;' : '';
+
+    return `<tr style="${rowBg}">
+      <td>${tipoChip}<br><small style="color:var(--lo);font-size:10px">${estadoRow}</small></td>
+      <td><b style="color:${impreso?'var(--mid)':'var(--accent)'}">#${p.order_id}</b><br>
+          <small style="color:var(--lo)">${p.fecha}</small></td>
+      <td style="font-weight:600">${p.comprador}</td>
+      <td>${skus}</td>
+      <td>${estChip}</td>
+      <td style="white-space:nowrap">${btnEtiq}</td>
+    </tr>`;
+  }).join('');
+}
+
+function filtrarPedidos() {
+  renderPedidos(document.getElementById('search-pedidos').value);
+}
+
+function setTipoFiltro(tipo, btn) {
+  window._tipoFiltroActivo = tipo;
+  // Resaltar botón activo
+  document.querySelectorAll('.tipo-tab').forEach(b => {
+    b.style.background = '';
+    b.style.color      = 'var(--mid)';
+  });
+  if (btn) {
+    btn.style.background = 'var(--accent)';
+    btn.style.color      = '#fff';
+  }
+  renderPedidos(document.getElementById('search-pedidos').value);
+}
+
+// ════════════════════════════════════════════════════════════
+// ETIQUETAS
+// ════════════════════════════════════════════════════════════
+async function verEtiqueta(orderId) {
+  const p = PEDIDOS[orderId];
+  document.getElementById('modal-etiqueta-body').innerHTML =
+    `<div style="margin-bottom:12px">
+       <b>#${orderId}</b> — ${p.comprador}<br>
+       <span style="font-size:12px;color:var(--mid)">
+         ${p.items.map(it=>`${it.sku||'?'} · ${it.titulo.substring(0,30)}`).join(' | ')}
+       </span>
+     </div>
+     <div style="display:flex;align-items:center;gap:8px;color:var(--mid)">
+       <span class="spin">⏳</span> Obteniendo etiqueta…
+     </div>`;
+  document.getElementById('modal-etiqueta').classList.add('open');
+  document.getElementById('btn-abrir-etiqueta').style.display = 'none';
+  etiquetaUrlActual = '';
+
+  try {
+    const r = await fetch(`/api/etiqueta/${orderId}`);
+    const ct = r.headers.get('Content-Type') || '';
+
+    if (ct.includes('application/pdf')) {
+      // PDF directo del proxy — mostrar inline
+      const blob = await r.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      etiquetaUrlActual = blobUrl;
+      const p2 = PEDIDOS[orderId];
+      document.getElementById('modal-etiqueta-body').innerHTML =
+        `<div style="margin-bottom:10px">
+           <b>#${orderId}</b> — ${p2.comprador}<br>
+           <span style="font-size:11px;color:var(--mid)">
+             ${p2.items.map(it=>`${it.sku||'?'} · ${it.titulo.substring(0,28)}`).join(' | ')}
+           </span>
+         </div>
+         <div style="background:var(--bar);border-radius:6px;padding:8px 12px;
+              font-size:11px;color:var(--success);margin-bottom:10px">
+           ✅ Etiqueta lista — NO marcada como impresa en MercadoLibre
+         </div>
+         <iframe src="${blobUrl}" style="width:100%;height:400px;border:none;
+         border-radius:8px;background:#fff"></iframe>`;
+      document.getElementById('btn-abrir-etiqueta').style.display = '';
+    } else {
+      // JSON — puede ser error con diagnóstico
+      const d = await r.json();
+      const estado  = d.estado     ? `<br><b>Estado envío:</b> ${d.estado} / ${d.substatus||'—'}` : '';
+      const logType = d.logistic_type ? `<br><b>Logística:</b> ${d.logistic_type}` : '';
+      const hint    = d.hint
+        ? `<div style="margin-top:10px;padding:10px;background:var(--bar);
+           border-radius:6px;font-size:12px;color:var(--mid)">${d.hint}</div>` : '';
+      document.getElementById('modal-etiqueta-body').innerHTML =
+        `<div style="color:var(--danger);margin-bottom:8px">❌ ${d.msg}</div>
+         <div style="font-size:12px;color:var(--mid)">${estado}${logType}</div>
+         ${hint}`;
+    }
+  } catch(e) {
+    document.getElementById('modal-etiqueta-body').innerHTML =
+      `<div style="color:var(--danger)">❌ Error de conexión: ${e.message}</div>`;
+  }
+}
+function abrirEtiqueta() { if (etiquetaUrlActual) window.open(etiquetaUrlActual,'_blank'); }
+function cerrarModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// ════════════════════════════════════════════════════════════
+// GENERAR LOTE DE PICKING
+// ════════════════════════════════════════════════════════════
+async function generarLotePicking() {
+  const peds = Object.values(PEDIDOS).filter(p => !p.impreso);
+  if (!peds.length) { toast('No hay pedidos pendientes', 'err'); return; }
+
+  // Asegurarse de tener la BD de SKUs actualizada
+  if (!Object.keys(SKU_DB).length) await cargarSkus();
+
+  // Consolidar SKUs sumando cantidades
+  const totalReq  = {};
+  const skuNombre = {};
+  peds.forEach(p => {
+    p.items.forEach(it => {
+      const sku = (it.sku || it.item_id).toUpperCase();
+      totalReq[sku]  = (totalReq[sku]||0) + it.cantidad;
+      if (!skuNombre[sku]) skuNombre[sku] = it.titulo;
+    });
+  });
+
+  // Enriquecer con BD de SKUs y agrupar por pasillo
+  const gruposDict = {};
+  Object.entries(totalReq).sort().forEach(([sku, req]) => {
+    const dbInfo   = SKU_DB[sku] || {};
+    const nombre   = dbInfo.nombre   || skuNombre[sku] || sku;
+    const pasillo  = dbInfo.pasillo  || 'Sin ubicación en BD';
+    const estanteria = dbInfo.estanteria || '';
+    if (!gruposDict[pasillo]) gruposDict[pasillo] = [];
+    gruposDict[pasillo].push({sku, nombre, req, pasillo, estanteria});
+  });
+
+  // Ordenar pasillos: numerados primero
+  const sortPasillo = n => { const m=n.match(/(\d+)/); return m?[0,+m[1],n]:[1,0,n]; };
+  const grupos = Object.entries(gruposDict)
+    .sort((a,b) => { const x=sortPasillo(a[0]),y=sortPasillo(b[0]); return x[0]-y[0]||x[1]-y[1]||a[0].localeCompare(b[0]); })
+    .map(([pasillo,items]) => ({pasillo, items}));
+
+  const totalSkus = Object.keys(totalReq).length;
+  const totalUds  = Object.values(totalReq).reduce((a,b)=>a+b,0);
+  const sinBD     = Object.keys(totalReq).filter(s=>!SKU_DB[s]).length;
+
+  // Construir mapa de pedidos para Fase 2 (order_id → items con sku+req)
+  const pedidosLote = {};
+  peds.forEach(p => {
+    const items = p.items.map(it => ({
+      sku: (it.sku || it.item_id || '').toUpperCase(),
+      req: it.cantidad || 1,
+      titulo: it.titulo || ''
+    }));
+    pedidosLote[p.order_id] = {
+      comprador:   p.comprador || '',
+      shipping_id: p.shipping_id || '',
+      _cuenta:     p._cuenta || 'cuenta_0',
+      items:       items,
+    };
+  });
+
+  const payload = {
+    fase: 1, grupos, colecta: {}, colecta_completa: false,
+    total_skus: totalSkus, total_uds: totalUds,
+    pedidos: pedidosLote,
+  };
+
+  const r = await fetch('/api/subir_estado', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-API-Key':'everest2024'},
+    body: JSON.stringify(payload)
+  });
+  const d = await r.json();
+  if (d.ok) {
+    COLECTA = {}; FASE_ACTUAL = 1;
+    LOTE_IDS = peds.map(p=>p.order_id);
+    const msg = sinBD > 0
+      ? `✅ Lote generado (${sinBD} SKUs sin info en BD — agregálos en 🗃 Base de SKUs)`
+      : `✅ Lote generado: ${totalSkus} SKUs en ${grupos.length} pasillo(s)`;
+    toast(msg, 'ok');
+    showTab('picking');
+    syncEstadoPicking();
+  } else toast('Error: '+d.msg, 'err');
+}
+
+// ════════════════════════════════════════════════════════════
+// PICKING
+// ════════════════════════════════════════════════════════════
+async function syncEstadoPicking() {
+  try {
+    const r = await fetch('/api/estado');
+    const d = await r.json();
+    if (!d.cargado) return;
+
+    // Comparar totales colectados para detectar cambio real
+    const totalAntes = Object.values(COLECTA).reduce((a,b)=>a+b,0);
+    const totalNuevo = Object.values(d.colecta||{}).reduce((a,b)=>a+b,0);
+    const faseAntes  = FASE_ACTUAL;
+
+    ESTADO_PK   = d;
+    COLECTA     = d.colecta || {};
+    FASE_ACTUAL = d.fase || 1;
+
+    // Siempre actualizar stats y badge
+    renderPickingStats();
+    _actualizarBadgePicking();
+
+    // Re-renderizar lista si hubo escaneos nuevos o cambio de fase
+    if (totalNuevo !== totalAntes || faseAntes !== FASE_ACTUAL) {
+      renderPickingLista();
+    }
+
+    // Si pasamos a Fase 2 (por boton o automatico al completar) → activar monitor
+    if (FASE_ACTUAL === 2) {
+      if (!_fase2Activo) {
+        if (faseAntes === 1) toast('🎉 Colecta completa → Fase 2: Armado', 'ok');
+        iniciarMonitorFase2();
+      } else {
+        // Ya activo → seguir chequeando pedidos completos para imprimir
+        chequearPedidosCompletos();
+      }
+    } else if (FASE_ACTUAL === 1 && _fase2Activo) {
+      detenerMonitorFase2();
+    }
+  } catch(e) { console.error('[SYNC]', e); }
+}
+
+function _actualizarBadgePicking() {
+  if (!ESTADO_PK) return;
+  const grupos = ESTADO_PK.grupos || [];
+  let tot = 0, done = 0;
+  grupos.forEach(g => (g.items||[]).forEach(it => {
+    tot++;
+    if ((COLECTA[it.sku]||0) >= it.req) done++;
+  }));
+  // Actualizar el tab de picking con contador
+  const tabPicking = document.querySelector('.tab[onclick="showTab('picking')"]');
+  if (tabPicking) {
+    const pct = tot > 0 ? Math.round(done/tot*100) : 0;
+    const color = done === tot ? '#10B981' : done > 0 ? '#F59E0B' : '';
+    tabPicking.innerHTML = `📦 Picking <span style="background:${color||'#475569'};color:#fff;
+      font-size:10px;padding:1px 6px;border-radius:10px;margin-left:4px">${done}/${tot}</span>`;
+  }
+}
+
+function renderPicking() { syncEstadoPicking(); }
+
+function renderPickingStats() {
+  if (!ESTADO_PK) return;
+  const total = ESTADO_PK.total_skus||0;
+  const done  = Object.values(COLECTA).reduce((a,b)=>a+b,0);
+  document.getElementById('stats-picking').innerHTML = `
+    <div class="stat"><div class="stat-n">${total}</div><div class="stat-l">SKUs distintos</div></div>
+    <div class="stat"><div class="stat-n">${ESTADO_PK.total_uds||0}</div><div class="stat-l">Unidades totales</div></div>
+    <div class="stat"><div class="stat-n" style="color:var(--success)">${done}</div><div class="stat-l">Colectadas</div></div>
+  `;
+  const fb = document.getElementById('fase-badge');
+  fb.textContent = FASE_ACTUAL===1 ? '● FASE 1: COLECTA' : '● FASE 2: ARMADO';
+  fb.className   = `fase-badge fase-${FASE_ACTUAL}`;
+  document.getElementById('btn-fase2').disabled = FASE_ACTUAL === 2;
+}
+
+function renderPickingLista() {
+  if (!ESTADO_PK) return;
+  const grupos = ESTADO_PK.grupos||[];
+  const lista  = document.getElementById('picking-lista');
+  if (!grupos.length) {
+    lista.innerHTML='<div class="empty" style="padding:40px 20px"><div class="empty-i">📋</div><div style="font-size:13px">Sin lote activo</div></div>';
+    return;
+  }
+
+  // Recordar qué grupos estaban colapsados antes de re-renderizar
+  const colapsados = new Set();
+  lista.querySelectorAll('.grupo-hdr').forEach(hdr => {
+    const body = hdr.nextElementSibling;
+    if (body && body.classList.contains('hidden')) {
+      colapsados.add(hdr.querySelector('.grupo-nombre')?.textContent?.trim());
+    }
+  });
+
+  lista.innerHTML = grupos.map(g => {
+    const col     = COLECTA;
+    const done    = g.items.filter(it=>(col[it.sku]||0)>=it.req).length;
+    const gDone   = done === g.items.length;
+    const nombre  = '📦 ' + (g.pasillo||'Sin pasillo');
+    const hidden  = colapsados.has(nombre) ? 'hidden' : '';
+    return `<div>
+      <div class="grupo-hdr" onclick="this.nextElementSibling.classList.toggle('hidden')">
+        <div><div class="grupo-nombre">${nombre}</div>
+          <div style="font-size:10px;color:var(--mid)">${g.items.length} SKUs</div></div>
+        <div class="grupo-prog ${gDone?'done':''}">${done}/${g.items.length}</div>
+      </div>
+      <div class="${hidden}">${g.items.map(it=>{
+        const c=col[it.sku]||0, ok=c>=it.req;
+        return`<div class="sku-row ${ok?'done':''}" id="desk-sku-${it.sku}">
+          <div class="sku-chk ${ok?'ok':''}">${ok?'✔':'○'}</div>
+          <div class="sku-body">
+            <div class="sku-name">${it.nombre||it.sku}</div>
+            <div class="sku-meta">
+              <span class="sku-code">${it.sku}</span>
+              <span class="sku-cnt ${ok?'ok':'pend'}">${c} / ${it.req}</span>
+            </div>
+            ${it.estanteria?`<div class="sku-loc">🗂 ${it.estanteria}</div>`:''}
+          </div></div>`;
+      }).join('')}</div>
+    </div>`;
+  }).join('');
+}
+
+// SCAN
+function onScanKey(e) {
+  const inp = document.getElementById('scan-input');
+  if (e.key === 'Enter') {
+    const v = inp.value.trim();
+    if (v) { procesarScan(v); inp.value=''; }
+  }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const inp = document.getElementById('scan-input');
+  if(inp) inp.addEventListener('input', () => {
+    clearTimeout(window._st);
+    window._st = setTimeout(() => {
+      const v = inp.value.trim();
+      if (v.length >= 4) { procesarScan(v); inp.value=''; }
+    }, 400);
+  });
+});
+
+async function procesarScan(sku) {
+  sku = sku.toUpperCase();
+  const r    = await fetch('/api/escanear', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({sku})});
+  const d    = await r.json();
+  const fb   = document.getElementById('scan-fb');
+  if (!d.ok) {
+    fb.className='err'; fb.textContent=`❌ ${d.msg}`;
+  } else if (d.tipo==='ya_completo') {
+    fb.className='warn'; fb.textContent=`⚠ ${d.nombre||sku} ya completo`;
+  } else {
+    fb.className='ok';
+    fb.textContent = d.tipo==='completo'
+      ? `✔ ${d.nombre||sku} — ¡Completo!`
+      : `${d.nombre||sku}  ${d.collected}/${d.req}`;
+    if(!COLECTA) COLECTA={};
+    COLECTA[sku] = d.collected;
+    renderPickingLista();
+    renderPickingStats();
+    if (d.todo_completo) toast('🎉 ¡Colecta completa!', 'ok');
+  }
+}
+
+async function pasarFase2() {
+  // Pasar manualmente a Fase 2 (el boton). Tambien se pasa solo al completar colecta.
+  const r = await fetch('/api/estado');
+  const est = await r.json();
+  if (!est.cargado) { toast('No hay lote activo', 'err'); return; }
+
+  est.fase = 2;
+  await fetch('/api/subir_estado', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-API-Key':'everest2024'},
+    body: JSON.stringify(est)
+  });
+
+  FASE_ACTUAL = 2;
+  ESTADO_PK   = est;
+  COLECTA     = est.colecta || {};
+  renderPickingStats();
+  toast('✅ Fase 2 — armado de pedidos', 'ok');
+  iniciarMonitorFase2();
+}
+
+// ── MONITOR DE FASE 2 — imprime etiquetas automaticamente ──────────────────
+function iniciarMonitorFase2() {
+  if (_fase2Activo) return;
+  _fase2Activo = true;
+  console.log('[FASE2] Monitor de impresion automatica iniciado');
+  chequearPedidosCompletos();  // chequeo inmediato
+}
+
+function detenerMonitorFase2() {
+  _fase2Activo = false;
+  _fase2Cola = [];
+  _fase2Imprimiendo = false;
+}
+
+async function chequearPedidosCompletos() {
+  if (FASE_ACTUAL !== 2) return;
+  try {
+    const r = await fetch('/api/fase2/pedidos-completos');
+    const d = await r.json();
+    if (!d.ok) return;
+
+    // Sincronizar las ya impresas del servidor
+    (d.ya_impresas || []).forEach(oid => _fase2YaImpresas.add(oid));
+
+    // Encolar los recien completados que aun no se imprimieron
+    (d.completos || []).forEach(c => {
+      if (c.recien_completado && !_fase2YaImpresas.has(c.order_id)
+          && !_fase2Cola.includes(c.order_id)) {
+        _fase2Cola.push(c.order_id);
+        console.log('[FASE2] Pedido completo encolado:', c.order_id);
+      }
+    });
+
+    // Procesar la cola
+    procesarColaFase2();
+
+    // Mostrar progreso de armado
+    renderProgresoFase2(d.completos || []);
+  } catch(e) { console.error('[FASE2]', e); }
+}
+
+async function procesarColaFase2() {
+  if (_fase2Imprimiendo || !_fase2Cola.length) return;
+  _fase2Imprimiendo = true;
+
+  while (_fase2Cola.length) {
+    const orderId = _fase2Cola.shift();
+    if (_fase2YaImpresas.has(orderId)) continue;
+
+    const p = PEDIDOS[orderId];
+    const comprador = p ? p.comprador : orderId;
+    toast(`🖨️ Imprimiendo etiqueta: ${comprador}`, 'ok');
+
+    // Abrir la etiqueta automaticamente
+    await imprimirEtiquetaAuto(orderId);
+
+    // Marcar como impresa en el servidor
+    try {
+      await fetch(`/api/fase2/marcar-impresa/${orderId}`, {method:'POST'});
+    } catch(e) {}
+    _fase2YaImpresas.add(orderId);
+
+    // Pequeno delay entre impresiones
+    await new Promise(res => setTimeout(res, 1200));
+  }
+
+  _fase2Imprimiendo = false;
+}
+
+// Abrir e imprimir una etiqueta automaticamente (sin clic del usuario)
+async function imprimirEtiquetaAuto(orderId) {
+  try {
+    const r = await fetch(`/api/etiqueta/${orderId}`);
+    const ct = r.headers.get('Content-Type') || '';
+    if (ct.includes('application/pdf')) {
+      const blob = await r.blob();
+      const url  = URL.createObjectURL(blob);
+      // Abrir en ventana nueva para imprimir
+      const win = window.open(url, '_blank');
+      if (win) {
+        // Intentar disparar impresion automatica
+        win.addEventListener('load', () => {
+          setTimeout(() => { try { win.print(); } catch(e) {} }, 700);
+        });
+      } else {
+        // Popup bloqueado → mostrar en modal como fallback
+        toast('⚠ Permití pop-ups para impresión automática', 'warn');
+        verEtiqueta(orderId);
+      }
+    } else {
+      // No hay PDF disponible — mostrar diagnostico
+      console.warn('[FASE2] Etiqueta no disponible para', orderId);
+      verEtiqueta(orderId);
+    }
+  } catch(e) {
+    console.error('[FASE2] Error imprimiendo', orderId, e);
+  }
+}
+
+// Mostrar progreso de armado en el panel derecho
+function renderProgresoFase2(completos) {
+  const cont = document.getElementById('resumen-pedidos-picking');
+  if (!cont) return;
+  const totalPedidos = Object.keys(ESTADO_PK?.pedidos || {}).length;
+  const listos = completos.length;
+
+  let html = `<div style="background:var(--card);border:1px solid var(--border);
+    border-radius:8px;padding:12px;margin-bottom:12px">
+    <div style="font-size:22px;font-weight:800;color:var(--success)">${listos}/${totalPedidos}</div>
+    <div style="font-size:10px;color:var(--lo)">PEDIDOS ARMADOS</div>
+  </div>`;
+
+  const pedidos = ESTADO_PK?.pedidos || {};
+  html += Object.entries(pedidos).map(([oid, ped]) => {
+    const completo = completos.some(c => c.order_id === oid);
+    const impreso  = _fase2YaImpresas.has(oid);
+    const color = impreso ? 'var(--success)' : completo ? 'var(--warning)' : 'var(--lo)';
+    const icon  = impreso ? '🖨️' : completo ? '✅' : '⏳';
+    const estado = impreso ? 'Impreso' : completo ? 'Listo' : 'Armando';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;
+      padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+      <div>
+        <div style="font-weight:600;color:${color}">${icon} ${ped.comprador||oid}</div>
+        <div style="font-size:10px;color:var(--lo)">#${oid} · ${ped.items.length} item(s)</div>
+      </div>
+      <span style="color:${color};font-size:10px;font-weight:700">${estado}</span>
+    </div>`;
+  }).join('');
+
+  cont.innerHTML = html;
+}
+
+// UTILS
+function getCookie(n){const v=document.cookie.match('(^|;)\\s*'+n+'\\s*=\\s*([^;]+)');return v?v.pop():'';}
+function toast(m,t=''){const el=document.getElementById('toast');el.textContent=m;el.className='show '+t;setTimeout(()=>el.className='',2800);}
+function copiarUrl(){navigator.clipboard.writeText(location.origin+'/movil');toast('URL copiada','ok');}
+
+// ════════════════════════════════════════════════════════════
+// BASE DE SKUs
+// ════════════════════════════════════════════════════════════
+let SKU_DB      = {};   // cache local
+let SKU_EDITANDO = null; // null = nuevo, string = SKU que se está editando
+
+async function cargarSkus() {
+  try {
+    const r = await fetch('/api/skus');
+    const d = await r.json();
+    if (d.ok) { SKU_DB = d.skus; renderSkus(); }
+  } catch(e) { toast('Error cargando SKUs', 'err'); }
+}
+
+function renderSkus(filtro='') {
+  const tbody = document.getElementById('tbody-skus');
+  const q     = filtro.toUpperCase();
+  const items = Object.entries(SKU_DB).filter(([sku, v]) =>
+    !q || sku.includes(q) || v.nombre.toUpperCase().includes(q) ||
+    v.pasillo.toUpperCase().includes(q)
+  ).sort((a,b) => a[0].localeCompare(b[0]));
+
+  document.getElementById('badge-skus').textContent = Object.keys(SKU_DB).length;
+
+  if (!items.length) {
+    tbody.innerHTML = `<tr><td colspan="5"><div class="empty">
+      <div class="empty-i">🗃</div>
+      <div>${filtro ? 'Sin resultados' : 'No hay SKUs cargados aún.<br>Usá ➕ Nuevo SKU o ⬆ Importar JSON'}</div>
+    </div></td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = items.map(([sku, v]) => `
+    <tr>
+      <td><span class="sku-chip">${sku}</span></td>
+      <td style="font-weight:600">${v.nombre}</td>
+      <td style="color:var(--accent2)">${v.pasillo || '—'}</td>
+      <td style="color:var(--mid);font-size:12px">${v.estanteria || '—'}</td>
+      <td>
+        <button class="btn btn-ghost" style="padding:4px 8px;font-size:11px"
+          onclick="abrirFormSku('${sku}')">✏</button>
+        <button class="btn btn-danger" style="padding:4px 8px;font-size:11px;margin-left:4px"
+          onclick="eliminarSku('${sku}')">🗑</button>
+      </td>
+    </tr>`).join('');
+}
+
+function filtrarSkus() {
+  renderSkus(document.getElementById('search-skus').value);
+}
+
+function abrirFormSku(skuOrig) {
+  SKU_EDITANDO = skuOrig;
+  const v = skuOrig ? (SKU_DB[skuOrig] || {}) : {};
+  document.getElementById('modal-sku-title').textContent = skuOrig ? `✏ Editar: ${skuOrig}` : '➕ Nuevo SKU';
+  document.getElementById('form-sku').value         = skuOrig || '';
+  document.getElementById('form-sku').disabled      = !!skuOrig;
+  document.getElementById('form-nombre').value      = v.nombre || '';
+  document.getElementById('form-pasillo').value     = v.pasillo || '';
+  document.getElementById('form-estanteria').value  = v.estanteria || '';
+  document.getElementById('form-error').style.display = 'none';
+
+  // Sugerencias de pasillos existentes
+  const pasillos = [...new Set(Object.values(SKU_DB).map(x=>x.pasillo).filter(Boolean))];
+  document.getElementById('pasillo-sugs').innerHTML = pasillos.map(p =>
+    `<span style="background:var(--bar);border:1px solid var(--border);border-radius:4px;
+      padding:2px 8px;font-size:11px;cursor:pointer;color:var(--accent)"
+      onclick="document.getElementById('form-pasillo').value='${p}'">${p}</span>`
+  ).join('');
+
+  document.getElementById('modal-sku').classList.add('open');
+  setTimeout(() => document.getElementById(skuOrig ? 'form-nombre' : 'form-sku').focus(), 100);
+}
+
+async function guardarSku() {
+  const sku        = document.getElementById('form-sku').value.trim().toUpperCase();
+  const nombre     = document.getElementById('form-nombre').value.trim();
+  const pasillo    = document.getElementById('form-pasillo').value.trim();
+  const estanteria = document.getElementById('form-estanteria').value.trim();
+  const errEl      = document.getElementById('form-error');
+
+  if (!sku)    { errEl.textContent='SKU obligatorio';    errEl.style.display='block'; return; }
+  if (!nombre) { errEl.textContent='Nombre obligatorio'; errEl.style.display='block'; return; }
+  errEl.style.display = 'none';
+
+  // Si estamos editando y el SKU cambió, eliminar el viejo
+  if (SKU_EDITANDO && SKU_EDITANDO !== sku) {
+    await fetch(`/api/skus/${SKU_EDITANDO}`, {method:'DELETE'});
+  }
+
+  const r = await fetch('/api/skus', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({sku, nombre, pasillo, estanteria})
+  });
+  const d = await r.json();
+  if (d.ok) {
+    SKU_DB[sku] = {nombre, pasillo, estanteria};
+    if (SKU_EDITANDO && SKU_EDITANDO !== sku) delete SKU_DB[SKU_EDITANDO];
+    cerrarModal('modal-sku');
+    renderSkus(document.getElementById('search-skus').value);
+    document.getElementById('badge-skus').textContent = Object.keys(SKU_DB).length;
+    toast(`✅ ${d.msg}`, 'ok');
+  } else {
+    errEl.textContent = d.msg; errEl.style.display = 'block';
+  }
+}
+
+async function eliminarSku(sku) {
+  if (!confirm(`¿Eliminar el SKU '${sku}'?`)) return;
+  const r = await fetch(`/api/skus/${sku}`, {method:'DELETE'});
+  const d = await r.json();
+  if (d.ok) {
+    delete SKU_DB[sku];
+    renderSkus(document.getElementById('search-skus').value);
+    toast(`🗑 ${sku} eliminado`, 'ok');
+  } else toast('Error: '+d.msg, 'err');
+}
+
+function exportarSkus() {
+  const blob = new Blob([JSON.stringify(SKU_DB, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'skus_db.json';
+  a.click();
+  toast('📥 JSON descargado', 'ok');
+}
+
+async function importarSkus(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  let data;
+  try { data = JSON.parse(text); } catch(err) { toast('JSON inválido', 'err'); return; }
+
+  // Aceptar tanto { "SKU": {nombre,pasillo,estanteria} }
+  // como { "skus": { "SKU": {...} } }
+  const skus = data.skus || data;
+  if (typeof skus !== 'object') { toast('Formato no reconocido', 'err'); return; }
+
+  const r = await fetch('/api/skus/importar', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({skus})
+  });
+  const d = await r.json();
+  if (d.ok) {
+    await cargarSkus();
+    toast(`✅ ${d.msg}`, 'ok');
+  } else toast('Error: '+d.msg, 'err');
+  e.target.value = '';
+}
+
+// Enter en cualquier campo del form guarda
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.getElementById('modal-sku').classList.contains('open'))
+    guardarSku();
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-bg.open').forEach(m => m.classList.remove('open'));
+  }
+});
+
+// Al abrir tab SKU cargar datos
+const _origShowTab = showTab;
+function showTab(name) {
+  _origShowTab(name);
+  if (name === 'skudb') cargarSkus();
+}
+</script>
+</body>
+</html>
