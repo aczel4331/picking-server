@@ -187,22 +187,26 @@ def guardar_config(config: dict):
 
 # ─────────────────────────────────────────────────────────────────────────────
 C = {
-    "bg_dark":    "#F8FAFC",   # Blanco muy claro (fondo principal)
-    "panel":      "#FFFFFF",   # Blanco puro (paneles)
-    "card":       "#F1F5F9",   # Gris clarito (tarjetas alternas)
-    "border":     "#E2E8F0",   # Gris borde
+    "bg_dark":    "#0D1117",   # Negro azulado profundo (fondo principal)
+    "panel":      "#161B27",   # Azul marino oscuro (paneles)
+    "card":       "#1E2535",   # Azul más claro (tarjetas)
+    "border":     "#2A3347",   # Borde sutil
     "accent":     "#06B6D4",   # Cian brillante (acento principal)
     "accent2":    "#0891B2",   # Cian más oscuro
-    "success":    "#10B981",   # Verde moderno
-    "warning":    "#F59E0B",   # Naranja moderno
+    "success":    "#10B981",   # Verde esmeralda
+    "warning":    "#F59E0B",   # Ámbar
     "danger":     "#EF4444",   # Rojo
-    "text_hi":    "#0F172A",   # Azul oscuro (textos principal)
-    "text_mid":   "#475569",   # Gris oscuro (textos secundario)
-    "text_lo":    "#94A3B8",   # Gris (textos tenue)
-    "preview_bg": "#F1F5F9",   # Fondo vista previa
-    "bar_bg":     "#E2E8F0",   # Barra progreso fondo
+    "text_hi":    "#F0F6FF",   # Blanco azulado (textos principal)
+    "text_mid":   "#8899B4",   # Gris azulado (textos secundario)
+    "text_lo":    "#4A5568",   # Gris oscuro (textos tenue)
+    "preview_bg": "#1E2535",   # Fondo vista previa
+    "bar_bg":     "#2A3347",   # Barra progreso fondo
     "bar_fg":     "#06B6D4",   # Barra progreso cian
     "bar_ok":     "#10B981",   # Barra completa verde
+    "topbar":     "#0D1117",   # Topbar negro
+    "tab_active": "#06B6D4",   # Tab activo cian
+    "tab_bg":     "#161B27",   # Tab fondo
+    "glow":       "#06B6D420", # Resplandor sutil
 }
 
 FONT_TITLE  = ("Segoe UI Semibold", 14)
@@ -226,10 +230,12 @@ class VentanaConfiguracion(tk.Toplevel):
         self._config = dict(config_actual)
 
         # Header
-        hdr = tk.Frame(self, bg=C["accent"], pady=12)
+        hdr = tk.Frame(self, bg=C["topbar"], pady=0)
         hdr.pack(fill="x", side="top")
+        tk.Frame(hdr, bg=C["accent"], height=2).pack(fill="x")
         tk.Label(hdr, text="CONFIGURACION DEL SISTEMA",
-                 font=("Segoe UI Semibold", 13), bg=C["accent"], fg="white").pack()
+                 font=("Segoe UI Semibold", 12), bg=C["topbar"],
+                 fg=C["text_hi"], pady=12).pack()
 
         # Footer (siempre visible)
         footer = tk.Frame(self, bg=C["bg_dark"], padx=20, pady=10)
@@ -1462,100 +1468,99 @@ class AsistenteDepositoApp:
         self.root.after(2_000, self._sync_colecta_servidor)
 
     def _build_ui(self):
-        # TOPBAR
-        topbar = tk.Frame(self.root, bg=C["panel"], height=62)
+        # ── Franja cian superior ultra-delgada ───────────────────────────────
+        tk.Frame(self.root, bg=C["accent"], height=2).pack(fill="x", side="top")
+
+        # TOPBAR — negro profundo, aspecto premium
+        topbar = tk.Frame(self.root, bg=C["topbar"], height=66)
         topbar.pack(fill="x", side="top")
         topbar.pack_propagate(False)
 
-        # Línea de acento cian en la parte superior del topbar
-        tk.Frame(self.root, bg=C["accent"], height=3).pack(
-            fill="x", side="top", before=topbar)
+        left = tk.Frame(topbar, bg=C["topbar"])
+        left.pack(side="left", padx=22, fill="y")
 
-        left = tk.Frame(topbar, bg=C["panel"])
-        left.pack(side="left", padx=20, fill="y")
-
-        # Logo en topbar — pequeño, solo texto estilizado
-        logo_frame = tk.Frame(left, bg=C["panel"])
-        logo_frame.pack(side="left", pady=10)
+        # Logo
+        logo_frame = tk.Frame(left, bg=C["topbar"])
+        logo_frame.pack(side="left", pady=12)
         try:
             from PIL import Image, ImageTk
             import os
             logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
             img = Image.open(logo_path).convert("RGBA")
-            img = img.resize((110, 32), Image.LANCZOS)
+            img = img.resize((110, 34), Image.LANCZOS)
             self._logo_topbar = ImageTk.PhotoImage(img)
             tk.Label(logo_frame, image=self._logo_topbar,
-                     bg=C["panel"]).pack(side="left")
+                     bg=C["topbar"]).pack(side="left")
         except Exception:
-            tk.Label(logo_frame, text="Logi", font=("Segoe UI Black", 16),
-                     bg=C["panel"], fg="#6B7280").pack(side="left")
-            tk.Label(logo_frame, text="bot", font=("Segoe UI Black", 16),
-                     bg=C["panel"], fg=C["accent"]).pack(side="left")
+            tk.Label(logo_frame, text="Logi", font=("Segoe UI Black", 17),
+                     bg=C["topbar"], fg=C["text_mid"]).pack(side="left")
+            tk.Label(logo_frame, text="bot", font=("Segoe UI Black", 17),
+                     bg=C["topbar"], fg=C["accent"]).pack(side="left")
 
-        # Separador vertical
+        # Separador vertical luminoso
         tk.Frame(left, bg=C["border"], width=1).pack(
-            side="left", fill="y", padx=14, pady=10)
+            side="left", fill="y", padx=16, pady=14)
 
         # Subtítulo sistema
-        col = tk.Frame(left, bg=C["panel"])
-        col.pack(side="left", fill="y", pady=10)
+        col = tk.Frame(left, bg=C["topbar"])
+        col.pack(side="left", fill="y", pady=12)
         tk.Label(col, text="SISTEMA DE PICKING  PRO",
                  font=("Segoe UI Black", 12),
-                 bg=C["panel"], fg=C["text_hi"]).pack(anchor="w")
+                 bg=C["topbar"], fg=C["text_hi"]).pack(anchor="w")
         tk.Label(col, text="Mercado Libre  ·  Fase 1 Colecta  +  Fase 2 Preparación",
-                 font=("Segoe UI", 10), bg=C["panel"],
-                 fg=C["text_mid"]).pack(anchor="w")
+                 font=("Segoe UI", 9), bg=C["topbar"],
+                 fg=C["text_mid"]).pack(anchor="w", pady=(2, 0))
 
-        center = tk.Frame(topbar, bg=C["panel"])
+        center = tk.Frame(topbar, bg=C["topbar"])
         center.place(relx=0.5, rely=0.5, anchor="center")
         self.lbl_contador = tk.Label(center, text="— etiquetas pendientes",
                                      font=("Segoe UI Semibold", 12),
-                                     bg=C["panel"], fg=C["text_hi"])
+                                     bg=C["topbar"], fg=C["accent"])
         self.lbl_contador.pack()
 
-        right = tk.Frame(topbar, bg=C["panel"])
-        right.pack(side="right", padx=16, fill="y")
+        right = tk.Frame(topbar, bg=C["topbar"])
+        right.pack(side="right", padx=18, fill="y")
 
         # Fila superior: label impresora
         self.lbl_printer = tk.Label(right, text=self._texto_impresora(),
-                                    font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"])
-        self.lbl_printer.pack(anchor="e", pady=(4, 2))
+                                    font=("Segoe UI", 9), bg=C["topbar"], fg=C["text_mid"])
+        self.lbl_printer.pack(anchor="e", pady=(8, 2))
 
-        # Fila inferior: dos botones uno al lado del otro
-        btns_row = tk.Frame(right, bg=C["panel"])
+        # Fila inferior: botones con estilo pill/capsule
+        btns_row = tk.Frame(right, bg=C["topbar"])
         btns_row.pack(anchor="e")
 
         self.btn_servidor = tk.Button(
                   btns_row, text="📱  App Móvil",
-                  font=FONT_SMALL, bg=C["success"], fg="white",
+                  font=("Segoe UI Semibold", 9), bg=C["success"], fg="white",
                   activebackground="#059669", activeforeground="white",
-                  relief="flat", cursor="hand2", padx=10, pady=4, bd=0,
+                  relief="flat", cursor="hand2", padx=12, pady=5, bd=0,
                   command=self._mostrar_info_movil)
         self.btn_servidor.pack(side="left", padx=(0, 6))
 
-        tk.Button(btns_row, text="⚙  Impresora",
-                  font=FONT_SMALL, bg=C["accent"], fg="white",
-                  activebackground=C["accent2"], activeforeground="white",
-                  relief="flat", cursor="hand2", padx=10, pady=4, bd=0,
+        tk.Button(btns_row, text="⚙  Config",
+                  font=("Segoe UI Semibold", 9), bg=C["card"], fg=C["accent"],
+                  activebackground=C["border"], activeforeground=C["accent"],
+                  relief="flat", cursor="hand2", padx=12, pady=5, bd=0,
                   command=self.abrir_configuracion).pack(side="left")
 
         self.lbl_servidor_ip = tk.Label(right, text="",
-                                        font=("Segoe UI", 8), bg=C["panel"], fg=C["success"])
+                                        font=("Segoe UI", 8), bg=C["topbar"], fg=C["success"])
         self.lbl_servidor_ip.pack(anchor="e")
 
-        # TABS bajo el topbar
-        tabs_bar = tk.Frame(self.root, bg="#161B27", height=40)
+        # TABS — barra de navegación oscura integrada con el topbar
+        tabs_bar = tk.Frame(self.root, bg=C["panel"], height=44)
         tabs_bar.pack(fill="x", side="top")
         tabs_bar.pack_propagate(False)
 
-        # Línea separadora sutil
+        # Línea separadora cian muy sutil
         tk.Frame(self.root, bg=C["border"], height=1).pack(fill="x", side="top")
 
         self._tab_actual = tk.StringVar(value="dashboard")
         def _tab(nombre, texto, activo=False):
             btn = tk.Button(tabs_bar, text=texto,
                             font=("Segoe UI Semibold", 10),
-                            bg=C["accent"] if activo else "#161B27",
+                            bg=C["accent"] if activo else C["panel"],
                             fg="white" if activo else C["text_mid"],
                             activebackground=C["accent2"],
                             activeforeground="white",
@@ -2230,7 +2235,7 @@ class AsistenteDepositoApp:
         ]:
             activo = (tab == nombre)
             btn.config(
-                bg=C["accent"] if activo else "#161B27",
+                bg=C["accent"] if activo else C["panel"],
                 fg="white"     if activo else C["text_mid"])
 
         # Mostrar el panel correcto
@@ -3053,15 +3058,18 @@ class AsistenteDepositoApp:
         hola  = "Buenos días" if hora < 12 else ("Buenas tardes" if hora < 19 else "Buenas noches")
         fecha = _dt.now().strftime("%A %d de %B — %Y").capitalize()
 
-        # ── Saludo ─────────────────────────────────────────────────────────
-        top = tk.Frame(f, bg=C["bg_dark"])
-        top.pack(fill="x", padx=pad, pady=(22,4))
-        tk.Label(top, text=f"{hola}  —  Sistema de Picking",
-                 font=("Segoe UI Black", 17), bg=C["bg_dark"],
+        # ── Banner de saludo moderno ──────────────────────────────────────
+        banner = tk.Frame(f, bg=C["panel"], padx=pad, pady=18)
+        banner.pack(fill="x", padx=pad, pady=(22, 4))
+        tk.Frame(banner, bg=C["accent"], width=4).pack(side="left", fill="y", padx=(0,14))
+        banner_text = tk.Frame(banner, bg=C["panel"])
+        banner_text.pack(side="left", fill="y")
+        tk.Label(banner_text, text=f"{hola}  —  Sistema de Picking",
+                 font=("Segoe UI Black", 17), bg=C["panel"],
                  fg=C["text_hi"]).pack(anchor="w")
-        tk.Label(top, text=fecha, font=("Segoe UI", 10),
-                 bg=C["bg_dark"], fg=C["text_mid"]).pack(anchor="w", pady=(3,0))
-        tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(14,18))
+        tk.Label(banner_text, text=fecha, font=("Segoe UI", 10),
+                 bg=C["panel"], fg=C["text_mid"]).pack(anchor="w", pady=(3, 0))
+        tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(14, 18))
 
         # ── Métricas ───────────────────────────────────────────────────────
         total_ped  = len(self.pedidos)
@@ -3095,54 +3103,56 @@ class AsistenteDepositoApp:
         COLS = 3
         for i,(tit, val, sub, color) in enumerate(metricas):
             r, c = divmod(i, COLS)
-            card = tk.Frame(cards_f, bg=C["panel"])
-            card.grid(row=r, column=c, sticky="nsew", padx=7, pady=7)
+            # Wrapper con borde superior coloreado
+            outer = tk.Frame(cards_f, bg=color)
+            outer.grid(row=r, column=c, sticky="nsew", padx=7, pady=7)
+            tk.Frame(outer, bg=color, height=3).pack(fill="x")
+            card = tk.Frame(outer, bg=C["card"])
+            card.pack(fill="both", expand=True, padx=1, pady=(0,1))
 
-            accent_bar = tk.Frame(card, bg=color, width=4)
-            accent_bar.pack(side="left", fill="y")
-
-            inn = tk.Frame(card, bg=C["panel"], padx=14, pady=12)
+            inn = tk.Frame(card, bg=C["card"], padx=16, pady=14)
             inn.pack(fill="both", expand=True)
 
-            tk.Label(inn, text=tit, font=("Segoe UI", 9),
-                     bg=C["panel"], fg=C["text_mid"]).pack(anchor="w")
-            tk.Label(inn, text=val, font=("Segoe UI Black", 28),
-                     bg=C["panel"], fg=color).pack(anchor="w", pady=(2,1))
+            tk.Label(inn, text=tit.upper(), font=("Segoe UI", 8, "bold"),
+                     bg=C["card"], fg=C["text_lo"]).pack(anchor="w")
+            tk.Label(inn, text=val, font=("Segoe UI Black", 30),
+                     bg=C["card"], fg=color).pack(anchor="w", pady=(3,1))
             tk.Label(inn, text=sub, font=("Segoe UI", 9),
-                     bg=C["panel"], fg=C["text_lo"]).pack(anchor="w")
+                     bg=C["card"], fg=C["text_mid"]).pack(anchor="w")
         for c in range(COLS):
             cards_f.columnconfigure(c, weight=1)
 
         # ── Barra de progreso ──────────────────────────────────────────────
         tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(0,14))
-        prog_f = tk.Frame(f, bg=C["panel"], padx=18, pady=14)
+        prog_f = tk.Frame(f, bg=C["panel"], padx=20, pady=16)
         prog_f.pack(fill="x", padx=pad, pady=(0,14))
 
         header_row = tk.Frame(prog_f, bg=C["panel"])
         header_row.pack(fill="x")
-        tk.Label(header_row, text="Progreso del lote",
-                 font=("Segoe UI Semibold", 10), bg=C["panel"],
-                 fg=C["text_hi"]).pack(side="left")
-        tk.Label(header_row, text=f"{pct}%  ·  {impresas} de {total_ped}",
-                 font=("Segoe UI Semibold", 10), bg=C["panel"],
-                 fg=C["success"] if pct==100 else C["accent"]).pack(side="right")
+        tk.Label(header_row, text="PROGRESO DEL LOTE",
+                 font=("Segoe UI", 9, "bold"), bg=C["panel"],
+                 fg=C["text_lo"]).pack(side="left")
+        pct_color = C["success"] if pct == 100 else C["accent"]
+        tk.Label(header_row, text=f"{pct}%  ·  {impresas} de {total_ped} pedidos",
+                 font=("Segoe UI Semibold", 11), bg=C["panel"],
+                 fg=pct_color).pack(side="right")
 
-        bar_bg = tk.Frame(prog_f, bg=C["bar_bg"], height=12)
-        bar_bg.pack(fill="x", pady=(10,4))
+        bar_bg = tk.Frame(prog_f, bg=C["bar_bg"], height=8)
+        bar_bg.pack(fill="x", pady=(12, 4))
         bar_bg.pack_propagate(False)
         def _draw(e=None):
             w = bar_bg.winfo_width() or 600
             for ww in bar_bg.winfo_children(): ww.destroy()
             fill_w = max(2, int(w * pct / 100))
-            clr = C["bar_ok"] if pct==100 else C["bar_fg"]
-            tk.Frame(bar_bg, bg=clr, width=fill_w, height=12).pack(side="left")
+            clr = C["bar_ok"] if pct == 100 else C["bar_fg"]
+            tk.Frame(bar_bg, bg=clr, width=fill_w, height=8).pack(side="left")
         bar_bg.bind("<Configure>", _draw)
         self.root.after(120, _draw)
 
         # ── Estado de conexiones ───────────────────────────────────────────
         tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(0,14))
-        tk.Label(f, text="Conexiones activas", font=("Segoe UI Semibold", 10),
-                 bg=C["bg_dark"], fg=C["text_hi"]).pack(anchor="w", padx=pad, pady=(0,8))
+        tk.Label(f, text="CONEXIONES ACTIVAS", font=("Segoe UI", 9, "bold"),
+                 bg=C["bg_dark"], fg=C["text_lo"]).pack(anchor="w", padx=pad, pady=(0,8))
 
         conex_f = tk.Frame(f, bg=C["bg_dark"])
         conex_f.pack(fill="x", padx=pad, pady=(0,14))
@@ -3161,42 +3171,46 @@ class AsistenteDepositoApp:
                            C["success"] if imp else C["warning"]))
 
         for tit, detalle, color in conexiones:
-            row_f = tk.Frame(conex_f, bg=C["panel"], pady=6)
+            row_f = tk.Frame(conex_f, bg=C["panel"], pady=8)
             row_f.pack(fill="x", pady=2)
-            tk.Frame(row_f, bg=color, width=6, height=6).pack(side="left", padx=(10,8))
+            # Dot de estado
+            dot_wrap = tk.Frame(row_f, bg=color, width=8, height=8)
+            dot_wrap.pack(side="left", padx=(12, 10))
+            dot_wrap.pack_propagate(False)
             tk.Label(row_f, text=tit, font=("Segoe UI Semibold", 9),
                      bg=C["panel"], fg=C["text_hi"],
                      width=24, anchor="w").pack(side="left")
             tk.Label(row_f, text=detalle, font=("Segoe UI", 9),
-                     bg=C["panel"], fg=C["text_mid"]).pack(side="left", padx=6)
+                     bg=C["panel"], fg=color).pack(side="left", padx=6)
 
         # ── Acciones rápidas ───────────────────────────────────────────────
         tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(0,14))
-        tk.Label(f, text="Acciones rápidas", font=("Segoe UI Semibold", 10),
-                 bg=C["bg_dark"], fg=C["text_hi"]).pack(anchor="w", padx=pad, pady=(0,10))
+        tk.Label(f, text="ACCIONES RÁPIDAS", font=("Segoe UI", 9, "bold"),
+                 bg=C["bg_dark"], fg=C["text_lo"]).pack(anchor="w", padx=pad, pady=(0,10))
 
         acc_f = tk.Frame(f, bg=C["bg_dark"])
         acc_f.pack(fill="x", padx=pad, pady=(0,22))
 
-        for txt, accion, color in [
-            ("📦  Pedidos ML",   "ml",      C["accent"]),
-            ("🔍  Picking",      "picking", C["success"]),
-            ("⚙   Configuración","cfg",     C["text_lo"]),
+        for txt, accion, color, hover in [
+            ("📦  Pedidos ML",   "ml",      C["accent"],  C["accent2"]),
+            ("🔍  Picking",      "picking", C["success"], "#059669"),
+            ("⚙   Configuración","cfg",     C["card"],    C["border"]),
         ]:
             def _cmd(a=accion):
                 if   a == "cfg": self.abrir_configuracion()
                 else:            self._switch_tab(a)
+            fg_col = C["text_mid"] if accion == "cfg" else "white"
             tk.Button(acc_f, text=txt,
                       font=("Segoe UI Semibold", 10),
-                      bg=color, fg="white",
-                      activebackground=C["accent2"], activeforeground="white",
-                      relief="flat", cursor="hand2", padx=18, pady=10, bd=0,
+                      bg=color, fg=fg_col,
+                      activebackground=hover, activeforeground="white",
+                      relief="flat", cursor="hand2", padx=20, pady=11, bd=0,
                       command=_cmd).pack(side="left", padx=(0,10))
 
         # ── Timestamp ──────────────────────────────────────────────────────
-        tk.Label(f, text=f"Actualizado a las {_dt.now().strftime('%H:%M:%S')}",
+        tk.Label(f, text=f"↻  Actualizado a las {_dt.now().strftime('%H:%M:%S')}",
                  font=("Segoe UI", 8), bg=C["bg_dark"],
-                 fg=C["text_lo"]).pack(anchor="e", padx=pad, pady=(0,20))
+                 fg=C["accent"]).pack(anchor="e", padx=pad, pady=(0,20))
 
         # Scroll desde cualquier widget del dashboard
         if hasattr(self, "_dash_canvas"):
