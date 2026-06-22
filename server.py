@@ -43,6 +43,37 @@ ML_REDIRECT   = os.environ.get(
 # ── Clave interna (sync con app_deposito.py) ──────────────────────────────────
 API_KEY = os.environ.get("PICKING_API_KEY", "everest2024")
 
+# ── Directorio de datos persistente ───────────────────────────────────────────
+# En Railway, montar un Volume y definir la variable DATA_DIR con su ruta
+# (ej: /data). Los archivos guardados ahí SOBREVIVEN redeploys y reinicios.
+# Si no se define DATA_DIR, usa /tmp (VOLÁTIL — se borra en cada redeploy).
+def _resolver_data_dir():
+    candidato = os.environ.get("DATA_DIR", "").strip()
+
+    if not candidato:
+        print("[DATA] ⚠ DATA_DIR no definido — usando /tmp (VOLÁTIL, se pierde en redeploy)")
+        print("[DATA] ⚠ Para persistencia real: montá un Railway Volume y definí DATA_DIR=/data")
+        os.makedirs("/tmp", exist_ok=True)
+        return "/tmp"
+
+    try:
+        os.makedirs(candidato, exist_ok=True)
+        # Probar que se puede escribir
+        test = os.path.join(candidato, ".write_test")
+        with open(test, "w") as f:
+            f.write("ok")
+        os.remove(test)
+        print(f"[DATA] ✅ Persistencia activa en: {candidato}")
+        return candidato
+    except Exception as e:
+        print(f"[DATA] ⚠ No se pudo usar '{candidato}' ({e}) — usando /tmp (VOLÁTIL)")
+        os.makedirs("/tmp", exist_ok=True)
+        return "/tmp"
+
+DATA_DIR        = _resolver_data_dir()
+LOTE_PATH       = os.path.join(DATA_DIR, "lote_estado.json")
+ML_TOKENS_PATH  = os.path.join(DATA_DIR, "ml_tokens.json")
+
 # ── Clave Railway API para persistir tokens ───────────────────────────────────
 # Railway permite actualizar variables de entorno via su API REST
 RAILWAY_API_TOKEN = os.environ.get("RAILWAY_API_TOKEN", "")
@@ -122,22 +153,19 @@ def _serializar_cuentas():
 
 def _persistir_tokens_railway():
     """
-    Guarda tokens en /tmp/ml_tokens.json.
-    Este archivo sobrevive reinicios normales de Railway.
-    Para redeploys, usar el endpoint /api/tokens_export para
-    copiar el JSON y pegarlo en la variable ML_TOKENS_JSON de Railway.
+    Guarda los tokens en el directorio de datos persistente (DATA_DIR).
+    Si hay un Railway Volume montado, sobreviven redeploys y reinicios.
     """
     _persistir_tokens_local()
 
 
 def _persistir_tokens_local():
-    """Guarda tokens en archivo /tmp — persiste entre reinicios normales."""
+    """Guarda tokens en el archivo persistente (DATA_DIR o /tmp)."""
     try:
-        path = "/tmp/ml_tokens.json"
         data = _serializar_cuentas()
-        with open(path, "w") as f:
+        with open(ML_TOKENS_PATH, "w") as f:
             f.write(data)
-        print(f"[TOKEN] Tokens guardados en {path}")
+        print(f"[TOKEN] Tokens guardados en {ML_TOKENS_PATH}")
         # Tambien actualizar os.environ para que _cargar_tokens_persistidos()
         # los encuentre si se llama de nuevo en la misma sesion
         os.environ[ML_TOKENS_ENV_KEY] = data
@@ -146,10 +174,10 @@ def _persistir_tokens_local():
 
 
 def _cargar_tokens_local():
-    """Carga tokens del archivo local (fallback)."""
+    """Carga tokens del archivo persistente (fallback)."""
     global _cuentas, _tokens
     try:
-        path = "/tmp/ml_tokens.json"
+        path = ML_TOKENS_PATH
         if os.path.exists(path):
             with open(path) as f:
                 data = json.loads(f.read())
@@ -1764,6 +1792,8 @@ def ping():
         "autenticado": bool(_cuentas),
         "cuentas":     [t.get("nickname","?") for t in _cuentas.values()],
         "pedidos_ml":  len(_pedidos_ml),
+        "data_dir":    DATA_DIR,
+        "persistente": DATA_DIR != "/tmp",
     })
 
 
@@ -1948,7 +1978,7 @@ def subir_estado():
     # Persistir en /tmp para sobrevivir reinicios de Railway
     try:
         import json as _j
-        with open("/tmp/lote_estado.json", "w") as f:
+        with open(LOTE_PATH, "w") as f:
             _j.dump(dict(_estado), f)
     except Exception as e:
         print(f"[LOTE] Error persistiendo estado: {e}")
@@ -2057,7 +2087,7 @@ def fase2_marcar_impresa(order_id):
             _pedidos_ml[order_id]["impreso"] = True
         try:
             import json as _j
-            with open("/tmp/lote_estado.json","w") as f:
+            with open(LOTE_PATH, "w") as f:
                 _j.dump(dict(_estado), f)
         except Exception:
             pass
@@ -2098,7 +2128,7 @@ def escanear():
     # Persistir colecta actualizada
     try:
         import json as _j
-        with open("/tmp/lote_estado.json","w") as f:
+        with open(LOTE_PATH, "w") as f:
             _j.dump(dict(_estado), f)
     except Exception:
         pass
@@ -2266,7 +2296,7 @@ def _startup():
     # Restaurar el último lote enviado por el supervisor
     try:
         import json as _j
-        with open("/tmp/lote_estado.json") as f:
+        with open(LOTE_PATH) as f:
             data = _j.load(f)
         if data.get("cargado") and data.get("grupos"):
             _estado.update(data)
