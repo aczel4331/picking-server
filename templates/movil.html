@@ -78,7 +78,8 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .chk.ok{color:var(--success)}
 .chk.pend{color:var(--lo)}
 .ibody{flex:1;min-width:0}
-.iname{font-size:14px;font-weight:600;color:#0F172A;white-space:normal;line-height:1.3;margin-top:3px}
+.iname{font-size:14px;font-weight:600;color:var(--hi);white-space:normal;line-height:1.3;margin-top:3px}
+.isku-badge{display:inline-block;font-family:monospace;font-size:11px;font-weight:700;color:var(--accent);background:rgba(37,99,235,.14);padding:2px 7px;border-radius:6px;margin-bottom:2px}
 .irow{display:flex;align-items:center;gap:10px;margin-top:3px}
 .isku{font-family:monospace;font-size:12px;color:var(--mid)}
 .icnt{font-size:14px;font-weight:800}
@@ -758,6 +759,33 @@ document.addEventListener('DOMContentLoaded', () => {
         inp.value = '';
         setTimeout(() => inp.focus(), 80);
       }
+    }
+  });
+
+  // ── CAPTURA GLOBAL DEL ESCÁNER (a prueba de foco) ──────────────────────
+  // Muchos lectores "pistola" escriben el código + Enter como un teclado. Si el
+  // input pierde el foco (o inputmode lo bloquea en algún equipo), el escaneo se
+  // perdía: el lector pitaba pero no entraba nada. Capturamos también a nivel de
+  // documento para que funcione AUNQUE el campo no esté enfocado. El anti-doble
+  // de scan() (200ms) evita que se registre dos veces si el input también lo tomó.
+  let _gBuf = '', _gLastKey = 0, _gTimer = null;
+  document.addEventListener('keydown', e => {
+    if (_tecladoVisible || _camaraActiva) return;     // modo manual / cámara: no interferir
+    const now = Date.now();
+    if (now - _gLastKey > 120) _gBuf = '';            // pausa larga = nueva lectura
+    _gLastKey = now;
+    if (e.key === 'Enter' || e.keyCode === 13) {
+      const s = _gBuf.trim(); _gBuf = ''; clearTimeout(_gTimer);
+      if (s.length >= 2) scan(s);
+      return;
+    }
+    if (e.key && e.key.length === 1) {                // carácter imprimible
+      _gBuf += e.key;
+      clearTimeout(_gTimer);
+      _gTimer = setTimeout(() => {                     // lector que NO manda Enter
+        const s = _gBuf.trim(); _gBuf = '';
+        if (s.length >= 2) scan(s);
+      }, 120);
     }
   });
 
