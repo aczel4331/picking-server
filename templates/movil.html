@@ -3,16 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<meta name="theme-color" content="#FFFFFF">
+<meta name="theme-color" content="#1E293B">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.json">
 <title>Logibot · Picking</title>
 <style>
-:root{--bg:#F8FAFC;--panel:#FFFFFF;--card:#F1F5F9;--border:#E2E8F0;
-  --accent:#2563EB;--accent2:#1D4ED8;--success:#059669;
-  --warning:#D97706;--danger:#DC2626;--hi:#0F172A;--mid:#64748B;--lo:#94A3B8;--bar:#E2E8F0}
+:root{--bg:#111318;--panel:#1C2030;--card:#161B27;--border:#2A3352;
+  --accent:#2563EB;--accent2:#1D4ED8;--success:#0EA5E9;
+  --warning:#F59E0B;--danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;
   min-height:100vh;display:flex;flex-direction:column}
@@ -78,7 +78,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .chk.ok{color:var(--success)}
 .chk.pend{color:var(--lo)}
 .ibody{flex:1;min-width:0}
-.iname{font-size:14px;font-weight:600;color:var(--hi);white-space:normal;line-height:1.3;margin-top:3px}
+.iname{font-size:14px;font-weight:600;color:#0F172A;white-space:normal;line-height:1.3;margin-top:3px}
 .irow{display:flex;align-items:center;gap:10px;margin-top:3px}
 .isku{font-family:monospace;font-size:12px;color:var(--mid)}
 .icnt{font-size:14px;font-weight:800}
@@ -151,11 +151,35 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
       <div class="t-sub" id="t-sub">Colecta en depósito</div>
     </div>
   </div>
-  <div id="badge" class="badge">— / —</div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <button id="btn-voz" onclick="toggleVoz()"
+            style="background:var(--panel);border:1px solid var(--border);color:var(--accent);
+            border-radius:8px;padding:6px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
+            title="Activar/desactivar voz">🔊</button>
+    <div id="badge" class="badge">— / —</div>
+  </div>
 </div>
 
 <!-- BANNER COMPLETADO -->
 <div id="ban">🎉 ¡COLECTA COMPLETA! Avisá al supervisor.</div>
+
+<!-- GUÍA: PRÓXIMO ÍTEM A BUSCAR -->
+<div id="guia" style="display:none;background:linear-gradient(135deg,#1E3A8A,#152C66);
+     color:#fff;padding:14px 16px;border-bottom:3px solid #06B6D4">
+  <div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:#93C5FD;margin-bottom:4px">
+    👉 PRÓXIMO A BUSCAR</div>
+  <div id="guia-pasillo" style="font-size:20px;font-weight:900;line-height:1.1">—</div>
+  <div id="guia-nombre" style="font-size:15px;font-weight:600;margin-top:4px;line-height:1.25">—</div>
+  <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">
+    <span id="guia-sku" style="font-family:monospace;font-size:13px;background:rgba(255,255,255,.18);
+          padding:2px 8px;border-radius:6px"></span>
+    <span id="guia-estante" style="font-size:12px;color:#BFDBFE"></span>
+    <span id="guia-cant" style="font-size:13px;font-weight:700;color:#FCD34D"></span>
+    <button onclick="repetirVoz()" style="margin-left:auto;background:rgba(255,255,255,.2);
+            border:none;color:#fff;border-radius:8px;padding:5px 12px;font-size:16px;cursor:pointer"
+            title="Repetir por voz">🔊</button>
+  </div>
+</div>
 
 <!-- ESCANEO -->
 <div class="scan-box">
@@ -219,6 +243,100 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <script>
 const $ = id => document.getElementById(id);
 let E = null, last = null;
+let _guiaActual = null;   // SKU que se está buscando ahora
+let _vozActiva  = true;   // TTS habilitado
+
+// ── VOZ (Text-To-Speech en español) ────────────────────────────────────────
+function leerProducto(texto) {
+  if (!_vozActiva || !texto || !window.speechSynthesis) return;
+  try {
+    window.speechSynthesis.cancel();   // cortar lo anterior
+    const u = new SpeechSynthesisUtterance(texto);
+    u.lang  = 'es-UY';
+    u.rate  = 0.95;
+    u.pitch = 1.0;
+    // Preferir una voz en español si está disponible
+    const voces = window.speechSynthesis.getVoices();
+    const vEs = voces.find(v => v.lang && v.lang.toLowerCase().startsWith('es'));
+    if (vEs) u.voice = vEs;
+    window.speechSynthesis.speak(u);
+  } catch(e) {}
+}
+
+// Forzar carga de voces (algunos navegadores las cargan async)
+if (window.speechSynthesis) {
+  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+}
+
+function repetirVoz() {
+  if (_guiaActual) _anunciarItem(_guiaActual);
+}
+
+function toggleVoz() {
+  _vozActiva = !_vozActiva;
+  const btn = $('btn-voz');
+  if (_vozActiva) {
+    btn.textContent = '🔊';
+    btn.style.color = 'var(--accent)';
+    btn.style.borderColor = 'var(--border)';
+    toast('🔊 Voz activada', 'ok');
+    if (_guiaActual) _anunciarItem(_guiaActual);
+  } else {
+    if (window.speechSynthesis) window.speechSynthesis.cancel();  // cortar lo que esté hablando
+    btn.textContent = '🔇';
+    btn.style.color = 'var(--mid)';
+    btn.style.borderColor = 'var(--border)';
+    toast('🔇 Voz desactivada', '');
+  }
+}
+
+// ── GUÍA SECUENCIAL POR PASILLO ─────────────────────────────────────────────
+// Busca el próximo SKU pendiente recorriendo los grupos EN ORDEN (pasillo 1,
+// luego pasillo 2, etc., tal como vienen del servidor).
+function _proximoItem() {
+  if (!E || !E.grupos) return null;
+  const col = E.colecta || {};
+  for (const g of E.grupos) {
+    for (const it of (g.items || [])) {
+      if ((col[it.sku] || 0) < it.req) {
+        return { ...it, pasillo: g.pasillo || 'Sin pasillo' };
+      }
+    }
+  }
+  return null;   // todo completo
+}
+
+function _anunciarItem(it) {
+  if (!it) return;
+  const frase = `En el pasillo ${it.pasillo}, está ${it.nombre || 'el producto'}, `
+              + `SKU ${_deletrear(it.sku)}.`
+              + (it.req > 1 ? ` Llevá ${it.req} unidades.` : '');
+  leerProducto(frase);
+}
+
+// Deletrea el SKU para que la voz no lo lea como número gigante
+function _deletrear(sku) {
+  return String(sku).split('').join(' ');
+}
+
+function actualizarGuia(anunciar = false) {
+  const it  = _proximoItem();
+  const box = $('guia');
+  if (!it) {
+    // No queda nada pendiente
+    if (box) box.style.display = 'none';
+    _guiaActual = null;
+    return;
+  }
+  _guiaActual = it;
+  if (box) box.style.display = 'block';
+  $('guia-pasillo').textContent = '📍 ' + it.pasillo;
+  $('guia-nombre').textContent  = it.nombre || '—';
+  $('guia-sku').textContent     = 'SKU ' + it.sku;
+  $('guia-estante').textContent = it.estanteria ? ('🗂 ' + it.estanteria) : '';
+  $('guia-cant').textContent    = it.req > 1 ? ('× ' + it.req) : '';
+  if (anunciar) _anunciarItem(it);
+}
 
 // ── CARGA ──────────────────────────────────────────────────────────────────
 async function load() {
@@ -326,6 +444,9 @@ function render(quiet = false) {
         </div>
       </div>`;
     }).join('');
+
+    // Actualizar el panel de guía con el próximo ítem a buscar
+    actualizarGuia(false);
   } catch(err) {
     console.error('[MOVIL] render error:', err);
   }
@@ -370,6 +491,7 @@ async function scan(raw) {
       if (d.todo_completo) {
         E.colecta_completa = true;
         toast('🎉 ¡Colecta completa!', 'ok');
+        leerProducto('Terminamos, pasemos al packing.');
       }
 
       render(true);
@@ -380,6 +502,11 @@ async function scan(raw) {
         el.classList.add('recien');
         setTimeout(() => el.classList.remove('recien'), 700);
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+
+      // Anunciar por voz el PRÓXIMO ítem a buscar (en orden de pasillo)
+      if (!d.todo_completo) {
+        setTimeout(() => actualizarGuia(true), 350);
       }
     }
   } catch(e) {
@@ -568,6 +695,22 @@ document.addEventListener('DOMContentLoaded', () => {
   load();
   const inp = $('sku');
 
+  // ── DESBLOQUEO DE VOZ ──────────────────────────────────────────────────
+  // Los navegadores móviles bloquean el audio hasta la primera interacción.
+  // En el primer toque, "despertamos" el motor de voz y anunciamos el ítem.
+  let _vozDesbloqueada = false;
+  function _desbloquearVoz() {
+    if (_vozDesbloqueada || !window.speechSynthesis) return;
+    _vozDesbloqueada = true;
+    try {
+      const u = new SpeechSynthesisUtterance(' ');
+      u.volume = 0; window.speechSynthesis.speak(u);
+    } catch(e) {}
+    setTimeout(() => actualizarGuia(true), 300);
+  }
+  document.addEventListener('touchstart', _desbloquearVoz, { once: true });
+  document.addEventListener('click',      _desbloquearVoz, { once: true });
+
   // ── ESCÁNER LÁSER HARDWARE ─────────────────────────────────────────────
   // El escáner manda el código como si fuera un teclado físico + Enter al final.
   // inputmode="none" = no abre teclado virtual pero SÍ recibe input del escáner.
@@ -582,7 +725,8 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();  // evitar submit solo si hay valor
         clearTimeout(_scanTimer);
         scan(v);
-        setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
+        inp.value = '';
+        inp.focus();
       }
     }
   });
@@ -598,7 +742,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const v2 = inp.value.trim();
       if (v2.length >= 2) {
         scan(v2);
-        setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
+        inp.value = '';
+        inp.focus();
       }
     }, 50);
   });
@@ -610,7 +755,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (v.length >= 2) {
         clearTimeout(_scanTimer);
         scan(v);
-        setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
+        inp.value = '';
+        setTimeout(() => inp.focus(), 80);
       }
     }
   });
@@ -629,58 +775,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Foco inicial
   inp.focus();
 
-  // ── CAPTURA GLOBAL DEL ESCÁNER HARDWARE ───────────────────────────────────
-  // Algunos escáneres incorporados (Zebra, Honeywell, Urovo) envían eventos
-  // de teclado al documento aunque el input no tenga el foco.
-  // Este listener los captura y los procesa igual que si el input tuviera foco.
-  let _gBuf = '';
-  let _gTimer = null;
-
-  document.addEventListener('keydown', e => {
-    if (_tecladoVisible || _camaraActiva) return;
-    // Si el foco ya está en el input, el listener del input lo maneja
-    if (document.activeElement === inp) return;
-
-    if (e.key === 'Enter') {
-      if (_gBuf.length >= 2) {
-        clearTimeout(_gTimer);
-        const v = _gBuf;
-        _gBuf = '';
-        inp.value = v; // mostrar el código escaneado brevemente
-        scan(v);
-        setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
-      }
-      return;
-    }
-
-    if (e.key && e.key.length === 1) {
-      _gBuf += e.key;
-      inp.value = _gBuf; // feedback visual en el campo
-      clearTimeout(_gTimer);
-      _gTimer = setTimeout(() => {
-        if (_gBuf.length >= 2) {
-          const v = _gBuf;
-          _gBuf = '';
-          scan(v);
-          setTimeout(() => { inp.value = ''; inp.focus(); }, 500);
-        } else {
-          _gBuf = ''; inp.value = '';
-        }
-      }, 100);
-    }
-  });
-
-  // Refoco al soltar el dedo (touchend) — cubre el caso de scroll en la lista
-  document.addEventListener('touchend', e => {
-    if (_tecladoVisible || _camaraActiva) return;
-    if (e.target.closest('#btn-teclado') ||
-        e.target.closest('#btn-confirmar') ||
-        e.target.closest('#btn-cam') ||
-        e.target.closest('#cam-overlay') ||
-        e.target.closest('.g-hdr')) return;
-    setTimeout(() => inp.focus(), 60);
-  });
-
   // Botón cámara: solo en dispositivos táctiles
   const btnCam = document.getElementById('btn-cam');
   if (btnCam) {
@@ -697,12 +791,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Auto-refresh del estado cada 5 segundos (silencioso)
   setInterval(loadQ, 5000);
 
-  // Mantener foco en el input cada 1s — asegura que el escáner siempre funcione
+  // Mantener foco en el input cada 3s — asegura que el escáner siempre funcione
+  // Solo si el teclado manual y la cámara no están activos
   setInterval(() => {
     if (!_tecladoVisible && !_camaraActiva && document.activeElement !== inp) {
       inp.focus();
     }
-  }, 1000);
+  }, 3000);
 });
 </script>
 </body>
