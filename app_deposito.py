@@ -187,26 +187,26 @@ def guardar_config(config: dict):
 
 # ─────────────────────────────────────────────────────────────────────────────
 C = {
-    "bg_dark":    "#0D1117",   # Negro azulado profundo (fondo principal)
-    "panel":      "#161B27",   # Azul marino oscuro (paneles)
-    "card":       "#1E2535",   # Azul más claro (tarjetas)
-    "border":     "#2A3347",   # Borde sutil
-    "accent":     "#06B6D4",   # Cian brillante (acento principal)
-    "accent2":    "#0891B2",   # Cian más oscuro
-    "success":    "#10B981",   # Verde esmeralda
-    "warning":    "#F59E0B",   # Ámbar
-    "danger":     "#EF4444",   # Rojo
-    "text_hi":    "#F0F6FF",   # Blanco azulado (textos principal)
-    "text_mid":   "#8899B4",   # Gris azulado (textos secundario)
-    "text_lo":    "#4A5568",   # Gris oscuro (textos tenue)
-    "preview_bg": "#1E2535",   # Fondo vista previa
-    "bar_bg":     "#2A3347",   # Barra progreso fondo
-    "bar_fg":     "#06B6D4",   # Barra progreso cian
-    "bar_ok":     "#10B981",   # Barra completa verde
-    "topbar":     "#0D1117",   # Topbar negro
-    "tab_active": "#06B6D4",   # Tab activo cian
-    "tab_bg":     "#161B27",   # Tab fondo
-    "glow":       "#06B6D420", # Resplandor sutil
+    "bg_dark":    "#EAF0F8",   # Fondo principal (blanco azulado suave)
+    "panel":      "#FFFFFF",   # Paneles (blanco)
+    "card":       "#F2F6FC",   # Tarjetas (blanco azulado claro)
+    "border":     "#CBD7EA",   # Borde sutil (azul marino claro)
+    "accent":     "#1E3A8A",   # Azul marino (acento principal)
+    "accent2":    "#152C66",   # Azul marino oscuro (hover/activo)
+    "success":    "#15803D",   # Verde
+    "warning":    "#B45309",   # Ámbar oscuro (legible sobre blanco)
+    "danger":     "#DC2626",   # Rojo
+    "text_hi":    "#0F2347",   # Azul marino oscuro (texto principal)
+    "text_mid":   "#48597A",   # Gris azulado (texto secundario)
+    "text_lo":    "#8A99B5",   # Gris azulado claro (texto tenue)
+    "preview_bg": "#F2F6FC",   # Fondo vista previa (claro)
+    "bar_bg":     "#DCE4F2",   # Barra progreso fondo (claro)
+    "bar_fg":     "#1E3A8A",   # Barra progreso azul marino
+    "bar_ok":     "#15803D",   # Barra completa verde
+    "topbar":     "#FFFFFF",   # Topbar blanco
+    "tab_active": "#1E3A8A",   # Tab activo azul marino
+    "tab_bg":     "#EAF0F8",   # Tab fondo claro
+    "glow":       "#1E3A8A20", # Resplandor sutil azul marino
 }
 
 FONT_TITLE  = ("Segoe UI Semibold", 14)
@@ -3956,7 +3956,7 @@ class AsistenteDepositoApp:
                 text=f"⏳  Procesando {nombre}...", fg=C["accent"])
             self.root.update_idletasks()
             # Deshabilitar botón mientras procesa
-            self.btn_cargar.config(state="disabled")
+            if hasattr(self, "btn_cargar"): self.btn_cargar.config(state="disabled")
             import threading
             threading.Thread(target=self._mapear_pdf_thread, daemon=True).start()
 
@@ -4109,7 +4109,7 @@ class AsistenteDepositoApp:
         self.lbl_estado_pdf.config(
             text=f"✅  {cant} paquetes cargados. Subiendo a Railway…",
             fg=C["accent"])
-        self.btn_cargar.config(state="normal")
+        if hasattr(self, "btn_cargar"): self.btn_cargar.config(state="normal")
         self.actualizar_contador_global()
         self._dibujar_fase1()
         self.entrada_sku.config(state="normal")
@@ -4125,7 +4125,7 @@ class AsistenteDepositoApp:
         self.root.after(5000, self._sincronizar_desde_nube)
 
     def _pdf_error(self, msg):
-        self.btn_cargar.config(state="normal")
+        if hasattr(self, "btn_cargar"): self.btn_cargar.config(state="normal")
         self.lbl_estado_pdf.config(text="❌  Error al cargar el PDF.", fg=C["danger"])
 
     def _limpiar_fase1(self):
@@ -4345,7 +4345,6 @@ class AsistenteDepositoApp:
             self.col_control.config(bg=C["panel"])
             self.lbl_num_caja.config(fg=C["success"])
         self.root.after(400, _restaurar)
-        self.canvas_fase1.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _bind_scroll_recursivo(self, widget, canvas=None):
         """Enlaza scroll de rueda a todos los hijos de un widget hacia un canvas."""
@@ -4908,12 +4907,18 @@ class AsistenteDepositoApp:
             if pendientes == 0:
                 self.lbl_num_caja.config(text="")
                 self.lbl_imprimiendo.config(text="")
+                self.lbl_resultado.config(text="")
+                self._mostrar_placeholder_visor()
                 messagebox.showinfo(
                     "¡Lote terminado!",
-                    "🎉  Todos los pedidos procesados.",
+                    "🎉  Todos los pedidos fueron procesados e impresos.\n\n"
+                    "Generá un nuevo lote desde la pestaña «Pedidos ML».",
                     parent=self.root)
-                self.lbl_resultado.config(text="")
-                self.btn_cargar.focus()
+                # Volver a la pestaña Pedidos ML para iniciar un nuevo lote
+                try:
+                    self._switch_tab("ml")
+                except Exception:
+                    pass
             else:
                 self.lbl_num_caja.config(text="")
                 self.lbl_resultado.config(text="✅  Siguiente pedido.", fg=C["text_mid"])
@@ -5166,6 +5171,7 @@ try {{
                 "colecta_completa": False,
                 "total_skus":       len(total_req),
                 "total_uds":        sum(total_req.values()),
+                "cargado":          True,
             }
             # Escritura atómica: escribir en temp y renombrar
             tmp = estado_path + ".tmp"
@@ -5413,12 +5419,20 @@ try {{
             for d in self.pedidos.values():
                 for s, q in d["skus_requeridos"].items():
                     total_req[s] = total_req.get(s, 0) + q
-            if all(self.colecta_global.get(s,0) >= q for s,q in total_req.items()):
-                self.lbl_resultado.config(
-                    text="✅ ¡Colecta completa desde celular! Pasá a Fase 2.",
-                    fg=C["success"])
+            if bool(total_req) and all(self.colecta_global.get(s,0) >= q
+                                       for s,q in total_req.items()):
                 self.col_control.config(bg=C["success"])
                 self.root.after(1000, lambda: self.col_control.config(bg=C["panel"]))
+                # La colecta se completo desde el celular → pasar solo a Fase 2
+                if self.fase_actual == 1:
+                    self.lbl_resultado.config(
+                        text="✅ ¡Colecta completa desde celular! Pasando a Fase 2...",
+                        fg=C["success"])
+                    self._ejecutar_transicion_fase2()
+                else:
+                    self.lbl_resultado.config(
+                        text="✅ ¡Colecta completa desde celular!",
+                        fg=C["success"])
 
     def _flash_sku_escaneado(self, sku):
         """Parpadeo verde en el item de la lista cuando llega un escaneo del celular."""
