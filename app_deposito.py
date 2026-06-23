@@ -5391,48 +5391,63 @@ try {{
             return False
 
     def _sincronizar_colecta_movil(self, colecta_movil):
-        """Recibe escaneos del celular y actualiza checkmarks en tiempo real."""
-        cambios = False
-        nuevos  = []   # SKUs que cambiaron en esta sincronización
+        """Recibe la colecta del celular (via nube) y RE-APLICA todos los checkmarks.
 
+        Es idempotente: en cada poll vuelve a pintar todas las tildes de Fase 1
+        a partir de la colecta de la nube, asi nunca queda un escaneo del celular
+        sin reflejar en el escritorio.
+        """
+        if not colecta_movil:
+            return
+        cambios = []
+        # 1) Fusionar la colecta de la nube con la local (sin pisar avances locales)
         for sku, qty in colecta_movil.items():
-            qty = int(qty)
-            ant = self.colecta_global.get(sku, 0)
-            if ant != qty:
+            try:
+                qty = int(qty)
+            except Exception:
+                continue
+            ant = int(self.colecta_global.get(sku, 0) or 0)
+            if qty > ant:
                 self.colecta_global[sku] = qty
-                self._actualizar_checkmarks_fase1(sku)
-                if qty > ant:   # Nuevo escaneo (no retroceso)
-                    nuevos.append(sku)
-                cambios = True
+                cambios.append(sku)
+
+        # 2) Re-aplicar TODAS las tildes de Fase 1 desde colecta_global (idempotente)
+        if self.fase_actual == 1 and getattr(self, "fase1_items", None):
+            for sku in list(self.fase1_items.keys()):
+                try:
+                    self._actualizar_checkmarks_fase1(sku)
+                except Exception:
+                    pass
 
         if cambios:
-            # Actualizar totales globales
-            self.actualizar_contador_global()
-            self.root.update_idletasks()
+            try:
+                self.actualizar_contador_global()
+                self.root.update_idletasks()
+            except Exception:
+                pass
+            for sku in cambios[:3]:
+                try:
+                    self._flash_sku_escaneado(sku)
+                except Exception:
+                    pass
 
-            # Parpadeo verde en el panel izquierdo por cada SKU nuevo escaneado
-            for sku in nuevos[:3]:   # máximo 3 simultáneos
-                self._flash_sku_escaneado(sku)
-
-            # Si toda la colecta está completa, notificar
-            total_req = {}
-            for d in self.pedidos.values():
-                for s, q in d["skus_requeridos"].items():
-                    total_req[s] = total_req.get(s, 0) + q
-            if bool(total_req) and all(self.colecta_global.get(s,0) >= q
-                                       for s,q in total_req.items()):
+        # 3) Si la colecta esta completa, pasar automaticamente a Fase 2
+        total_req = {}
+        for d in self.pedidos.values():
+            for s, q in d["skus_requeridos"].items():
+                total_req[s] = total_req.get(s, 0) + q
+        if bool(total_req) and all(self.colecta_global.get(s, 0) >= q
+                                   for s, q in total_req.items()):
+            try:
                 self.col_control.config(bg=C["success"])
                 self.root.after(1000, lambda: self.col_control.config(bg=C["panel"]))
-                # La colecta se completo desde el celular → pasar solo a Fase 2
-                if self.fase_actual == 1:
-                    self.lbl_resultado.config(
-                        text="✅ ¡Colecta completa desde celular! Pasando a Fase 2...",
-                        fg=C["success"])
-                    self._ejecutar_transicion_fase2()
-                else:
-                    self.lbl_resultado.config(
-                        text="✅ ¡Colecta completa desde celular!",
-                        fg=C["success"])
+            except Exception:
+                pass
+            if self.fase_actual == 1:
+                self.lbl_resultado.config(
+                    text="✅ ¡Colecta completa desde celular! Pasando a Fase 2...",
+                    fg=C["success"])
+                self._ejecutar_transicion_fase2()
 
     def _flash_sku_escaneado(self, sku):
         """Parpadeo verde en el item de la lista cuando llega un escaneo del celular."""
@@ -5695,19 +5710,48 @@ try {{
         """Polling: lee la colecta del servidor Railway y sincroniza checkmarks."""
         import threading
         def _worker():
+            info = {"ok": False, "n": 0, "err": None, "colecta": None}
             try:
                 import urllib.request, json as _json
                 url = RAILWAY_URL.rstrip("/")
-                with urllib.request.urlopen(url + "/api/estado", timeout=5) as resp:
+                with urllib.request.urlopen(url + "/api/estado", timeout=6) as resp:
                     data = _json.loads(resp.read())
-                colecta = data.get("colecta", {})
-                if colecta:
-                    self.root.after(0, lambda: self._sincronizar_colecta_movil(colecta))
-            except Exception:
-                pass
+                colecta = data.get("colecta", {}) or {}
+                info["ok"] = True
+                info["colecta"] = colecta
+                info["n"] = sum(int(v) for v in colecta.values())
+            except Exception as ex:
+                info["err"] = str(ex)
+            self.root.after(0, lambda: self._on_sync_nube(info))
         threading.Thread(target=_worker, daemon=True).start()
-        # Re-programar cada 5 segundos
-        self.root.after(5000, self._sincronizar_desde_nube)
+        # Re-programar cada 3 segundos
+        self.root.after(3000, self._sincronizar_desde_nube)
+
+    def _on_sync_nube(self, info):
+        """Procesa el resultado del poll: log + indicador visible + aplicar colecta."""
+        import datetime as _dt
+        ts = _dt.datetime.now().strftime("%H:%M:%S")
+        # (a) Log a archivo para diagnostico
+        try:
+            ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "picking_sync.log")
+            with open(ruta, "a", encoding="utf-8") as f:
+                if info.get("err"):
+                    f.write(f"{ts}  ERROR  {info['err']}\n")
+                else:
+                    f.write(f"{ts}  OK  {info['n']} uds  colecta={info.get('colecta')}\n")
+        except Exception:
+            pass
+        # (b) Indicador visible en el titulo de la ventana
+        try:
+            if info.get("err"):
+                self.root.title(f"Logibot - Picking Pro   [nube ERROR {ts}]")
+            else:
+                self.root.title(f"Logibot - Picking Pro   [nube OK - {info['n']} uds colectadas - {ts}]")
+        except Exception:
+            pass
+        # (c) Aplicar la colecta recibida
+        if info.get("ok") and info.get("colecta") is not None:
+            self._sincronizar_colecta_movil(info["colecta"])
 
     def _html_app_movil(self):
         """HTML de la app móvil embebido. Intenta leer el archivo externo primero
