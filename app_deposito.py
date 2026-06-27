@@ -1569,6 +1569,10 @@ class AsistenteDepositoApp:
         self.root.after(600, self._verificar_primera_vez)
         # Auto-refresh de pedidos ML cada 3 minutos
         self.root.after(60_000, self._auto_refresh_ml)
+        # Base de pasillos de Google: se baja sola en segundo plano cada 90s,
+        # asi al generar el lote ya está fresca y no hay que esperar la descarga.
+        self._google_base_ts = 0.0   # timestamp del último refresh exitoso
+        self.root.after(3_000, self._prefetch_google_base)
         # NOTA: el sincronizador local viejo (_sync_colecta_servidor) quedó
         # DESACTIVADO a propósito. Leía estado_picking.json (servidor Flask local)
         # y pisaba la colecta que trae la nube, borrando las tildes. Con Railway,
@@ -2888,10 +2892,40 @@ class AsistenteDepositoApp:
 
     # ── Generar lote de picking ───────────────────────────────────────────────
 
+    def _prefetch_google_base(self):
+        """Baja la planilla de Google en SEGUNDO PLANO (sin bloquear la UI) y
+        actualiza db_nombres. Se reprograma cada 90s, así al generar el lote la
+        base ya está fresca y la generación es instantánea."""
+        import threading
+        def _worker():
+            ruta   = descargar_planilla_google(timeout=20)
+            nuevos = leer_planilla_pasillos_google(ruta) if ruta else {}
+            if nuevos:
+                def _aplicar():
+                    import time as _t
+                    self.db_nombres.update(nuevos)
+                    self._google_base_ts = _t.time()
+                    try:
+                        self.lbl_estado_excel.config(
+                            text=f"✅  Base de pasillos al día (Google) — {len(nuevos)} entradas",
+                            fg=C["success"])
+                    except Exception:
+                        pass
+                self.root.after(0, _aplicar)
+            # Reprogramar dentro del worker para no acumular timers si falla
+            self.root.after(90_000, self._prefetch_google_base)
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _actualizar_base_desde_google(self):
-        """Descarga la planilla de Google y fusiona los pasillos en db_nombres.
-        Si falla (sin internet, planilla no compartida, etc.) mantiene la base
-        actual y NO interrumpe la generacion del lote."""
+        """Asegura que la base de pasillos esté fresca antes de armar el lote.
+        Si el prefetch en segundo plano la actualizó hace poco, NO espera nada.
+        Si está vieja, la baja en el momento (espera corta). Nunca interrumpe la
+        generación del lote: si falla, usa la base actual."""
+        import time as _t
+        # Ya está fresca (la bajó el prefetch hace < 2 min) → instantáneo
+        if (_t.time() - getattr(self, "_google_base_ts", 0)) < 120:
+            return True
+
         try:
             self.lbl_ml_estado.config(
                 text="Actualizando base de pasillos desde Google…", fg=C["accent"])
@@ -2899,7 +2933,7 @@ class AsistenteDepositoApp:
         except Exception:
             pass
 
-        ruta = descargar_planilla_google()
+        ruta = descargar_planilla_google(timeout=12)
         if not ruta:
             try:
                 self.lbl_ml_estado.config(
@@ -2921,6 +2955,7 @@ class AsistenteDepositoApp:
 
         # Fusionar: la planilla de Google manda para sus SKUs; el resto se conserva.
         self.db_nombres.update(nuevos)
+        self._google_base_ts = _t.time()
         try:
             self.lbl_estado_excel.config(
                 text=f"✅  Base actualizada desde Google — {len(nuevos)} entradas",
