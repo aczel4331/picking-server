@@ -25,6 +25,10 @@ except ImportError:
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 RAILWAY_URL = "https://picking-server-production.up.railway.app"
 
+# Planilla de pasillos en Google Sheets (se baja automaticamente al generar el lote)
+GOOGLE_SHEET_ID  = "1SgF12AaFo5zLbHWECrowiY85n_SjbcR0mfCUr4kGQ7g"
+GOOGLE_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=xlsx"
+
 def obtener_impresoras_windows():
     try:
         resultado = subprocess.run(
@@ -180,6 +184,107 @@ def leer_excel_skus(ruta):
     except Exception:
         pass
     return db
+
+def leer_planilla_pasillos_google(ruta):
+    """
+    Lee la planilla NUEVA (una sola hoja consolidada con columnas
+    SKU / Nombre del producto / PASILLOS, mas el ID de MercadoLibre).
+    Detecta las columnas POR NOMBRE de encabezado, asi aguanta si las reordenan.
+    Devuelve { CLAVE_UPPER: {"nombre","pasillo","estanteria"} } keyado por SKU y por ID.
+    """
+    if not _OPENPYXL_OK or not ruta or not os.path.exists(ruta):
+        return {}
+
+    def _norm(s):
+        return re.sub(r"\s+", " ", str(s).strip().upper()) if s is not None else ""
+
+    def _limpiar_pasillo(v):
+        if v is None:
+            return ""
+        s = str(v).replace("\t", " ").replace("\n", " ")
+        s = re.sub(r"\s+", " ", s).strip()
+        return "" if s in ("·", "-", "NONE", "") else s
+
+    db = {}
+    try:
+        wb = openpyxl.load_workbook(ruta, data_only=True)
+        for hoja in wb.sheetnames:
+            ws    = wb[hoja]
+            filas = list(ws.iter_rows(values_only=True))
+            if not filas:
+                continue
+
+            # Buscar la fila de encabezado: debe tener "SKU" y alguna con "PASILLO"
+            hdr_idx = None
+            for i, fila in enumerate(filas[:6]):
+                vals = [_norm(c) for c in fila]
+                if "SKU" in vals and any("PASILLO" in v for v in vals):
+                    hdr_idx = i
+                    break
+            if hdr_idx is None:
+                continue   # no es una hoja de pasillos
+
+            hdr     = [_norm(c) for c in filas[hdr_idx]]
+            col_sku = hdr.index("SKU")
+            col_pas = next(i for i, v in enumerate(hdr) if "PASILLO" in v)
+            col_nom = next((i for i, v in enumerate(hdr)
+                            if "PRODUCTO" in v or "TITULO" in v or "TÍTULO" in v), None)
+            col_id  = col_sku - 1 if col_sku > 0 else None
+
+            for fila in filas[hdr_idx + 1:]:
+                if not fila:
+                    continue
+                sku_b   = (str(fila[col_sku]).strip()
+                           if col_sku < len(fila) and fila[col_sku] is not None else "")
+                nombre  = (str(fila[col_nom]).strip().replace("\n", " ")
+                           if col_nom is not None and col_nom < len(fila)
+                           and fila[col_nom] is not None else "")
+                pasillo = _limpiar_pasillo(fila[col_pas]) if col_pas < len(fila) else ""
+                item_id = (str(fila[col_id]).strip()
+                           if col_id is not None and col_id < len(fila)
+                           and fila[col_id] is not None else "")
+
+                if not nombre or len(nombre) < 2:
+                    continue
+                if _norm(nombre) in ("NOMBRE DEL PRODUCTO", "PRODUCTO", "TITULO", "TÍTULO"):
+                    continue
+
+                entrada    = {"nombre": nombre, "pasillo": pasillo, "estanteria": ""}
+                sku_valido = sku_b and sku_b not in ("-", "·", "None", "")
+                id_limpio  = item_id.replace(".0", "")
+                id_valido  = id_limpio and id_limpio.isdigit()
+
+                if sku_valido:
+                    db[sku_b.upper()] = dict(entrada)
+                if id_valido:
+                    db.setdefault(id_limpio.upper(), dict(entrada))
+        wb.close()
+    except Exception:
+        pass
+    return db
+
+
+def descargar_planilla_google(timeout=25):
+    """
+    Descarga la planilla de Google Sheets como .xlsx y devuelve la ruta temporal,
+    o None si falla (sin conexion, no compartida, etc.). No lanza excepciones.
+    """
+    try:
+        import urllib.request, tempfile
+        req = urllib.request.Request(
+            GOOGLE_SHEET_URL,
+            headers={"User-Agent": "Mozilla/5.0 (PickingApp)"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+        # Un .xlsx es un ZIP: empieza con 'PK'. Si es HTML (no compartida) -> descartar.
+        if not data[:2] == b"PK":
+            return None
+        tmp = os.path.join(tempfile.gettempdir(), "base_pasillos_google.xlsx")
+        with open(tmp, "wb") as f:
+            f.write(data)
+        return tmp
+    except Exception:
+        return None
 
 def guardar_config(config: dict):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -1464,8 +1569,10 @@ class AsistenteDepositoApp:
         self.root.after(600, self._verificar_primera_vez)
         # Auto-refresh de pedidos ML cada 3 minutos
         self.root.after(60_000, self._auto_refresh_ml)
-        # Sincronizar colecta desde servidor picking cada 2 segundos
-        self.root.after(2_000, self._sync_colecta_servidor)
+        # NOTA: el sincronizador local viejo (_sync_colecta_servidor) quedó
+        # DESACTIVADO a propósito. Leía estado_picking.json (servidor Flask local)
+        # y pisaba la colecta que trae la nube, borrando las tildes. Con Railway,
+        # el único sincronizador válido es _sincronizar_desde_nube.
 
     def _build_ui(self):
         # ── Franja cian superior ultra-delgada ───────────────────────────────
@@ -2282,45 +2389,11 @@ class AsistenteDepositoApp:
             self.lbl_refresh_countdown.config(text="↻ 1:00", fg=C["text_lo"])
 
     def _sync_colecta_servidor(self):
-        """Sincroniza el estado de colecta leyendo estado_picking.json (escrito por servidor_movil.py)."""
-        try:
-            estado_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "estado_picking.json")
-            if not os.path.exists(estado_path):
-                return
-
-            with open(estado_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            if data.get("cargado"):
-                colecta_servidor = data.get("colecta", {})
-
-                if hasattr(self, 'fase1_items') and self.fase1_items:
-                    for sku in list(self.fase1_items.keys()):
-                        cantidad_servidor = colecta_servidor.get(sku, 0)
-                        cantidad_local    = self.colecta_global.get(sku, 0)
-
-                        if cantidad_servidor != cantidad_local:
-                            self.colecta_global[sku] = cantidad_servidor
-                            item = self.fase1_items[sku]
-
-                            lbl = item.get("lbl_cnt")
-                            if lbl and lbl.winfo_exists():
-                                req = item.get("req", 1)
-                                lbl.config(text=f"{cantidad_servidor}/{req}")
-
-                            chk = item.get("checkbox")
-                            if chk and chk.winfo_exists():
-                                req = item.get("req", 1)
-                                if cantidad_servidor >= req:
-                                    chk.config(fg=C["success"])
-                                    self._animar_checkmark(sku)
-                                else:
-                                    chk.config(fg=C["text_lo"])
-        except Exception as e:
-            print(f"[SYNC] Error leyendo estado_picking.json: {e}")
-        finally:
-            if hasattr(self, 'root') and self.root.winfo_exists():
-                self.root.after(2_000, self._sync_colecta_servidor)
+        """DESACTIVADO. Sincronizador local viejo (leía estado_picking.json del
+        servidor Flask local). Con Railway pisaba la colecta de la nube y borraba
+        las tildes. Ahora es un no-op: el único sincronizador es _sincronizar_desde_nube.
+        NO se reprograma y NO toca colecta_global."""
+        return
 
     def _auto_refresh_ml(self):
         """Auto-refresh de pedidos ML cada 3 minutos. Silencioso."""
@@ -2815,12 +2888,58 @@ class AsistenteDepositoApp:
 
     # ── Generar lote de picking ───────────────────────────────────────────────
 
+    def _actualizar_base_desde_google(self):
+        """Descarga la planilla de Google y fusiona los pasillos en db_nombres.
+        Si falla (sin internet, planilla no compartida, etc.) mantiene la base
+        actual y NO interrumpe la generacion del lote."""
+        try:
+            self.lbl_ml_estado.config(
+                text="Actualizando base de pasillos desde Google…", fg=C["accent"])
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+        ruta = descargar_planilla_google()
+        if not ruta:
+            try:
+                self.lbl_ml_estado.config(
+                    text="No se pudo bajar la planilla de Google — usando la base actual.",
+                    fg=C["warning"])
+            except Exception:
+                pass
+            return False
+
+        nuevos = leer_planilla_pasillos_google(ruta)
+        if not nuevos:
+            try:
+                self.lbl_ml_estado.config(
+                    text="La planilla de Google no tenía datos legibles — usando la base actual.",
+                    fg=C["warning"])
+            except Exception:
+                pass
+            return False
+
+        # Fusionar: la planilla de Google manda para sus SKUs; el resto se conserva.
+        self.db_nombres.update(nuevos)
+        try:
+            self.lbl_estado_excel.config(
+                text=f"✅  Base actualizada desde Google — {len(nuevos)} entradas",
+                fg=C["success"])
+        except Exception:
+            pass
+        return True
+
     def _ml_generar_lote(self):
         """
         Genera el lote de picking usando SOLO los pedidos visibles actualmente:
         - De la pestaña seleccionada (Flex, Mercado Envíos, ME1 o Todos)
         - Solo pendientes (no impresos, no en estados finales)
         """
+        # Actualizar la base de pasillos desde Google ANTES de armar el lote,
+        # asi el lote usa siempre los pasillos mas nuevos. Si falla, sigue con la
+        # base actual (no interrumpe la generacion del lote).
+        self._actualizar_base_desde_google()
+
         tipo_activo = self._ml_filtro_tipo.get()
         ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
         NOMBRES_TIPO = {
@@ -3285,6 +3404,11 @@ class AsistenteDepositoApp:
             fg=C["text_lo"], bg=C["panel"], font=FONT_SMALL,
             wraplength=360, justify="left")
         self.lbl_estado_excel.pack(anchor="w", pady=(4, 0))
+        # ALIAS: varias rutas (generar lote, subida a nube) usan self.lbl_estado_pdf,
+        # que nunca se creaba y lanzaba AttributeError JUSTO antes de arrancar el
+        # poller de la nube. Lo apuntamos al label que sí existe para que el
+        # sincronizador de Railway arranque siempre.
+        self.lbl_estado_pdf = self.lbl_estado_excel
 
         tk.Frame(p, bg=C["border"], height=1).pack(fill="x", padx=18)
 
@@ -4150,6 +4274,17 @@ class AsistenteDepositoApp:
         tk.Label(hdr_info,
                  text=f"{len(total_req)} SKUs distintos  ·  {sum(total_req.values())} unidades en total",
                  font=FONT_SMALL, bg=C["panel"], fg=C["text_mid"]).pack(anchor="w")
+        # Indicador de sincronizacion con la nube (se actualiza en cada poll)
+        self.lbl_sync_status = tk.Label(hdr_info,
+                 text="☁ Sincronizando con la nube…",
+                 font=FONT_SMALL, bg=C["panel"], fg=C["text_lo"])
+        self.lbl_sync_status.pack(anchor="w")
+        # Boton de diagnostico: muestra exactamente que devuelve el servidor
+        tk.Button(hdr_info, text="🔄 Probar sincronización ahora",
+                  font=("Segoe UI", 8), bg=C["accent"], fg="white",
+                  activebackground=C["accent2"], activeforeground="white",
+                  relief="flat", cursor="hand2", padx=8, pady=3, bd=0,
+                  command=self._diagnostico_sync).pack(anchor="w", pady=(4, 0))
 
         # Agrupar SKUs por pasillo
         grupos = {}   # { pasillo: [ (sku, qty, desc, estanteria) ] }
@@ -4226,6 +4361,14 @@ class AsistenteDepositoApp:
                              anchor="w").pack(anchor="w")
 
                 self.fase1_items[sku] = {"checkbox": chk, "lbl_cnt": lbl_cnt, "req": qty}
+
+        # Reaplicar el estado de colecta ya conocido sobre las tildes recién creadas,
+        # para que un redibujado nunca borre un avance que ya trajo la nube.
+        for _sku in list(self.fase1_items.keys()):
+            try:
+                self._actualizar_checkmarks_fase1(_sku)
+            except Exception:
+                pass
 
         self._bind_scroll_recursivo(self.frame_fase1, self.canvas_fase1)
 
@@ -5706,6 +5849,59 @@ try {{
             text=f"⚠  Lote cargado localmente (Railway sin conexión)",
             fg=C["warning"])
 
+    def _diagnostico_sync(self):
+        """Consulta /api/estado de forma sincrónica y muestra EXACTAMENTE lo que
+        devuelve el servidor. Sirve para ver de qué lado está el corte de sync."""
+        import urllib.request, json as _json
+        url = RAILWAY_URL.rstrip("/") + "/api/estado"
+        try:
+            with urllib.request.urlopen(url, timeout=8) as resp:
+                data = _json.loads(resp.read())
+        except Exception as e:
+            messagebox.showerror(
+                "Diagnóstico de sincronización",
+                f"❌ No se pudo conectar al servidor:\n\n{url}\n\nError: {e}",
+                parent=self.root)
+            return
+
+        colecta  = data.get("colecta", {}) or {}
+        cargado  = data.get("cargado", False)
+        fase     = data.get("fase", "?")
+        total    = sum(int(v) for v in colecta.values()) if colecta else 0
+        # Mostrar hasta 15 SKUs con cantidad > 0
+        con_cant = {k: v for k, v in colecta.items() if int(v) > 0}
+        detalle  = "\n".join(f"   • {k} = {v}" for k, v in list(con_cant.items())[:15]) \
+                   or "   (vacía — el servidor no tiene ningún SKU colectado)"
+
+        # Comparar contra lo que el escritorio tiene dibujado
+        en_fase1 = set(getattr(self, "fase1_items", {}).keys())
+        en_colecta = set(con_cant.keys())
+        no_coinciden = en_colecta - en_fase1
+
+        msg = (
+            f"Servidor: {url}\n\n"
+            f"cargado: {cargado}\n"
+            f"fase: {fase}\n"
+            f"total colectado: {total} uds\n"
+            f"SKUs con cantidad en el servidor:\n{detalle}\n\n"
+            f"SKUs en la lista del escritorio: {len(en_fase1)}\n"
+        )
+        if no_coinciden:
+            msg += ("\n⚠ Hay SKUs colectados en el servidor que NO están en la "
+                    f"lista del escritorio:\n   {', '.join(list(no_coinciden)[:10])}\n"
+                    "Esto significa que el lote del escritorio y el del servidor "
+                    "no son el mismo (regenerá el lote).")
+        elif total > 0:
+            msg += ("\n✅ El servidor SÍ tiene colecta y coincide con la lista. "
+                    "Forzando el marcado ahora…")
+            # Forzar el marcado inmediatamente
+            self._sincronizar_colecta_movil(colecta)
+        else:
+            msg += ("\n❌ El servidor reporta colecta vacía. El escaneo del móvil "
+                    "no está llegando al servidor (o el móvil apunta a otro lote).")
+
+        messagebox.showinfo("Diagnóstico de sincronización", msg, parent=self.root)
+
     def _sincronizar_desde_nube(self):
         """Polling: lee la colecta del servidor Railway y sincroniza checkmarks."""
         import threading
@@ -5747,6 +5943,18 @@ try {{
                 self.root.title(f"Logibot - Picking Pro   [nube ERROR {ts}]")
             else:
                 self.root.title(f"Logibot - Picking Pro   [nube OK - {info['n']} uds colectadas - {ts}]")
+        except Exception:
+            pass
+        # (b2) Indicador visible dentro del panel de Fase 1
+        try:
+            if hasattr(self, "lbl_sync_status") and self.lbl_sync_status.winfo_exists():
+                if info.get("err"):
+                    self.lbl_sync_status.config(
+                        text=f"☁ Sin conexion a la nube  ·  {ts}", fg=C["danger"])
+                else:
+                    self.lbl_sync_status.config(
+                        text=f"☁ Nube: el servidor reporta {info['n']} uds colectadas  ·  {ts}",
+                        fg=(C["success"] if info['n'] > 0 else C["text_lo"]))
         except Exception:
             pass
         # (c) Aplicar la colecta recibida

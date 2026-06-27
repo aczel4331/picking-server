@@ -91913,5 +91913,35 @@
     "nombre": "Alfombra Peluda Shaggy 2.0 X 2.4 Mts Calidad Suave Premium",
     "pasillo": "3",
     "estanteria": ""
+  },
+  "MOR7271": {
+    "nombre": "Grifo Monocromatico",
+    "pasillo": "Morango",
+    "estanteria": ""
+  },
+  "MOR00018GRIS": {
+    "nombre": "Alfombra peluda Shag",
+    "pasillo": "Morango P1",
+    "estanteria": ""
+  },
+  "MOR7941": {
+    "nombre": "Set de cuchillos y T",
+    "pasillo": "Morango P1",
+    "estanteria": ""
+  },
+  "MOR00029": {
+    "nombre": "CARRITO ORGANIZADOR",
+    "pasillo": "Morango P2",
+    "estanteria": ""
+  },
+  "MOR00021NEGRO": {
+    "nombre": "ALFOMBRA PELUDA SHANG",
+    "pasillo": "MORANGO",
+    "estanteria": ""
+  },
+  "MOR8439": {
+    "nombre": "CARPA CUBRE AUTO TAL",
+    "pasillo": "MORANGO P1",
+    "estanteria": ""
   }
 }

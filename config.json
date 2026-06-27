@@ -1,6 +1,6 @@
 {
   "impresora": "Datamax-O'Neil E-4204B Mark III",
-  "excel_path": "C:/Users/Lenovo/Desktop/stock estanterias.xlsx",
+  "excel_path": "C:/Users/Lenovo/Downloads/PLANILLA AZCEL PARA EL ARMADO DE PRODUCTOS.xlsx",
   "codigo_supervisor": "1234",
   "servidor_nube": "https://picking-server-production.up.railway.app",
   "clave_nube": "everest2025"
