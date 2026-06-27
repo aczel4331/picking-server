@@ -204,6 +204,10 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
             border-radius:8px;padding:5px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
             title="Abrir teclado manual">⌨</button>
   </div>
+  <!-- Área para mostrar imagen del producto -->
+  <div id="img-area" style="margin-top:10px;text-align:center;min-height:60px;display:none">
+    <img id="prod-img" style="max-width:100%;max-height:140px;border-radius:8px;object-fit:contain" />
+  </div>
 </div>
 
 <!-- MODAL CAMARA -->
@@ -246,6 +250,25 @@ const $ = id => document.getElementById(id);
 let E = null, last = null;
 let _guiaActual = null;   // SKU que se está buscando ahora
 let _vozActiva  = true;   // TTS habilitado
+
+// ── IMAGEN DEL PRODUCTO ────────────────────────────────────────────────────────
+async function cargarImagen(sku) {
+  const imgArea = $('img-area');
+  const prodImg = $('prod-img');
+  if (!imgArea || !prodImg) return;
+  imgArea.style.display = 'none';
+  try {
+    const r = await fetch(`/api/imagen-sku/${sku}`);
+    const d = await r.json();
+    if (d.existe && d.imagen_url) {
+      prodImg.src = d.imagen_url;
+      prodImg.alt = d.titulo || sku;
+      imgArea.style.display = 'block';
+      return;
+    }
+  } catch(e) {}
+  imgArea.style.display = 'none';
+}
 
 // ── VOZ (Text-To-Speech en español) ────────────────────────────────────────
 function leerProducto(texto) {
@@ -496,6 +519,9 @@ async function scan(raw) {
       }
 
       render(true);
+
+      // Cargar y mostrar imagen del producto
+      cargarImagen(sku);
 
       // Resaltar el item escaneado y hacer scroll
       const el = document.getElementById(`item-${sku}`);

@@ -8,6 +8,8 @@ import re
 import json
 import subprocess
 from datetime import datetime
+import urllib.request
+import io
 
 # Notificaciones Windows nativas
 try:
@@ -1554,10 +1556,9 @@ class AsistenteDepositoApp:
         self.root.after(600, self._verificar_primera_vez)
         # Auto-refresh de pedidos ML cada 3 minutos
         self.root.after(60_000, self._auto_refresh_ml)
-        # Base de pasillos de Google: se baja sola en segundo plano cada 90s,
-        # asi al generar el lote ya está fresca y no hay que esperar la descarga.
-        self._google_base_ts = 0.0   # timestamp del último refresh exitoso
-        self.root.after(3_000, self._prefetch_google_base)
+        # NOTA: la descarga de Google ahora es MANUAL (botón) para evitar
+        # demoras al generar el lote. El usuario toca el botón cuando quiera
+        # actualizar desde Google.
         # NOTA: el sincronizador local viejo (_sync_colecta_servidor) quedó
         # DESACTIVADO a propósito. Leía estado_picking.json (servidor Flask local)
         # y pisaba la colecta que trae la nube, borrando las tildes. Con Railway,
@@ -3015,11 +3016,6 @@ class AsistenteDepositoApp:
         - De la pestaña seleccionada (Flex, Mercado Envíos, ME1 o Todos)
         - Solo pendientes (no impresos, no en estados finales)
         """
-        # Actualizar la base de pasillos desde Google ANTES de armar el lote,
-        # asi el lote usa siempre los pasillos mas nuevos. Si falla, sigue con la
-        # base actual (no interrumpe la generacion del lote).
-        self._actualizar_base_desde_google()
-
         tipo_activo = self._ml_filtro_tipo.get()
         ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
         NOMBRES_TIPO = {
@@ -3587,6 +3583,13 @@ class AsistenteDepositoApp:
             sec3, text="", font=FONT_SMALL,
             bg=C["panel"], fg=C["success"])
         self.lbl_imprimiendo.pack(pady=(4, 0))
+
+        # Widget para mostrar imagen del producto
+        self.lbl_imagen_producto = tk.Label(
+            sec3, text="📷", font=("Segoe UI", 24),
+            bg=C["card"], fg=C["text_lo"],
+            width=8, height=6, anchor="center", justify="center")
+        self.lbl_imagen_producto.pack(pady=(12, 0))
 
     # =========================================================================
     # COLUMNA 3: VISTA PREVIA DE ETIQUETA
@@ -4718,6 +4721,9 @@ class AsistenteDepositoApp:
         total_req = sum(d["skus_requeridos"].values())
         self._actualizar_estado_fase1(destino)
 
+        # Obtener y mostrar imagen del producto
+        self._obtener_y_mostrar_imagen(sku)
+
         if total_req == 1:
             self._mostrar_caja_completa(destino)
             self.root.after(80, lambda: self._imprimir_automatico(destino))
@@ -4776,6 +4782,9 @@ class AsistenteDepositoApp:
                 text=f"{collected}/{required}", fg=C["accent"])
             self._animar_exito()
 
+        # Obtener y mostrar imagen del producto
+        self._obtener_y_mostrar_imagen(sku)
+
         # Auto-transición si toda la colecta está completa
         todo_completo = all(
             self.colecta_global.get(s, 0) >= q for s, q in total_req.items()
@@ -4786,6 +4795,55 @@ class AsistenteDepositoApp:
             self.lbl_num_caja.config(text="✔✔", fg=C["success"])
             self._animar_lote_completo()
             self.root.after(1200, self._ejecutar_transicion_fase2)
+
+    def _obtener_y_mostrar_imagen(self, sku):
+        """Descarga la imagen del producto desde el servidor y la muestra."""
+        try:
+            if not hasattr(self, 'lbl_imagen_producto'):
+                return
+            
+            # Limpiar imagen anterior
+            self.lbl_imagen_producto.config(image='', text="🔄 Cargando imagen...")
+            self.lbl_imagen_producto.image = None
+            
+            # Hacer request al servidor
+            url = f"{RAILWAY_URL}/api/imagen-sku/{sku}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            
+            with urllib.request.urlopen(req, timeout=8) as response:
+                data = json.loads(response.read().decode())
+            
+            if not data.get("existe") or not data.get("imagen_url"):
+                self.lbl_imagen_producto.config(image='', text="📷 No disponible", 
+                                               bg=C["card"], fg=C["text_lo"],
+                                               font=FONT_SMALL)
+                return
+            
+            imagen_url = data.get("imagen_url")
+            
+            # Descargar imagen
+            req_img = urllib.request.Request(imagen_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req_img, timeout=10) as response:
+                img_data = response.read()
+            
+            # Cargar con PIL
+            img = Image.open(io.BytesIO(img_data))
+            
+            # Redimensionar a 120x120 max
+            img.thumbnail((120, 120), Image.Resampling.LANCZOS)
+            
+            # Convertir a PhotoImage
+            photo = ImageTk.PhotoImage(img)
+            
+            # Mostrar
+            self.lbl_imagen_producto.config(image=photo, text='', bg=C["card"])
+            self.lbl_imagen_producto.image = photo  # Mantener referencia
+            
+        except Exception as e:
+            print(f"[IMAGEN] Error cargando imagen para {sku}: {e}")
+            self.lbl_imagen_producto.config(image='', text="⚠ Error", 
+                                           bg=C["card"], fg=C["danger"],
+                                           font=FONT_SMALL)
 
     def _actualizar_checkmarks_fase1(self, sku, total_req=None):
         if not hasattr(self, "fase1_items") or sku not in self.fase1_items:
