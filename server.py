@@ -1782,7 +1782,6 @@ def debug_logistica():
 
 
 
-
 @app.route("/api/test_credentials")
 def test_credentials():
     """
@@ -2127,6 +2126,111 @@ def api_skus_limpiar():
     return jsonify({"ok": True, "msg": "BD de SKUs limpiada"})
 
 
+@app.route("/api/imagen-sku/<sku>")
+def api_imagen_sku(sku):
+    """
+    Busca un SKU en MercadoLibre y devuelve la URL de la imagen del producto.
+    Útil para que el operario pueda verificar visualmente qué está colectando.
+    
+    Respuesta si encuentra:
+      {
+        "ok": true,
+        "existe": true,
+        "sku": "8677",
+        "item_id": "MLAU123456789",
+        "titulo": "Protectores Anti Arrugas...",
+        "imagen_url": "https://mli.s3.amazonaws.com/...",
+        "thumbnail": "https://...",
+        "ml_url": "https://articulo.mercadolibre.com.uy/..."
+      }
+    
+    Si no encuentra:
+      { "ok": true, "existe": false, "sku": "8677", "imagen_url": null }
+    """
+    sku = str(sku).strip().upper()
+    if not sku:
+        return jsonify({
+            "ok": False, "existe": False, "sku": sku,
+            "msg": "SKU vacío", "imagen_url": None
+        }), 400
+
+    try:
+        # 1. Buscar en ML por SKU (sin necesidad de token — es búsqueda pública)
+        search_url = f"{ML_API_URL}/sites/{ML_SITE_ID}/search"
+        params = {
+            "q": sku,
+            "limit": 3,  # Top 3 resultados
+        }
+        
+        r_search = requests.get(search_url, params=params, timeout=10)
+        
+        if r_search.status_code != 200:
+            return jsonify({
+                "ok": True, "existe": False, "sku": sku,
+                "imagen_url": None,
+                "msg": f"ML search status {r_search.status_code}"
+            }), 200
+
+        search_data = r_search.json()
+        results = search_data.get("results", [])
+        
+        if not results:
+            return jsonify({
+                "ok": True, "existe": False, "sku": sku,
+                "imagen_url": None,
+                "msg": "Sin resultados en MercadoLibre"
+            }), 200
+
+        # 2. Tomar el primer resultado y obtener detalles
+        item = results[0]
+        item_id = item.get("id", "")
+        titulo = item.get("title", "")
+        thumbnail = item.get("thumbnail", "")
+        
+        # 3. Obtener detalles del item (para pictures de mejor calidad si existen)
+        imagen_url = thumbnail  # Por defecto, usar thumbnail
+        
+        if item_id:
+            try:
+                r_item = requests.get(
+                    f"{ML_API_URL}/items/{item_id}",
+                    timeout=8
+                )
+                if r_item.status_code == 200:
+                    item_detail = r_item.json()
+                    # Preferir la primera imagen de pictures si existen
+                    pictures = item_detail.get("pictures", [])
+                    if pictures and pictures[0].get("url"):
+                        imagen_url = pictures[0]["url"]
+            except Exception:
+                pass  # Fallback a thumbnail
+
+        return jsonify({
+            "ok": True,
+            "existe": True,
+            "sku": sku,
+            "item_id": item_id,
+            "titulo": titulo[:80],  # Limitar longitud
+            "imagen_url": imagen_url,
+            "thumbnail": thumbnail,
+            "ml_url": f"https://articulo.mercadolibre.com.uy/{item_id}",
+        }), 200
+
+    except requests.Timeout:
+        return jsonify({
+            "ok": True, "existe": False, "sku": sku,
+            "imagen_url": None,
+            "msg": "Timeout buscando en MercadoLibre"
+        }), 200
+    except Exception as e:
+        print(f"[IMAGEN-SKU] Error buscando {sku}: {e}")
+        return jsonify({
+            "ok": True, "existe": False, "sku": sku,
+            "imagen_url": None,
+            "msg": f"Error: {str(e)[:100]}"
+        }), 200
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FRONTEND — página principal (requiere auth)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2198,10 +2302,6 @@ def manifest():
 @app.route("/movil")
 def movil():
     return _leer_template("movil.html")
-
-
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

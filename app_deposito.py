@@ -264,7 +264,7 @@ def leer_planilla_pasillos_google(ruta):
     return db
 
 
-def descargar_planilla_google(timeout=25):
+def descargar_planilla_google(timeout=40):
     """
     Descarga la planilla de Google Sheets como .xlsx y devuelve la ruta temporal,
     o None si falla (sin conexion, no compartida, etc.). No lanza excepciones.
@@ -417,28 +417,11 @@ class VentanaConfiguracion(tk.Toplevel):
         self.lbl_est.pack(anchor="w", pady=(4,0))
         self.after(120, lambda: self._cargar(config_actual.get("impresora", "")))
 
-        # EXCEL
+        # BASE DE PASILLOS (ahora automática desde Google — ya no se carga Excel)
         sep()
-        lbl_sec("BASE DE DATOS EXCEL  (SKU a Nombre de producto)")
-        lbl_sub("Este archivo se carga automaticamente al iniciar la app.")
-        excel_row = tk.Frame(body, bg=C["bg_dark"])
-        excel_row.pack(fill="x", pady=(6,0))
-        self.lbl_excel_ruta = tk.Label(excel_row,
-            text=self._resumir_ruta(config_actual.get("excel_path", "")),
-            font=("Segoe UI", 9), bg=C["panel"], fg=C["text_hi"],
-            relief="flat", anchor="w", padx=8, pady=5, wraplength=340, justify="left")
-        self.lbl_excel_ruta.pack(side="left", fill="x", expand=True, padx=(0,8))
-        tk.Button(excel_row, text="Buscar", font=FONT_SMALL,
-                  bg=C["accent"], fg="white", activebackground=C["accent2"],
-                  activeforeground="white", relief="flat", cursor="hand2",
-                  padx=10, pady=5, bd=0,
-                  command=self._seleccionar_excel).pack(side="right")
-        self.lbl_excel_est = tk.Label(body,
-            text=self._estado_excel_inicial(config_actual.get("excel_path", "")),
-            font=FONT_SMALL, bg=C["bg_dark"],
-            fg=C["success"] if config_actual.get("excel_path") and
-               os.path.exists(config_actual.get("excel_path","")) else C["text_lo"])
-        self.lbl_excel_est.pack(anchor="w", pady=(4,0))
+        lbl_sec("BASE DE PASILLOS")
+        lbl_sub("La base de productos y pasillos se actualiza sola desde Google Sheets "
+                "al generar cada lote. Ya no hace falta cargar un Excel acá.")
 
         # SUPERVISOR
         sep()
@@ -1561,8 +1544,10 @@ class AsistenteDepositoApp:
         self._build_ui()
         self.root.bind('<Escape>', lambda e: self.cancelar_paquete())
 
-        # Carga automática del Excel guardado en config
-        self.root.after(200, self._autocargar_excel)
+        # Carga automática del Excel guardado en config — DESACTIVADA.
+        # La base de pasillos ahora viene de Google Sheets (prefetch en segundo
+        # plano + al generar el lote). Cargar el Excel acá pisaba esa base.
+        # self.root.after(200, self._autocargar_excel)
         # Cargar BD interna de SKUs
         self.root.after(100, self._cargar_db_interna)
         # Primer arranque
@@ -2892,13 +2877,73 @@ class AsistenteDepositoApp:
 
     # ── Generar lote de picking ───────────────────────────────────────────────
 
+    def _diagnostico_google_base(self):
+        """Intenta descargar la planilla de Google paso a paso, mostrando
+        exactamente dónde y por qué falla, para debugging."""
+        import urllib.request as _ur
+        import tempfile, os as _os
+        
+        msg = f"Probando descarga desde Google:\n\nURL: {GOOGLE_SHEET_URL}\n\n"
+        
+        try:
+            msg += "1️⃣ Conectando…\n"
+            req = _ur.Request(
+                GOOGLE_SHEET_URL,
+                headers={"User-Agent": "Mozilla/5.0 (PickingApp)"})
+            
+            with _ur.urlopen(req, timeout=40) as resp:
+                msg += f"   ✅ Conectado (HTTP {resp.status})\n"
+                raw = resp.read()
+                msg += f"   ✅ Descargado ({len(raw)} bytes)\n\n"
+                
+                msg += "2️⃣ Validando archivo…\n"
+                if raw[:2] == b"PK":
+                    msg += "   ✅ Es un ZIP válido (.xlsx)\n"
+                else:
+                    msg += f"   ❌ NO es un ZIP válido. Primeros 50 bytes:\n      {raw[:50]}\n"
+                    msg += "   → Probablemente Google devolvió HTML (planilla no compartida bien)\n"
+                    msg += "   → O respuesta de error del servidor.\n"
+                
+                msg += "\n3️⃣ Escribiendo archivo temporal…\n"
+                tmp = _os.path.join(tempfile.gettempdir(), "test_google.xlsx")
+                with open(tmp, "wb") as f:
+                    f.write(raw)
+                msg += f"   ✅ Guardado en: {tmp}\n"
+                
+                msg += "\n4️⃣ Parseo de Excel…\n"
+                db = leer_planilla_pasillos_google(tmp)
+                if db:
+                    msg += f"   ✅ Leído exitosamente: {len(db)} SKUs\n"
+                else:
+                    msg += "   ⚠️ Archivo descargado pero no tiene datos legibles\n"
+                    msg += "   → Verifica que la hoja tenga columnas: SKU, Nombre, PASILLOS\n"
+                
+                msg += "\n✅ TODO OK — la descarga debería funcionar.\n"
+                msg += "Si aún así falla, puede ser un problema de red de Windows\n"
+                msg += "o una restricción temporal de Google."
+                
+        except _ur.HTTPError as e:
+            msg += f"   ❌ Error HTTP {e.code}: {e.reason}\n"
+            msg += f"   → La planilla no está compartida correctamente,\n"
+            msg += f"      o Google bloqueó la descarga.\n"
+            msg += f"   → Verifica que sea 'Cualquiera con el enlace - Lector'."
+        except _ur.URLError as e:
+            msg += f"   ❌ Error de conexión: {e.reason}\n"
+            msg += "   → Verificá que haya internet en tu PC.\n"
+            msg += "   → O que Windows no bloquee las descargas."
+        except Exception as e:
+            msg += f"   ❌ Error: {e}\n"
+            msg += f"   Tipo: {type(e).__name__}"
+        
+        messagebox.showinfo("Diagnóstico: Descarga de Google", msg, parent=self.root)
+
     def _prefetch_google_base(self):
         """Baja la planilla de Google en SEGUNDO PLANO (sin bloquear la UI) y
         actualiza db_nombres. Se reprograma cada 90s, así al generar el lote la
         base ya está fresca y la generación es instantánea."""
         import threading
         def _worker():
-            ruta   = descargar_planilla_google(timeout=20)
+            ruta   = descargar_planilla_google(timeout=35)
             nuevos = leer_planilla_pasillos_google(ruta) if ruta else {}
             if nuevos:
                 def _aplicar():
@@ -2933,7 +2978,7 @@ class AsistenteDepositoApp:
         except Exception:
             pass
 
-        ruta = descargar_planilla_google(timeout=12)
+        ruta = descargar_planilla_google(timeout=35)
         if not ruta:
             try:
                 self.lbl_ml_estado.config(
@@ -3435,10 +3480,16 @@ class AsistenteDepositoApp:
                   command=self.abrir_base_skus).pack(side="right")
 
         self.lbl_estado_excel = tk.Label(
-            sec1, text="⏳  Cargando base de datos...",
+            sec1, text="☁  Base de pasillos: se actualiza desde Google",
             fg=C["text_lo"], bg=C["panel"], font=FONT_SMALL,
             wraplength=360, justify="left")
         self.lbl_estado_excel.pack(anchor="w", pady=(4, 0))
+        # Botón de diagnóstico para la descarga de Google
+        tk.Button(sec1, text="🔧 Probar descarga de Google ahora",
+                  font=("Segoe UI", 8), bg=C["accent"], fg="white",
+                  activebackground=C["accent2"], activeforeground="white",
+                  relief="flat", cursor="hand2", padx=8, pady=3, bd=0,
+                  command=self._diagnostico_google_base).pack(anchor="w", pady=(3, 0))
         # ALIAS: varias rutas (generar lote, subida a nube) usan self.lbl_estado_pdf,
         # que nunca se creaba y lanzaba AttributeError JUSTO antes de arrancar el
         # poller de la nube. Lo apuntamos al label que sí existe para que el
@@ -3890,15 +3941,11 @@ class AsistenteDepositoApp:
         VentanaConfiguracion(self.root, self.config, self._on_config_guardada)
 
     def _on_config_guardada(self, nueva):
-        ruta_anterior = self.config.get("excel_path", "")
         nueva["servidor_nube"] = RAILWAY_URL
         self.config = nueva
         guardar_config(nueva)
         self.lbl_printer.config(text=self._texto_impresora())
-        # Si cambió la ruta del Excel, recargarlo inmediatamente
-        ruta_nueva = nueva.get("excel_path", "")
-        if ruta_nueva and ruta_nueva != ruta_anterior:
-            self._cargar_excel_desde_ruta(ruta_nueva)
+        # Ya no se recarga ningún Excel: la base de pasillos viene de Google.
 
     def _abrir_gestor_stock(self):
         """Abre ventana para gestionar stock del Excel."""
