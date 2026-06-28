@@ -3078,6 +3078,7 @@ class AsistenteDepositoApp:
         # Consolidar SKUs de los pedidos filtrados
         total_req  = {}
         sku_nombre = {}
+        sku_item_id = {}  # Mapeo SKU -> item_id de MercadoLibre
         for ped in pendientes:
             for it in ped.get("items", []):
                 sku = (it.get("sku") or it.get("item_id","")).upper().strip()
@@ -3086,6 +3087,9 @@ class AsistenteDepositoApp:
                 total_req[sku]  = total_req.get(sku, 0) + it.get("cantidad", 1)
                 if sku not in sku_nombre:
                     sku_nombre[sku] = it.get("titulo", sku)
+                # Guardar item_id de MercadoLibre para obtener imagen luego
+                if sku not in sku_item_id and it.get("item_id"):
+                    sku_item_id[sku] = str(it.get("item_id"))
 
         if not total_req:
             messagebox.showwarning(
@@ -3110,7 +3114,8 @@ class AsistenteDepositoApp:
                 estanteria = ""
             grupos_dict.setdefault(pasillo, []).append({
                 "sku": sku, "nombre": nombre, "req": qty,
-                "pasillo": pasillo, "estanteria": estanteria
+                "pasillo": pasillo, "estanteria": estanteria,
+                "item_id": sku_item_id.get(sku, "")  # item_id de MercadoLibre
             })
 
         def _orden_pas(n):
@@ -3140,6 +3145,9 @@ class AsistenteDepositoApp:
                 f"Generar Lote — {nombre_tab}", msg, parent=self.root):
             return
 
+        # Guardar mapeo sku -> item_id para usarlo después en _construir_payload_nube
+        self.sku_item_id = sku_item_id
+        
         # Construir pedidos internos para Fase 1 y Fase 2
         self.pedidos.clear()
         for idx, ped in enumerate(pendientes, start=1):
@@ -5762,8 +5770,13 @@ try {{
             pasillo, estanteria = self._ubicacion_sku(sku)
             key = pasillo if pasillo else "Sin ubicación"
             grupos_dict.setdefault(key, []).append({
-                "sku": sku, "nombre": self._nombre_sku(sku),
-                "req": total_req[sku], "pasillo": pasillo, "estanteria": estanteria,
+                "sku": sku, 
+                "nombre": self._nombre_sku(sku),
+                "req": total_req[sku], 
+                "pasillo": pasillo, 
+                "estanteria": estanteria,
+                # Incluir item_id de MercadoLibre si fue guardado al generar el lote
+                "item_id": getattr(self, "sku_item_id", {}).get(sku, "")
             })
 
         def _orden(n):

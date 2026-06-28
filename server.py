@@ -2129,10 +2129,16 @@ def api_skus_limpiar():
 @app.route("/api/imagen-sku/<sku>")
 def api_imagen_sku(sku):
     """
-    Busca un SKU en MercadoLibre y devuelve la URL de la imagen del producto.
-    Útil para que el operario pueda verificar visualmente qué está colectando.
+    Obtiene la imagen del producto desde MercadoLibre usando el item_id del lote.
     
-    Respuesta si encuentra:
+    Estrategia:
+    1. Busca el SKU en los pedidos del lote actual (mejor opción, tiene item_id)
+    2. Si no, busca en los grupos del lote
+    3. Obtiene item_id asociado
+    4. Hace GET /items/{item_id} a MercadoLibre (sin necesidad de token)
+    5. Extrae nombre, imagen, precio, disponibilidad
+    
+    Respuesta:
       {
         "ok": true,
         "existe": true,
@@ -2140,12 +2146,9 @@ def api_imagen_sku(sku):
         "item_id": "MLAU123456789",
         "titulo": "Protectores Anti Arrugas...",
         "imagen_url": "https://mli.s3.amazonaws.com/...",
-        "thumbnail": "https://...",
-        "ml_url": "https://articulo.mercadolibre.com.uy/..."
+        "precio": 1500,
+        "disponible": 10
       }
-    
-    Si no encuentra:
-      { "ok": true, "existe": false, "sku": "8677", "imagen_url": null }
     """
     sku = str(sku).strip().upper()
     if not sku:
@@ -2155,79 +2158,101 @@ def api_imagen_sku(sku):
         }), 400
 
     try:
-        # 1. Buscar en ML por SKU (sin necesidad de token — es búsqueda pública)
-        search_url = f"{ML_API_URL}/sites/{ML_SITE_ID}/search"
-        params = {
-            "q": sku,
-            "limit": 3,  # Top 3 resultados
-        }
+        item_id = None
+        nombre_local = None
         
-        r_search = requests.get(search_url, params=params, timeout=10)
+        with _lock:
+            # 1. Buscar primero en pedidos (tiene item_id directamente)
+            pedidos = _estado.get("pedidos", {})
+            for oid, ped in pedidos.items():
+                items = ped.get("items", [])
+                for item in items:
+                    if str(item.get("sku", "")).strip().upper() == sku:
+                        item_id = item.get("item_id", "")
+                        nombre_local = item.get("nombre", "")
+                        if item_id:
+                            break
+                if item_id:
+                    break
+            
+            # 2. Si no encontré en pedidos, buscar en grupos
+            if not item_id:
+                grupos = _estado.get("grupos", [])
+                for grupo in grupos:
+                    for item in grupo.get("items", []):
+                        if item.get("sku", "").upper() == sku:
+                            item_id = item.get("item_id", "")
+                            nombre_local = item.get("nombre", "")
+                            break
+                    if item_id:
+                        break
         
-        if r_search.status_code != 200:
+        if not item_id:
             return jsonify({
                 "ok": True, "existe": False, "sku": sku,
                 "imagen_url": None,
-                "msg": f"ML search status {r_search.status_code}"
+                "msg": "SKU no encontrado en el lote actual (falta item_id)"
             }), 200
 
-        search_data = r_search.json()
-        results = search_data.get("results", [])
+        # 3. GET /items/{item_id} directamente a MercadoLibre (sin token - es público)
+        r_item = requests.get(
+            f"{ML_API_URL}/items/{item_id}",
+            timeout=10
+        )
         
-        if not results:
+        if r_item.status_code != 200:
             return jsonify({
                 "ok": True, "existe": False, "sku": sku,
                 "imagen_url": None,
-                "msg": "Sin resultados en MercadoLibre"
+                "msg": f"No se pudo obtener item de ML (status {r_item.status_code})",
+                "item_id": item_id
             }), 200
 
-        # 2. Tomar el primer resultado y obtener detalles
-        item = results[0]
-        item_id = item.get("id", "")
-        titulo = item.get("title", "")
-        thumbnail = item.get("thumbnail", "")
+        item_data = r_item.json()
+        titulo = item_data.get("title", nombre_local or sku)
+        precio = item_data.get("price", 0)
+        disponible = item_data.get("available_quantity", 0)
         
-        # 3. Obtener detalles del item (para pictures de mejor calidad si existen)
-        imagen_url = thumbnail  # Por defecto, usar thumbnail
+        # 4. Obtener imagen (preferir primera de pictures, fallback a thumbnail)
+        imagen_url = item_data.get("thumbnail", "")
+        pictures = item_data.get("pictures", [])
+        if pictures and pictures[0].get("url"):
+            imagen_url = pictures[0]["url"]
         
-        if item_id:
-            try:
-                r_item = requests.get(
-                    f"{ML_API_URL}/items/{item_id}",
-                    timeout=8
-                )
-                if r_item.status_code == 200:
-                    item_detail = r_item.json()
-                    # Preferir la primera imagen de pictures si existen
-                    pictures = item_detail.get("pictures", [])
-                    if pictures and pictures[0].get("url"):
-                        imagen_url = pictures[0]["url"]
-            except Exception:
-                pass  # Fallback a thumbnail
+        if not imagen_url:
+            return jsonify({
+                "ok": True, "existe": True, "sku": sku,
+                "item_id": item_id, "titulo": titulo[:100],
+                "imagen_url": None,
+                "msg": "Item encontrado pero sin imagen disponible"
+            }), 200
 
         return jsonify({
             "ok": True,
             "existe": True,
             "sku": sku,
             "item_id": item_id,
-            "titulo": titulo[:80],  # Limitar longitud
+            "titulo": titulo[:100],
             "imagen_url": imagen_url,
-            "thumbnail": thumbnail,
-            "ml_url": f"https://articulo.mercadolibre.com.uy/{item_id}",
+            "precio": precio,
+            "disponible": disponible,
+            "ml_url": f"https://articulo.mercadolibre.com.uy/{item_id}"
         }), 200
 
     except requests.Timeout:
         return jsonify({
             "ok": True, "existe": False, "sku": sku,
             "imagen_url": None,
-            "msg": "Timeout buscando en MercadoLibre"
+            "msg": "Timeout descargando desde MercadoLibre (>10s)"
         }), 200
     except Exception as e:
-        print(f"[IMAGEN-SKU] Error buscando {sku}: {e}")
+        print(f"[IMAGEN-SKU] Error para {sku}: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             "ok": True, "existe": False, "sku": sku,
             "imagen_url": None,
-            "msg": f"Error: {str(e)[:100]}"
+            "msg": f"Error interno: {str(e)[:100]}"
         }), 200
 
 
