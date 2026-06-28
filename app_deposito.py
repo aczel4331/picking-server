@@ -1537,6 +1537,11 @@ class AsistenteDepositoApp:
         self.fase1_items       = {}  # widgets de la lista consolidada Fase 1
         self.sku_descripciones = {}  # {sku: descripcion} extraído del PDF
         self.db_nombres        = {}  # {sku: nombre} cargado desde Excel
+        self.sku_item_id       = {}  # {sku: item_id} de MercadoLibre (para imagen)
+        self._img_cache        = {}  # {sku: PhotoImage miniatura} cache de imágenes
+        self._img_full_cache   = {}  # {sku: PIL.Image full} para agrandar al hacer clic
+        self._img_url_cache    = {}  # {sku: imagen_url} URL ya resuelta
+        self._img_cargando     = set()  # SKUs cuya imagen se está descargando
         self._servidor_thread  = None
         self._servidor_activo  = False
         self._export_pending   = False   # debounce flag para exportar estado
@@ -4423,6 +4428,13 @@ class AsistenteDepositoApp:
                                bg=C["card"], fg=C["text_lo"], width=3)
                 chk.pack(side="left", padx=(6, 4))
 
+                # Miniatura del producto (clic para agrandar)
+                lbl_img = tk.Label(fila, bg=C["card"], width=4, height=2,
+                                   text="…", fg=C["text_lo"], font=("Segoe UI", 8))
+                lbl_img.pack(side="left", padx=(0, 6))
+                # Cargar imagen de forma asíncrona
+                self._cargar_miniatura_async(sku, lbl_img, tam=46)
+
                 # Bloque central
                 bloque = tk.Frame(fila, bg=C["card"])
                 bloque.pack(side="left", fill="x", expand=True, padx=(2, 4))
@@ -4502,6 +4514,12 @@ class AsistenteDepositoApp:
                                bg=C["card"], fg=C["text_lo"], width=3)
                 chk.pack(side="left")
                 d["skus_items"][sku] = {"checkbox": chk}
+
+                # Miniatura del producto (clic para agrandar)
+                lbl_img = tk.Label(fila, bg=C["card"], width=4, height=2,
+                                   text="…", fg=C["text_lo"], font=("Segoe UI", 8))
+                lbl_img.pack(side="left", padx=(0, 6))
+                self._cargar_miniatura_async(sku, lbl_img, tam=42)
 
                 # Cantidad a la derecha
                 tk.Label(fila, text=f"×{cant}", font=("Segoe UI Semibold", 10),
@@ -4803,6 +4821,186 @@ class AsistenteDepositoApp:
             self.lbl_num_caja.config(text="✔✔", fg=C["success"])
             self._animar_lote_completo()
             self.root.after(1200, self._ejecutar_transicion_fase2)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # SISTEMA DE MINIATURAS ASÍNCRONAS (Fase 1 y Fase 2)
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _cargar_miniatura_async(self, sku, lbl_destino, tam=46):
+        """
+        Carga la miniatura de un SKU de forma asíncrona y la asigna al label.
+        Usa cache para no descargar dos veces. No bloquea la UI.
+
+        - sku:        SKU del producto
+        - lbl_destino: tk.Label donde mostrar la miniatura
+        - tam:        tamaño de la miniatura (px)
+        """
+        import threading
+
+        sku = str(sku).strip().upper()
+        if not sku:
+            return
+
+        # 1. Si ya está en cache → asignar directamente
+        if sku in self._img_cache:
+            try:
+                lbl_destino.config(image=self._img_cache[sku], text="")
+                lbl_destino.image = self._img_cache[sku]
+                # Hacer clickeable para agrandar
+                lbl_destino.config(cursor="hand2")
+                lbl_destino.bind("<Button-1>", lambda e, s=sku: self._agrandar_imagen(s))
+            except Exception:
+                pass
+            return
+
+        # 2. Si ya se está descargando → no duplicar
+        if sku in self._img_cargando:
+            return
+        self._img_cargando.add(sku)
+
+        # Placeholder mientras carga
+        try:
+            lbl_destino.config(image="", text="…", fg=C["text_lo"],
+                               font=("Segoe UI", 8))
+        except Exception:
+            pass
+
+        def _worker():
+            try:
+                imagen_url = None
+
+                # a) Si tenemos el item_id local → ir directo a ML (más rápido,
+                #    no depende de que el lote ya esté subido a Railway)
+                item_id = getattr(self, "sku_item_id", {}).get(sku, "")
+                if item_id:
+                    try:
+                        url_ml = f"https://api.mercadolibre.com/items/{item_id}"
+                        req_ml = urllib.request.Request(
+                            url_ml, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(req_ml, timeout=8) as resp:
+                            item_data = json.loads(resp.read().decode())
+                        pics = item_data.get("pictures", [])
+                        if pics and pics[0].get("url"):
+                            imagen_url = pics[0]["url"]
+                        else:
+                            imagen_url = item_data.get("thumbnail")
+                    except Exception:
+                        imagen_url = None
+
+                # b) Fallback: pedir al servidor (por si no hay item_id local)
+                if not imagen_url:
+                    url = f"{RAILWAY_URL}/api/imagen-sku/{sku}"
+                    req = urllib.request.Request(
+                        url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        data = json.loads(resp.read().decode())
+                    if data.get("existe") and data.get("imagen_url"):
+                        imagen_url = data.get("imagen_url")
+
+                if not imagen_url:
+                    self.root.after(0, lambda: self._on_miniatura_fallo(sku, lbl_destino))
+                    return
+
+                self._img_url_cache[sku] = imagen_url
+
+                # c) Descargar bytes de la imagen
+                req_img = urllib.request.Request(
+                    imagen_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req_img, timeout=10) as resp:
+                    img_bytes = resp.read()
+
+                # d) Abrir con PIL (en el thread, fuera de la UI)
+                img_full = Image.open(io.BytesIO(img_bytes))
+                img_full.load()
+
+                # Guardar el full para el zoom
+                self._img_full_cache[sku] = img_full.copy()
+
+                # e) Crear miniatura
+                img_min = img_full.copy()
+                img_min.thumbnail((tam, tam), Image.Resampling.LANCZOS)
+
+                # f) Volver a la UI para crear el PhotoImage y asignarlo
+                self.root.after(0, lambda: self._on_miniatura_lista(
+                    sku, lbl_destino, img_min))
+
+            except Exception as e:
+                print(f"[MINIATURA] Error {sku}: {e}")
+                self.root.after(0, lambda: self._on_miniatura_fallo(sku, lbl_destino))
+            finally:
+                self._img_cargando.discard(sku)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_miniatura_lista(self, sku, lbl_destino, img_min):
+        """Callback en la UI: crea el PhotoImage y lo asigna al label."""
+        try:
+            photo = ImageTk.PhotoImage(img_min)
+            self._img_cache[sku] = photo
+            # El label puede haber sido destruido si se redibujó la lista
+            if lbl_destino.winfo_exists():
+                lbl_destino.config(image=photo, text="", cursor="hand2")
+                lbl_destino.image = photo
+                lbl_destino.bind("<Button-1>",
+                                 lambda e, s=sku: self._agrandar_imagen(s))
+        except Exception as e:
+            print(f"[MINIATURA] Error asignando {sku}: {e}")
+
+    def _on_miniatura_fallo(self, sku, lbl_destino):
+        """Callback en la UI cuando no se pudo cargar la miniatura."""
+        try:
+            if lbl_destino.winfo_exists():
+                lbl_destino.config(image="", text="📷", fg=C["text_lo"],
+                                   font=("Segoe UI", 12), cursor="")
+                lbl_destino.image = None
+        except Exception:
+            pass
+
+    def _agrandar_imagen(self, sku):
+        """Muestra la imagen del producto en grande en una ventana emergente."""
+        sku = str(sku).strip().upper()
+        img_full = self._img_full_cache.get(sku)
+        if img_full is None:
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Producto — {sku}")
+        win.config(bg="#000000")
+        win.transient(self.root)
+        win.grab_set()
+
+        # Escalar a un máximo razonable manteniendo proporción
+        MAX = 520
+        img_grande = img_full.copy()
+        img_grande.thumbnail((MAX, MAX), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(img_grande)
+
+        lbl = tk.Label(win, image=photo, bg="#000000", cursor="hand2")
+        lbl.image = photo
+        lbl.pack(padx=10, pady=10)
+
+        # Nombre del producto debajo
+        nombre = self._nombre_sku(sku)
+        if nombre and nombre != sku:
+            tk.Label(win, text=nombre, font=("Segoe UI", 11, "bold"),
+                     bg="#000000", fg="white", wraplength=MAX,
+                     justify="center").pack(padx=10, pady=(0, 4))
+        tk.Label(win, text=f"SKU: {sku}", font=("Consolas", 10),
+                 bg="#000000", fg="#9CA3AF").pack(pady=(0, 4))
+        tk.Label(win, text="(clic para cerrar)", font=("Segoe UI", 8),
+                 bg="#000000", fg="#6B7280").pack(pady=(0, 10))
+
+        # Cerrar al hacer clic en cualquier parte o con Escape
+        for w in (win, lbl):
+            w.bind("<Button-1>", lambda e: win.destroy())
+        win.bind("<Escape>", lambda e: win.destroy())
+
+        # Centrar en pantalla
+        win.update_idletasks()
+        w, h = win.winfo_width(), win.winfo_height()
+        x = (win.winfo_screenwidth() - w) // 2
+        y = (win.winfo_screenheight() - h) // 2
+        win.geometry(f"+{x}+{y}")
 
     def _obtener_y_mostrar_imagen(self, sku):
         """Descarga la imagen del producto desde el servidor y la muestra."""

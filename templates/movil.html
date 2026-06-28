@@ -77,6 +77,11 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .chk{font-size:22px;flex-shrink:0;width:28px;text-align:center}
 .chk.ok{color:var(--success)}
 .chk.pend{color:var(--lo)}
+.ithumb{flex-shrink:0;width:46px;height:46px;border-radius:8px;
+  background:var(--border);background-size:cover;background-position:center;
+  display:flex;align-items:center;justify-content:center;font-size:18px;
+  color:var(--lo);cursor:pointer;border:1px solid var(--border)}
+.ithumb.has-img{border-color:var(--accent)}
 .ibody{flex:1;min-width:0}
 .iname{font-size:14px;font-weight:600;color:var(--hi);white-space:normal;line-height:1.3;margin-top:3px}
 .isku-badge{display:inline-block;font-family:monospace;font-size:11px;font-weight:700;color:var(--accent);background:rgba(37,99,235,.14);padding:2px 7px;border-radius:6px;margin-bottom:2px}
@@ -138,6 +143,15 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .empty{text-align:center;padding:60px 20px;color:var(--lo)}
 .empty-i{font-size:52px;margin-bottom:12px}
 .empty-t{font-size:15px;line-height:1.5}
+/* LIGHTBOX (imagen grande) */
+.lightbox{display:none;position:fixed;inset:0;z-index:9999;
+  background:rgba(0,0,0,.92);align-items:center;justify-content:center;
+  flex-direction:column;padding:20px}
+.lightbox img{max-width:92vw;max-height:78vh;border-radius:12px;
+  object-fit:contain;box-shadow:0 8px 40px rgba(0,0,0,.6)}
+.lb-name{color:#fff;font-family:monospace;font-size:15px;font-weight:700;
+  margin-top:14px}
+.lb-close{color:#9CA3AF;font-size:13px;margin-top:6px}
 </style>
 </head>
 <body>
@@ -204,10 +218,13 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
             border-radius:8px;padding:5px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
             title="Abrir teclado manual">⌨</button>
   </div>
-  <!-- Área para mostrar imagen del producto -->
-  <div id="img-area" style="margin-top:10px;text-align:center;min-height:60px;display:none">
-    <img id="prod-img" style="max-width:100%;max-height:140px;border-radius:8px;object-fit:contain" />
-  </div>
+</div>
+
+<!-- Lightbox para ver imagen del producto en grande -->
+<div id="lightbox" class="lightbox" onclick="cerrarImagen()">
+  <img id="lb-img" src="" alt="Producto" onclick="event.stopPropagation()" />
+  <div id="lb-name" class="lb-name"></div>
+  <div class="lb-close">Tocá afuera para cerrar</div>
 </div>
 
 <!-- MODAL CAMARA -->
@@ -252,22 +269,91 @@ let _guiaActual = null;   // SKU que se está buscando ahora
 let _vozActiva  = true;   // TTS habilitado
 
 // ── IMAGEN DEL PRODUCTO ────────────────────────────────────────────────────────
-async function cargarImagen(sku) {
-  const imgArea = $('img-area');
-  const prodImg = $('prod-img');
-  if (!imgArea || !prodImg) return;
-  imgArea.style.display = 'none';
+// ── IMÁGENES DE PRODUCTO (miniaturas + lightbox) ────────────────────────────
+const _imgCache = {};      // { sku: imagen_url }  URL ya resuelta
+const _imgPedida = new Set();  // SKUs ya consultados (evita repetir fetch)
+
+// Resuelve la URL de imagen de un SKU (con cache) y la asigna a los <img> de ese SKU
+async function resolverImagen(sku) {
+  sku = (sku || '').toUpperCase();
+  if (!sku) return null;
+
+  // Ya en cache
+  if (sku in _imgCache) {
+    aplicarMiniatura(sku, _imgCache[sku]);
+    return _imgCache[sku];
+  }
+  // Ya pedida (en curso) → no duplicar
+  if (_imgPedida.has(sku)) return null;
+  _imgPedida.add(sku);
+
   try {
     const r = await fetch(`/api/imagen-sku/${sku}`);
     const d = await r.json();
-    if (d.existe && d.imagen_url) {
-      prodImg.src = d.imagen_url;
-      prodImg.alt = d.titulo || sku;
-      imgArea.style.display = 'block';
-      return;
+    const url = (d.existe && d.imagen_url) ? d.imagen_url : null;
+    _imgCache[sku] = url;
+    aplicarMiniatura(sku, url);
+    return url;
+  } catch(e) {
+    _imgCache[sku] = null;
+    return null;
+  }
+}
+
+// Asigna la URL a todas las miniaturas de ese SKU que estén en pantalla
+function aplicarMiniatura(sku, url) {
+  document.querySelectorAll(`.ithumb[data-sku="${sku}"]`).forEach(el => {
+    if (url) {
+      el.style.backgroundImage = `url("${url}")`;
+      el.classList.add('has-img');
+      el.textContent = '';
+    } else {
+      el.classList.remove('has-img');
+      el.textContent = '📷';
     }
-  } catch(e) {}
-  imgArea.style.display = 'none';
+  });
+}
+
+// Carga perezosa de las miniaturas visibles (llamar tras render)
+function cargarMiniaturasVisibles() {
+  document.querySelectorAll('.ithumb:not(.cargada)').forEach(el => {
+    const sku = el.dataset.sku;
+    if (!sku) return;
+    el.classList.add('cargada');
+    if (sku in _imgCache) {
+      aplicarMiniatura(sku, _imgCache[sku]);
+    } else {
+      resolverImagen(sku);
+    }
+  });
+}
+
+// Abrir imagen grande (lightbox)
+async function abrirImagen(sku) {
+  sku = (sku || '').toUpperCase();
+  let url = _imgCache[sku];
+  if (url === undefined) {
+    url = await resolverImagen(sku);
+  }
+  if (!url) return;  // sin imagen, no hacer nada
+
+  const lb     = $('lightbox');
+  const lbImg  = $('lb-img');
+  const lbName = $('lb-name');
+  if (!lb || !lbImg) return;
+  lbImg.src = url;
+  if (lbName) lbName.textContent = sku;
+  lb.style.display = 'flex';
+}
+
+function cerrarImagen() {
+  const lb = $('lightbox');
+  if (lb) lb.style.display = 'none';
+}
+
+// Compatibilidad: cargarImagen ahora solo precarga en cache (sin cuadro fijo)
+async function cargarImagen(sku) {
+  resolverImagen(sku);
 }
 
 // ── VOZ (Text-To-Speech en español) ────────────────────────────────────────
@@ -455,6 +541,7 @@ function render(quiet = false) {
             const ok = c >= it.req;
             return `<div class="item ${ok?'done':''}" id="item-${it.sku}">
               <div class="chk ${ok?'ok':'pend'}">${ok ? '✔' : '○'}</div>
+              <div class="ithumb" data-sku="${it.sku}" onclick="event.stopPropagation();abrirImagen('${it.sku}')">📷</div>
               <div class="ibody">
                 <span class="isku-badge">${it.sku}</span>
                 <div class="iname">${it.nombre || '—'}</div>
@@ -471,6 +558,8 @@ function render(quiet = false) {
 
     // Actualizar el panel de guía con el próximo ítem a buscar
     actualizarGuia(false);
+    // Cargar miniaturas de los productos visibles (perezoso, en cache)
+    cargarMiniaturasVisibles();
   } catch(err) {
     console.error('[MOVIL] render error:', err);
   }
