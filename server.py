@@ -2234,13 +2234,25 @@ def api_imagen_sku(sku):
         titulo = item_data.get("title", nombre_local or sku)
         precio = item_data.get("price", 0)
         disponible = item_data.get("available_quantity", 0)
-        
-        # 4. Obtener imagen (preferir primera de pictures, fallback a thumbnail)
-        imagen_url = item_data.get("thumbnail", "")
+
+        # 4. Obtener imagen. ML devuelve varias URLs; SIEMPRE preferir las
+        #    seguras (https), porque el móvil corre en https y bloquea
+        #    contenido mixto (imágenes http).
+        def _https(u):
+            if not u:
+                return ""
+            return u.replace("http://", "https://") if u.startswith("http://") else u
+
+        imagen_url = ""
         pictures = item_data.get("pictures", [])
-        if pictures and pictures[0].get("url"):
-            imagen_url = pictures[0]["url"]
-        
+        if pictures:
+            pic = pictures[0]
+            # Preferir secure_url > url
+            imagen_url = _https(pic.get("secure_url") or pic.get("url") or "")
+        if not imagen_url:
+            imagen_url = _https(item_data.get("secure_thumbnail")
+                                or item_data.get("thumbnail") or "")
+
         if not imagen_url:
             return jsonify({
                 "ok": True, "existe": True, "sku": sku,
@@ -2276,6 +2288,119 @@ def api_imagen_sku(sku):
             "imagen_url": None,
             "msg": f"Error interno: {str(e)[:100]}"
         }), 200
+
+
+@app.route("/api/diag-imagen/<sku>")
+def api_diag_imagen(sku):
+    """
+    DIAGNÓSTICO paso a paso de por qué un SKU no muestra imagen.
+    Devuelve un JSON con cada etapa para identificar dónde se corta.
+    """
+    sku = str(sku).strip().upper()
+    diag = {"sku": sku, "pasos": []}
+
+    def paso(nombre, ok, detalle=""):
+        diag["pasos"].append({"paso": nombre, "ok": ok, "detalle": str(detalle)[:300]})
+
+    # 1. ¿Hay lote cargado?
+    with _lock:
+        cargado = bool(_estado.get("cargado"))
+        n_grupos = len(_estado.get("grupos", []))
+        n_pedidos = len(_estado.get("pedidos", {}))
+    paso("lote_cargado", cargado,
+         f"grupos={n_grupos}, pedidos={n_pedidos}")
+
+    # 2. ¿Está el SKU en el lote? ¿Tiene item_id?
+    item_id = None
+    cuenta_id = "cuenta_0"
+    origen = None
+    with _lock:
+        for oid, ped in _estado.get("pedidos", {}).items():
+            for item in ped.get("items", []):
+                if str(item.get("sku", "")).strip().upper() == sku:
+                    item_id = item.get("item_id", "")
+                    cuenta_id = ped.get("_cuenta", "cuenta_0")
+                    origen = "pedidos"
+                    break
+            if item_id:
+                break
+        if not item_id:
+            for grupo in _estado.get("grupos", []):
+                for item in grupo.get("items", []):
+                    if str(item.get("sku", "")).strip().upper() == sku:
+                        item_id = item.get("item_id", "")
+                        origen = "grupos"
+                        break
+                if item_id:
+                    break
+    paso("sku_en_lote", bool(item_id),
+         f"item_id={item_id or '(vacío)'}, origen={origen}, cuenta={cuenta_id}")
+
+    if not item_id:
+        diag["conclusion"] = ("El SKU no tiene item_id en el lote. "
+                              "Hay que regenerar el lote con la versión nueva "
+                              "de app_deposito.py que incluye item_id.")
+        return jsonify(diag), 200
+
+    # 3. ¿Hay cuentas con token?
+    cuentas_con_token = [c for c, t in _cuentas.items() if t.get("access_token")]
+    paso("cuentas_con_token", bool(cuentas_con_token),
+         f"cuentas={cuentas_con_token}")
+
+    if not cuentas_con_token:
+        diag["conclusion"] = ("No hay ninguna cuenta ML con token activo. "
+                              "Reconectá MercadoLibre en /auth/login.")
+        return jsonify(diag), 200
+
+    # 4. Llamar a ML /items/{id} con token
+    cuentas_a_probar = [cuenta_id] + [c for c in _cuentas.keys() if c != cuenta_id]
+    item_data = None
+    for cid in cuentas_a_probar:
+        try:
+            _token_valido_cuenta(cid)
+        except Exception:
+            pass
+        at = _cuentas.get(cid, {}).get("access_token", "")
+        if not at:
+            continue
+        try:
+            r = requests.get(f"{ML_API_URL}/items/{item_id}",
+                             headers={"Authorization": f"Bearer {at}"},
+                             timeout=10)
+            paso(f"ml_items_{cid}", r.status_code == 200,
+                 f"status={r.status_code}, body={r.text[:150]}")
+            if r.status_code == 200:
+                item_data = r.json()
+                break
+        except Exception as e:
+            paso(f"ml_items_{cid}", False, f"excepción: {e}")
+
+    if not item_data:
+        diag["conclusion"] = ("ML rechazó la llamada a /items/{id}. "
+                              "Revisá el status arriba (401=token inválido, "
+                              "403=sin permiso, 404=item no existe).")
+        return jsonify(diag), 200
+
+    # 5. Extraer imagen
+    pics = item_data.get("pictures", [])
+    thumb = item_data.get("secure_thumbnail") or item_data.get("thumbnail")
+    img = ""
+    if pics:
+        img = pics[0].get("secure_url") or pics[0].get("url") or ""
+    if not img:
+        img = thumb or ""
+    paso("imagen_extraida", bool(img),
+         f"n_pictures={len(pics)}, url={img[:120]}")
+
+    diag["resultado"] = {
+        "titulo": item_data.get("title", ""),
+        "imagen_url": img,
+        "precio": item_data.get("price", 0),
+        "disponible": item_data.get("available_quantity", 0),
+    }
+    diag["conclusion"] = ("✅ Todo OK" if img else
+                          "El item existe pero no tiene imágenes en ML.")
+    return jsonify(diag), 200
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -1538,6 +1538,7 @@ class AsistenteDepositoApp:
         self.sku_descripciones = {}  # {sku: descripcion} extraído del PDF
         self.db_nombres        = {}  # {sku: nombre} cargado desde Excel
         self.sku_item_id       = {}  # {sku: item_id} de MercadoLibre (para imagen)
+        self.sku_nombre_ml     = {}  # {sku: nombre} de MercadoLibre (para mostrar)
         self._img_cache        = {}  # {sku: PhotoImage miniatura} cache de imágenes
         self._img_full_cache   = {}  # {sku: PIL.Image full} para agrandar al hacer clic
         self._img_url_cache    = {}  # {sku: imagen_url} URL ya resuelta
@@ -3113,17 +3114,20 @@ class AsistenteDepositoApp:
                 parent=self.root)
             return
 
-        # Enriquecer con BD interna (pasillo, estantería, nombre)
+        # Enriquecer: NOMBRE de MercadoLibre (sku_nombre), pasillo/estante del Excel.
+        # El Excel se usa SOLO para ubicación (pasillo/estantería), como se pidió.
         grupos_dict = {}
         SIN_PASILLO = "Sin ubicacion en BD"
         for sku, qty in sorted(total_req.items()):
             info = self.db_nombres.get(sku, {})
+            # Nombre: SIEMPRE preferir el de MercadoLibre; Excel solo como respaldo
+            nombre = sku_nombre.get(sku, "") or sku
             if isinstance(info, dict):
-                nombre     = info.get("nombre", "") or sku_nombre.get(sku, sku)
+                if not sku_nombre.get(sku):
+                    nombre = info.get("nombre", "") or sku
                 pasillo    = info.get("pasillo", "") or SIN_PASILLO
                 estanteria = info.get("estanteria", "")
             else:
-                nombre     = str(info) or sku_nombre.get(sku, sku)
                 pasillo    = SIN_PASILLO
                 estanteria = ""
             grupos_dict.setdefault(pasillo, []).append({
@@ -3161,6 +3165,8 @@ class AsistenteDepositoApp:
 
         # Guardar mapeo sku -> item_id para usarlo después en _construir_payload_nube
         self.sku_item_id = sku_item_id
+        # Guardar mapeo sku -> nombre de MercadoLibre (para mostrarlo en la lista)
+        self.sku_nombre_ml = dict(sku_nombre)
         
         # Construir pedidos internos para Fase 1 y Fase 2
         self.pedidos.clear()
@@ -3743,11 +3749,17 @@ class AsistenteDepositoApp:
         self._cargar_excel_desde_ruta(ruta)
 
     def _nombre_sku(self, sku):
-        """Devuelve el nombre del producto para un SKU: Excel primero, luego PDF."""
+        """Devuelve el nombre del producto para un SKU.
+        Prioridad: nombre de MercadoLibre → Excel → PDF."""
+        # 1. Nombre de MercadoLibre (capturado al generar el lote)
+        nombre_ml = getattr(self, "sku_nombre_ml", {}).get(sku, "")
+        if nombre_ml:
+            return nombre_ml
+        # 2. Excel (BD interna)
         if sku in self.db_nombres:
             entrada = self.db_nombres[sku]
-            # Soporta tanto el formato nuevo (dict) como el viejo (str)
             return entrada["nombre"] if isinstance(entrada, dict) else entrada
+        # 3. PDF
         return self.sku_descripciones.get(sku, "")
 
     def _ubicacion_sku(self, sku):
