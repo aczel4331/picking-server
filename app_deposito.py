@@ -3096,6 +3096,15 @@ class AsistenteDepositoApp:
                 if sku not in sku_item_id and it.get("item_id"):
                     sku_item_id[sku] = str(it.get("item_id"))
 
+        # DIAGNÓSTICO: mostrar qué item_ids se capturaron
+        print("=" * 60)
+        print(f"[LOTE] SKUs capturados: {len(total_req)}")
+        for sku in total_req:
+            iid = sku_item_id.get(sku, "(SIN ITEM_ID)")
+            nom = sku_nombre.get(sku, "(sin nombre)")
+            print(f"  • {sku} → item_id={iid} | {nom[:40]}")
+        print("=" * 60)
+
         if not total_req:
             messagebox.showwarning(
                 "Sin SKUs",
@@ -4841,6 +4850,11 @@ class AsistenteDepositoApp:
         if not sku:
             return
 
+        # Registrar el label para poder reintentar luego (tras subir el lote)
+        if not hasattr(self, "_img_labels"):
+            self._img_labels = {}
+        self._img_labels[sku] = lbl_destino
+
         # 1. Si ya está en cache → asignar directamente
         if sku in self._img_cache:
             try:
@@ -4867,32 +4881,16 @@ class AsistenteDepositoApp:
 
         def _worker():
             try:
-                imagen_url = None
+                # Pedir la URL de imagen al SERVIDOR (Railway tiene el token de ML;
+                # ML ahora exige Authorization en /items, así que el desktop NO puede
+                # llamar a ML directamente).
+                imagen_url = self._img_url_cache.get(sku)
 
-                # a) Si tenemos el item_id local → ir directo a ML (más rápido,
-                #    no depende de que el lote ya esté subido a Railway)
-                item_id = getattr(self, "sku_item_id", {}).get(sku, "")
-                if item_id:
-                    try:
-                        url_ml = f"https://api.mercadolibre.com/items/{item_id}"
-                        req_ml = urllib.request.Request(
-                            url_ml, headers={"User-Agent": "Mozilla/5.0"})
-                        with urllib.request.urlopen(req_ml, timeout=8) as resp:
-                            item_data = json.loads(resp.read().decode())
-                        pics = item_data.get("pictures", [])
-                        if pics and pics[0].get("url"):
-                            imagen_url = pics[0]["url"]
-                        else:
-                            imagen_url = item_data.get("thumbnail")
-                    except Exception:
-                        imagen_url = None
-
-                # b) Fallback: pedir al servidor (por si no hay item_id local)
                 if not imagen_url:
                     url = f"{RAILWAY_URL}/api/imagen-sku/{sku}"
                     req = urllib.request.Request(
                         url, headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(req, timeout=8) as resp:
+                    with urllib.request.urlopen(req, timeout=10) as resp:
                         data = json.loads(resp.read().decode())
                     if data.get("existe") and data.get("imagen_url"):
                         imagen_url = data.get("imagen_url")
@@ -4903,24 +4901,24 @@ class AsistenteDepositoApp:
 
                 self._img_url_cache[sku] = imagen_url
 
-                # c) Descargar bytes de la imagen
+                # Descargar bytes de la imagen (las URLs de imágenes ML son públicas)
                 req_img = urllib.request.Request(
                     imagen_url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req_img, timeout=10) as resp:
                     img_bytes = resp.read()
 
-                # d) Abrir con PIL (en el thread, fuera de la UI)
+                # Abrir con PIL (en el thread, fuera de la UI)
                 img_full = Image.open(io.BytesIO(img_bytes))
                 img_full.load()
 
                 # Guardar el full para el zoom
                 self._img_full_cache[sku] = img_full.copy()
 
-                # e) Crear miniatura
+                # Crear miniatura
                 img_min = img_full.copy()
                 img_min.thumbnail((tam, tam), Image.Resampling.LANCZOS)
 
-                # f) Volver a la UI para crear el PhotoImage y asignarlo
+                # Volver a la UI para crear el PhotoImage y asignarlo
                 self.root.after(0, lambda: self._on_miniatura_lista(
                     sku, lbl_destino, img_min))
 
@@ -6193,6 +6191,26 @@ try {{
             text=f"✅ {total} pedidos en Railway — celulares listos",
             fg=C["success"])
         self.root.after(5000, self._sincronizar_desde_nube)
+        # Ahora que el lote (con item_id) está en Railway, recargar las
+        # miniaturas que aún no se cargaron (el servidor ya puede resolverlas).
+        self.root.after(1500, self._recargar_miniaturas_pendientes)
+
+    def _recargar_miniaturas_pendientes(self):
+        """Reintenta cargar las miniaturas que quedaron en estado 'fallo' (📷),
+        por ejemplo porque se pidieron antes de que el lote llegara a Railway."""
+        try:
+            cache_labels = getattr(self, "_img_labels", {})
+            for sku, lbl in list(cache_labels.items()):
+                # Solo reintentar si no hay imagen cargada y el label sigue vivo
+                if sku in self._img_cache:
+                    continue
+                try:
+                    if lbl.winfo_exists():
+                        self._cargar_miniatura_async(sku, lbl)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _on_subida_error(self, err):
         # Silencioso — el error se muestra solo si el usuario abre la ventana

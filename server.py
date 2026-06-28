@@ -2160,6 +2160,7 @@ def api_imagen_sku(sku):
     try:
         item_id = None
         nombre_local = None
+        cuenta_id = "cuenta_0"
         
         with _lock:
             # 1. Buscar primero en pedidos (tiene item_id directamente)
@@ -2170,6 +2171,7 @@ def api_imagen_sku(sku):
                     if str(item.get("sku", "")).strip().upper() == sku:
                         item_id = item.get("item_id", "")
                         nombre_local = item.get("nombre", "")
+                        cuenta_id = ped.get("_cuenta", "cuenta_0")
                         if item_id:
                             break
                 if item_id:
@@ -2194,17 +2196,37 @@ def api_imagen_sku(sku):
                 "msg": "SKU no encontrado en el lote actual (falta item_id)"
             }), 200
 
-        # 3. GET /items/{item_id} directamente a MercadoLibre (sin token - es público)
-        r_item = requests.get(
-            f"{ML_API_URL}/items/{item_id}",
-            timeout=10
-        )
-        
-        if r_item.status_code != 200:
+        # 3. GET /items/{item_id} a MercadoLibre CON TOKEN.
+        #    ML ahora exige Authorization en TODOS los recursos, incluso /items.
+        #    Probar con la cuenta del pedido; si falla, probar las demás cuentas.
+        r_item = None
+        cuentas_a_probar = [cuenta_id] + [c for c in _cuentas.keys() if c != cuenta_id]
+        for cid in cuentas_a_probar:
+            # Asegurar token vigente (renueva si está por expirar)
+            try:
+                _token_valido_cuenta(cid)
+            except Exception:
+                pass
+            at = _cuentas.get(cid, {}).get("access_token", "")
+            if not at:
+                continue
+            try:
+                r_item = requests.get(
+                    f"{ML_API_URL}/items/{item_id}",
+                    headers={"Authorization": f"Bearer {at}"},
+                    timeout=10
+                )
+                if r_item.status_code == 200:
+                    break
+            except Exception:
+                continue
+
+        if r_item is None or r_item.status_code != 200:
+            status = r_item.status_code if r_item is not None else "sin token"
             return jsonify({
                 "ok": True, "existe": False, "sku": sku,
                 "imagen_url": None,
-                "msg": f"No se pudo obtener item de ML (status {r_item.status_code})",
+                "msg": f"No se pudo obtener item de ML (status {status})",
                 "item_id": item_id
             }), 200
 
