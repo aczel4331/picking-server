@@ -5561,11 +5561,36 @@ class AsistenteDepositoApp:
                 self.root.update_idletasks()
 
                 import urllib.request as _ur
-                req_obj = _ur.Request(
-                    etiqueta_url,
-                    headers={"Accept": "application/pdf", "X-API-Key": clave_api}
-                )
-                with _ur.urlopen(req_obj, timeout=15) as resp:
+                import json as _json
+
+                # Enviar config como POST con JSON (el logo en base64 puede ser
+                # muy grande para una URL → usamos body)
+                tiene_logo  = bool(config_etiq.get("etiqueta_logo_b64"))
+                tiene_texto = bool(config_etiq.get("etiqueta_texto"))
+                usa_config  = tiene_logo or tiene_texto
+
+                if usa_config:
+                    # POST /api/etiqueta/<order_id>  con body JSON
+                    body_bytes = _json.dumps(config_etiq).encode("utf-8")
+                    req_obj = _ur.Request(
+                        etiqueta_url,
+                        data=body_bytes,
+                        headers={
+                            "Accept":       "application/pdf",
+                            "X-API-Key":    clave_api,
+                            "Content-Type": "application/json",
+                        },
+                        method="POST"
+                    )
+                    print(f"[ETIQUETA] POST con config: logo={tiene_logo}, texto={tiene_texto}")
+                else:
+                    # GET simple sin personalización
+                    req_obj = _ur.Request(
+                        etiqueta_url,
+                        headers={"Accept": "application/pdf", "X-API-Key": clave_api}
+                    )
+
+                with _ur.urlopen(req_obj, timeout=25) as resp:
                     content_type = resp.headers.get("Content-Type", "")
                     raw = resp.read()
 

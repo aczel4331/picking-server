@@ -1291,7 +1291,7 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
 # ENDPOINT: Descargar etiqueta de envío (ML integrado)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.route("/api/etiqueta/<order_id>")
+@app.route("/api/etiqueta/<order_id>", methods=["GET", "POST"])
 def api_etiqueta(order_id):
     """Proxy de etiqueta ML - sirve PDF directo sin marcar como impresa en ML."""
     try:
@@ -1388,21 +1388,30 @@ def _api_etiqueta_impl(order_id):
             continue
 
     if pdf_content:
-        # Recibir configuración de personalización
-        config_str = request.args.get("config", "{}")
+        # Leer config de personalización:
+        # - POST → body JSON  (logo en base64, puede ser grande)
+        # - GET  → query param ?config=... (fallback, sin logo)
         config = {}
         try:
-            config = json.loads(config_str) if config_str else {}
-        except Exception:
-            pass
-        
-        # Aplicar personalización (logo + texto)
+            if request.method == "POST" and request.content_type == "application/json":
+                config = request.get_json(silent=True) or {}
+                print(f"[ETIQUETA] Config POST recibida: logo={bool(config.get('etiqueta_logo_b64'))}, texto={bool(config.get('etiqueta_texto'))}, pos={config.get('etiqueta_logo_pos')}")
+            else:
+                config_str = request.args.get("config", "{}")
+                config = json.loads(config_str) if config_str else {}
+        except Exception as e:
+            print(f"[ETIQUETA] Error leyendo config: {e}")
+            config = {}
+
+        # Aplicar personalización (logo + texto sobre el PDF de ML)
         pdf_final = _aplicar_personalizacion_etiqueta(pdf_content, config)
-        
+
         return Response(
             pdf_final, status=200, mimetype="application/pdf",
-            headers={"Content-Disposition": f"inline; filename=etiqueta_{shipping_id}.pdf",
-                     "Content-Type": "application/pdf"})
+            headers={
+                "Content-Disposition": f"inline; filename=etiqueta_{shipping_id}.pdf",
+                "Content-Type": "application/pdf"
+            })
     try:
         ri = requests.get(f"{ML_API_URL}/shipments/{shipping_id}",
                           headers={"Authorization": f"Bearer {at}"}, timeout=8)
