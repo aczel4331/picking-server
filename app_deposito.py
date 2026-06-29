@@ -6231,12 +6231,28 @@ try {{
         grupos = [{"pasillo": k, "items": v}
                   for k, v in sorted(grupos_dict.items(), key=lambda x: _orden(x[0]))]
 
+        # Incluir pedidos con order_id y shipping_id para que el servidor
+        # pueda descargar las etiquetas de ML al imprimir
+        pedidos_payload = {}
+        for idx, d in self.pedidos.items():
+            pedidos_payload[str(idx)] = {
+                "_order_id":    d.get("_order_id", ""),
+                "_shipping_id": d.get("_shipping_id", ""),
+                "_cuenta":      d.get("_cuenta", "cuenta_0"),
+                "comprador":    d.get("descripcion", ""),
+                "items": [
+                    {"sku": sku, "cantidad": qty}
+                    for sku, qty in d.get("skus_requeridos", {}).items()
+                ],
+            }
+
         return {
             "fase": self.fase_actual, "grupos": grupos,
             "colecta": dict(self.colecta_global),
             "colecta_completa": False,
             "total_skus": len(total_req),
             "total_uds": sum(total_req.values()),
+            "pedidos": pedidos_payload,
         }
 
     def _subir_a_nube_async(self):

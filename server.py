@@ -1311,8 +1311,9 @@ def _api_etiqueta_impl(order_id):
 
     # ── 1. Servir desde cache si ya fue descargada via webhook ────────────────
     with _lock:
-        cached = _etiquetas_cache.get(order_id)
-        snap   = dict(_pedidos_ml)
+        cached    = _etiquetas_cache.get(order_id)
+        snap      = dict(_pedidos_ml)
+        snap_lote = dict(_estado.get("pedidos", {}))   # pedidos del lote actual
 
     if cached and cached.get("pdf"):
         print(f"[ETIQUETA] Sirviendo desde cache para {order_id}")
@@ -1330,9 +1331,11 @@ def _api_etiqueta_impl(order_id):
                 "X-Cached-At":         ts,
             })
 
-    # ── 2. Buscar pedido en memoria ───────────────────────────────────────────
+    # ── 2. Buscar pedido — primero en _pedidos_ml, luego en lote ─────────────
     pedido   = snap.get(order_id)
     real_oid = order_id
+
+    # Búsqueda por sufijo/prefijo en _pedidos_ml
     if not pedido and len(order_id) >= 8:
         sufijo = order_id[-8:]
         for k, v in snap.items():
@@ -1341,11 +1344,31 @@ def _api_etiqueta_impl(order_id):
                 real_oid = k
                 break
 
+    # Buscar en _estado["pedidos"] (lote subido desde la app desktop)
+    # Ahí los pedidos están keyed por número de pedido (1, 2, 3...) y
+    # tienen _order_id con el ID de ML.
     if not pedido:
+        for p_num, p_data in snap_lote.items():
+            oid_lote = str(p_data.get("_order_id", ""))
+            if oid_lote == order_id:
+                # Construir estructura compatible con la esperada abajo
+                pedido   = {
+                    "shipping_id": str(p_data.get("_shipping_id", "")),
+                    "comprador":   p_data.get("comprador", ""),
+                    "_cuenta":     p_data.get("_cuenta", "cuenta_0"),
+                    "items":       p_data.get("items", []),
+                }
+                real_oid = order_id
+                print(f"[ETIQUETA] Pedido #{order_id} encontrado en lote (p_num={p_num}), shipping_id={pedido['shipping_id']}")
+                break
+
+    if not pedido:
+        print(f"[ETIQUETA] Pedido #{order_id} NO encontrado. "
+              f"_pedidos_ml={len(snap)}, lote={len(snap_lote)}")
         return _html_error(
             "Pedido no encontrado",
             f"El pedido #{order_id} no esta en la lista. "
-            f"Hay {len(snap)} pedidos en memoria.<br>"
+            f"Hay {len(snap)} pedidos ML y {len(snap_lote)} pedidos en el lote.<br>"
             "Actualizá los pedidos e intentá de nuevo."), 404
 
     shipping_id = pedido.get("shipping_id", "")
