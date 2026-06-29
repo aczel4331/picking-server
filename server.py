@@ -1293,6 +1293,114 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
 # ENDPOINT: Descargar etiqueta de envío (ML integrado)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@app.route("/api/diag-etiqueta/<order_id>")
+def api_diag_etiqueta(order_id):
+    """
+    DIAGNÓSTICO paso a paso de por qué un pedido no imprime su etiqueta.
+    Devuelve JSON con cada etapa para identificar dónde se corta.
+    """
+    order_id = str(order_id).strip()
+    diag = {"order_id": order_id, "pasos": []}
+
+    def paso(nombre, ok, detalle=""):
+        diag["pasos"].append({"paso": nombre, "ok": ok, "detalle": str(detalle)[:400]})
+
+    # 1. Buscar pedido
+    with _lock:
+        snap      = dict(_pedidos_ml)
+        snap_lote = dict(_estado.get("pedidos", {}))
+
+    pedido = snap.get(order_id) or snap.get(str(order_id))
+    origen = "pedidos_ml" if pedido else None
+
+    if not pedido:
+        for p_num, p_data in snap_lote.items():
+            if str(p_data.get("_order_id", "")) == order_id:
+                pedido = {
+                    "shipping_id": str(p_data.get("_shipping_id", "")),
+                    "_cuenta":     p_data.get("_cuenta", "cuenta_0"),
+                }
+                origen = f"lote (p={p_num})"
+                break
+
+    paso("pedido_encontrado", bool(pedido),
+         f"origen={origen}, pedidos_ml={len(snap)}, lote={len(snap_lote)}")
+
+    if not pedido:
+        diag["conclusion"] = "El pedido no está ni en _pedidos_ml ni en el lote. Actualizá pedidos."
+        return jsonify(diag), 200
+
+    # 2. shipping_id
+    shipping_id = pedido.get("shipping_id", "")
+    paso("tiene_shipping_id", bool(shipping_id), f"shipping_id={shipping_id or '(vacío)'}")
+
+    if not shipping_id:
+        diag["conclusion"] = "El pedido no tiene shipping_id (envío ML). Puede ser 'acordar con vendedor' (ME1)."
+        return jsonify(diag), 200
+
+    # 3. Token
+    cuenta_id = pedido.get("_cuenta", "cuenta_0")
+    try:
+        _token_valido_cuenta(cuenta_id)
+    except Exception:
+        pass
+    at = _cuentas.get(cuenta_id, {}).get("access_token", "")
+    paso("token_disponible", bool(at), f"cuenta={cuenta_id}")
+
+    if not at:
+        diag["conclusion"] = "No hay token para la cuenta. Reconectá ML."
+        return jsonify(diag), 200
+
+    # 4. Estado del envío (CLAVE: debe ser ready_to_ship / ready_to_print)
+    estado = substatus = logistic = ""
+    try:
+        ri = requests.get(f"{ML_API_URL}/shipments/{shipping_id}",
+                          headers={"Authorization": f"Bearer {at}"}, timeout=10)
+        if ri.status_code == 200:
+            sd        = ri.json()
+            estado    = sd.get("status", "")
+            substatus = sd.get("substatus", "")
+            logistic  = sd.get("logistic_type", "") or (sd.get("logistic") or {}).get("type", "")
+            paso("estado_envio", True,
+                 f"status={estado}, substatus={substatus}, logistic_type={logistic}")
+        else:
+            paso("estado_envio", False, f"HTTP {ri.status_code}: {ri.text[:150]}")
+    except Exception as e:
+        paso("estado_envio", False, f"excepción: {e}")
+
+    # 5. Intentar descargar la etiqueta
+    label_ok = False
+    for rtype in ["pdf", "pdf2"]:
+        try:
+            r = requests.get(f"{ML_API_URL}/shipment_labels",
+                             headers={"Authorization": f"Bearer {at}"},
+                             params={"shipment_ids": shipping_id, "response_type": rtype},
+                             timeout=15)
+            es_pdf = r.content[:4] == b"%PDF"
+            paso(f"shipment_labels_{rtype}", r.status_code == 200 and es_pdf,
+                 f"HTTP {r.status_code}, es_pdf={es_pdf}, bytes={len(r.content)}, "
+                 f"resp={r.text[:200] if not es_pdf else '(binario PDF)'}")
+            if r.status_code == 200 and es_pdf:
+                label_ok = True
+                break
+        except Exception as e:
+            paso(f"shipment_labels_{rtype}", False, f"excepción: {e}")
+
+    if label_ok:
+        diag["conclusion"] = "✅ La etiqueta SÍ se puede descargar. Si la app falla, es problema de la app."
+    elif estado != "ready_to_ship":
+        diag["conclusion"] = (f"❌ El envío está en estado '{estado}' (substatus '{substatus}'). "
+                              f"ML solo permite imprimir cuando status=ready_to_ship y substatus=ready_to_print. "
+                              f"Por eso devuelve error en vez de PDF.")
+    elif substatus not in ("ready_to_print", "printed", ""):
+        diag["conclusion"] = (f"❌ El substatus es '{substatus}'. "
+                              f"Debe ser 'ready_to_print' o 'printed' para imprimir.")
+    else:
+        diag["conclusion"] = "❌ ML rechazó la descarga. Revisá los detalles de shipment_labels arriba."
+
+    return jsonify(diag), 200
+
+
 @app.route("/api/etiqueta/<order_id>", methods=["GET", "POST"])
 def api_etiqueta(order_id):
     """Proxy de etiqueta ML - sirve PDF directo sin marcar como impresa en ML."""
@@ -1392,9 +1500,11 @@ def _api_etiqueta_impl(order_id):
                            "Reconecta la cuenta MercadoLibre."), 401
 
     # GET puro - nunca POST - no marca como impresa
+    # response_type=pdf es el oficial según la documentación de ML
     pdf_content = None
     last_status = 0
-    for rtype in ["pdf2", "pdf"]:
+    last_body   = ""
+    for rtype in ["pdf", "pdf2"]:
         try:
             r = requests.get(
                 f"{ML_API_URL}/shipment_labels",
@@ -1402,10 +1512,16 @@ def _api_etiqueta_impl(order_id):
                 params={"shipment_ids": shipping_id, "response_type": rtype},
                 timeout=15)
             last_status = r.status_code
-            if r.status_code == 200 and len(r.content) > 200:
+            # Verificar que sea REALMENTE un PDF (empieza con %PDF)
+            if r.status_code == 200 and r.content[:4] == b"%PDF":
                 pdf_content = r.content
                 break
-        except Exception:
+            else:
+                last_body = r.text[:300]
+                print(f"[ETIQUETA] {rtype} → HTTP {r.status_code}, "
+                      f"es_pdf={r.content[:4] == b'%PDF'}, body={last_body[:150]}")
+        except Exception as e:
+            print(f"[ETIQUETA] Excepción con {rtype}: {e}")
             continue
 
     if pdf_content:
