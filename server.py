@@ -1331,44 +1331,40 @@ def _api_etiqueta_impl(order_id):
                 "X-Cached-At":         ts,
             })
 
-    # ── 2. Buscar pedido — primero en _pedidos_ml, luego en lote ─────────────
-    pedido   = snap.get(order_id)
+    # ── 2. Buscar pedido — _pedidos_ml (str y int) + lote ────────────────────
+    pedido   = snap.get(order_id) or snap.get(str(order_id)) or snap.get(int(order_id) if order_id.isdigit() else order_id)
     real_oid = order_id
 
     # Búsqueda por sufijo/prefijo en _pedidos_ml
     if not pedido and len(order_id) >= 8:
         sufijo = order_id[-8:]
         for k, v in snap.items():
-            if k.endswith(sufijo) or k[:8] == order_id[:8]:
+            if str(k).endswith(sufijo) or str(k)[:8] == order_id[:8]:
                 pedido   = v
-                real_oid = k
+                real_oid = str(k)
                 break
 
     # Buscar en _estado["pedidos"] (lote subido desde la app desktop)
-    # Ahí los pedidos están keyed por número de pedido (1, 2, 3...) y
-    # tienen _order_id con el ID de ML.
     if not pedido:
         for p_num, p_data in snap_lote.items():
             oid_lote = str(p_data.get("_order_id", ""))
             if oid_lote == order_id:
-                # Construir estructura compatible con la esperada abajo
-                pedido   = {
+                pedido = {
                     "shipping_id": str(p_data.get("_shipping_id", "")),
                     "comprador":   p_data.get("comprador", ""),
                     "_cuenta":     p_data.get("_cuenta", "cuenta_0"),
                     "items":       p_data.get("items", []),
                 }
                 real_oid = order_id
-                print(f"[ETIQUETA] Pedido #{order_id} encontrado en lote (p_num={p_num}), shipping_id={pedido['shipping_id']}")
+                print(f"[ETIQUETA] #{order_id} encontrado en lote (p={p_num}), shid={pedido['shipping_id']}")
                 break
 
     if not pedido:
-        print(f"[ETIQUETA] Pedido #{order_id} NO encontrado. "
-              f"_pedidos_ml={len(snap)}, lote={len(snap_lote)}")
+        print(f"[ETIQUETA] #{order_id} NO encontrado. _pedidos_ml={len(snap)}, lote={len(snap_lote)}")
         return _html_error(
             "Pedido no encontrado",
             f"El pedido #{order_id} no esta en la lista. "
-            f"Hay {len(snap)} pedidos ML y {len(snap_lote)} pedidos en el lote.<br>"
+            f"Hay {len(snap)} pedidos ML y {len(snap_lote)} en el lote.<br>"
             "Actualizá los pedidos e intentá de nuevo."), 404
 
     shipping_id = pedido.get("shipping_id", "")
@@ -2678,4 +2674,5 @@ if __name__ == "__main__":
             serve(app, host="0.0.0.0", port=port, threads=8)
         except ImportError:
             print(f"✅ Servidor iniciado (flask dev) en http://0.0.0.0:{port}")
+            app.run(host="0.0.0.0", port=port, debug=False)
             app.run(host="0.0.0.0", port=port, debug=False)

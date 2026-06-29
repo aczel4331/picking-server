@@ -3022,19 +3022,83 @@ class AsistenteDepositoApp:
     # ── Etiqueta ──────────────────────────────────────────────────────────────
 
     def _ml_ver_etiqueta(self, order_id):
-        """Abre la etiqueta directamente desde el proxy de Railway."""
-        import webbrowser
-        ped = self._ml_pedidos.get(order_id, {})
+        """Descarga e imprime la etiqueta directamente desde ML via Railway."""
+        import threading, urllib.request as _ur, tempfile, os as _os
 
-        # La URL del proxy sirve el PDF directamente con el token del servidor
-        # No necesitamos llamar a Railway primero — abrimos la URL proxy directo
-        proxy_url = RAILWAY_URL.rstrip("/") + f"/api/etiqueta/{order_id}"
-        self.lbl_ml_estado.config(
-            text=f"Abriendo etiqueta #{order_id}...", fg=C["accent"])
-        webbrowser.open(proxy_url)
-        self.lbl_ml_estado.config(
-            text=f"Etiqueta abierta en el navegador — NO marcada en ML",
-            fg=C["success"])
+        ped = self._ml_pedidos.get(str(order_id), {})
+        shipping_id = ped.get("shipping_id", "")
+        impresora   = self.config.get("impresora", "").strip()
+
+        self.lbl_ml_estado.config(text=f"⬇ Descargando etiqueta #{order_id}…", fg=C["accent"])
+
+        url_base  = self.config.get("servidor_nube", RAILWAY_URL).strip() or RAILWAY_URL
+        clave_api = self.config.get("clave_nube", "everest2024").strip()
+
+        # Construir URL — el servidor busca por order_id en _pedidos_ml y en el lote
+        proxy_url = url_base.rstrip("/") + f"/api/etiqueta/{order_id}"
+
+        def _worker():
+            try:
+                req = _ur.Request(proxy_url,
+                                  headers={"Accept":    "application/pdf",
+                                           "X-API-Key": clave_api})
+                with _ur.urlopen(req, timeout=20) as resp:
+                    ct  = resp.headers.get("Content-Type", "")
+                    raw = resp.read()
+
+                # ¿Es PDF?
+                if b"%PDF" not in raw[:8]:
+                    # Puede ser HTML de error — mostrar mensaje
+                    msg = raw.decode("utf-8", errors="replace")
+                    # Extraer texto del título HTML si lo hay
+                    import re as _re
+                    titulo = _re.search(r"<title>(.*?)</title>", msg, _re.I)
+                    txt = titulo.group(1) if titulo else msg[:200]
+                    self.root.after(0, lambda t=txt: messagebox.showerror(
+                        "Error de etiqueta",
+                        f"El servidor no pudo obtener el PDF:\n\n{t}\n\n"
+                        f"Pedido: #{order_id}  •  Shipping: {shipping_id or '(desconocido)'}",
+                        parent=self.root))
+                    self.root.after(0, lambda: self.lbl_ml_estado.config(
+                        text="❌ Error al obtener etiqueta", fg=C["danger"]))
+                    return
+
+                # Guardar PDF temp
+                tmp = _os.path.join(tempfile.gettempdir(), f"etiq_ml_{order_id}.pdf")
+                with open(tmp, "wb") as f:
+                    f.write(raw)
+
+                # Imprimir si hay impresora configurada, si no abrir en navegador
+                if impresora:
+                    ok = self._enviar_a_impresora(tmp, impresora)
+                    if ok:
+                        self.root.after(0, lambda: self.lbl_ml_estado.config(
+                            text=f"✅ Etiqueta #{order_id} enviada a impresora", fg=C["success"]))
+                        # Marcar como impreso en la lista local
+                        if str(order_id) in self._ml_pedidos:
+                            self._ml_pedidos[str(order_id)]["impreso"] = True
+                        self.root.after(0, self._ml_filtrar)
+                    else:
+                        self.root.after(0, lambda: messagebox.showerror(
+                            "Error de impresión",
+                            f"No se pudo enviar a:\n{impresora}\n\n"
+                            "Verificá que la impresora esté encendida.",
+                            parent=self.root))
+                else:
+                    # Sin impresora → abrir en navegador
+                    import webbrowser
+                    self.root.after(0, lambda: webbrowser.open(tmp))
+                    self.root.after(0, lambda: self.lbl_ml_estado.config(
+                        text=f"📄 Etiqueta #{order_id} abierta (sin impresora configurada)",
+                        fg=C["warning"]))
+
+            except Exception as e:
+                self.root.after(0, lambda err=str(e): messagebox.showerror(
+                    "Error", f"No se pudo obtener la etiqueta:\n{err}", parent=self.root))
+                self.root.after(0, lambda: self.lbl_ml_estado.config(
+                    text="❌ Error al descargar etiqueta", fg=C["danger"]))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _ml_on_etiqueta(self, d, order_id):
         self.lbl_ml_estado.config(
