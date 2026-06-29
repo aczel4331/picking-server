@@ -5,8 +5,9 @@
   "servidor_nube": "https://picking-server-production.up.railway.app",
   "clave_nube": "everest2025",
   "etiqueta_logo_url": "",
-  "etiqueta_logo_pos": "superior_izq",
+  "etiqueta_logo_pos": "superior_der",
   "etiqueta_logo_size": 15,
   "etiqueta_texto": "",
-  "etiqueta_texto_pos": "abajo"
+  "etiqueta_texto_pos": "abajo",
+  "etiqueta_logo_path": ""
 }

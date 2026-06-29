@@ -200,11 +200,11 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <div class="scan-box">
   <div style="display:flex;gap:8px;margin-bottom:8px">
     <input id="sku" type="text"
-           inputmode="none"
-           autocomplete="off" autocorrect="off" autocapitalize="characters"
+           inputmode="decimal"
+           autocomplete="off" autocorrect="off" autocapitalize="off"
            spellcheck="false" enterkeyhint="send"
            placeholder="Apuntá el escáner aquí"
-           style="flex:1">
+           style="flex:1;font-size:18px">
     <button id="btn-confirmar"
             style="background:var(--success);color:#fff;border:none;border-radius:10px;
             padding:0 18px;font-size:20px;font-weight:800;cursor:pointer;flex-shrink:0"
@@ -218,6 +218,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
             border-radius:8px;padding:5px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
             title="Abrir teclado manual">⌨</button>
   </div>
+  <div id="scanner-debug" style="font-size:10px;color:var(--text-lo);margin-top:4px;min-height:14px"></div>
 </div>
 
 <!-- Lightbox para ver imagen del producto en grande -->
@@ -810,6 +811,15 @@ function toggleTeclado() {
 document.addEventListener('DOMContentLoaded', () => {
   load();
   const inp = $('sku');
+  const debugDiv = $('scanner-debug');
+
+  // Helper para mostrar debug
+  function debug(msg) {
+    if (debugDiv) {
+      debugDiv.textContent = msg;
+      setTimeout(() => { if (debugDiv) debugDiv.textContent = ''; }, 2000);
+    }
+  }
 
   // ── DESBLOQUEO DE VOZ ──────────────────────────────────────────────────
   // Los navegadores móviles bloquean el audio hasta la primera interacción.
@@ -829,17 +839,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── ESCÁNER LÁSER HARDWARE ─────────────────────────────────────────────
   // El escáner manda el código como si fuera un teclado físico + Enter al final.
-  // inputmode="none" = no abre teclado virtual pero SÍ recibe input del escáner.
 
   let _scanTimer = null;
 
-  // Enter → procesar INMEDIATAMENTE sin esperar nada
+  // 1. EVENT DIRECTO EN INPUT (más confiable para algunos lectores)
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.keyCode === 13) {
       const v = inp.value.trim();
       if (v) {
-        e.preventDefault();  // evitar submit solo si hay valor
+        e.preventDefault();
         clearTimeout(_scanTimer);
+        debug(`✓ Enter detectado: ${v}`);
         scan(v);
         inp.value = '';
         inp.focus();
@@ -847,29 +857,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Fallback: escáneres que NO mandan Enter → procesar al dejar de escribir (50ms)
-  // Los escáneres escriben muy rápido (<30ms total) — 50ms es más que suficiente
-  inp.addEventListener('input', () => {
+  // 2. INPUT EVENT (captura caracteres conforme llegan)
+  inp.addEventListener('input', (e) => {
     clearTimeout(_scanTimer);
     const v = inp.value.trim();
     if (!v) return;
     if (_tecladoVisible) return;  // modo teclado manual: esperar Enter o botón ✓
+    
+    // Si detecta que es un scan rápido (muchos caracteres en poco tiempo)
     _scanTimer = setTimeout(() => {
       const v2 = inp.value.trim();
       if (v2.length >= 2) {
+        debug(`⏱️ Auto-scan timeout: ${v2}`);
         scan(v2);
         inp.value = '';
         inp.focus();
       }
-    }, 50);
+    }, 80);  // Reduci de 50 a 80ms para ser más confiable
   });
 
-  // Edge case Android: si el input pierde foco con valor → procesar igual
+  // 3. BLUR (si pierde foco con valor, procesar)
   inp.addEventListener('blur', () => {
     if (!_tecladoVisible && !_camaraActiva) {
       const v = inp.value.trim();
       if (v.length >= 2) {
         clearTimeout(_scanTimer);
+        debug(`👁️ Blur scan: ${v}`);
         scan(v);
         inp.value = '';
         setTimeout(() => inp.focus(), 80);
@@ -877,46 +890,71 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // ── CAPTURA GLOBAL DEL ESCÁNER (a prueba de foco) ──────────────────────
-  // Muchos lectores "pistola" escriben el código + Enter como un teclado. Si el
-  // input pierde el foco (o inputmode lo bloquea en algún equipo), el escaneo se
-  // perdía: el lector pitaba pero no entraba nada. Capturamos también a nivel de
-  // documento para que funcione AUNQUE el campo no esté enfocado. El anti-doble
-  // de scan() (200ms) evita que se registre dos veces si el input también lo tomó.
+  // 4. CAPTURA GLOBAL A NIVEL DOCUMENTO (para cuando input pierde foco)
+  // Esto atrapa CUALQUIER entrada de teclado en la página
   let _gBuf = '', _gLastKey = 0, _gTimer = null;
   document.addEventListener('keydown', e => {
     if (_tecladoVisible || _camaraActiva) return;     // modo manual / cámara: no interferir
-    const now = Date.now();
-    if (now - _gLastKey > 120) _gBuf = '';            // pausa larga = nueva lectura
-    _gLastKey = now;
+    
+    // Si Enter global → procesar acumulado
     if (e.key === 'Enter' || e.keyCode === 13) {
-      const s = _gBuf.trim(); _gBuf = ''; clearTimeout(_gTimer);
-      if (s.length >= 2) scan(s);
+      const s = _gBuf.trim();
+      _gBuf = '';
+      clearTimeout(_gTimer);
+      if (s.length >= 2) {
+        debug(`🌐 Enter global: ${s}`);
+        scan(s);
+        // Enfocar input nuevamente
+        inp.focus();
+      }
       return;
     }
-    if (e.key && e.key.length === 1) {                // carácter imprimible
+    
+    // Acumular caracteres imprimibles
+    if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const now = Date.now();
+      if (now - _gLastKey > 150) {
+        _gBuf = '';  // pausa larga = nueva lectura
+      }
+      _gLastKey = now;
       _gBuf += e.key;
+      
       clearTimeout(_gTimer);
-      _gTimer = setTimeout(() => {                     // lector que NO manda Enter
-        const s = _gBuf.trim(); _gBuf = '';
-        if (s.length >= 2) scan(s);
-      }, 120);
+      _gTimer = setTimeout(() => {
+        const s = _gBuf.trim();
+        _gBuf = '';
+        if (s.length >= 2) {
+          debug(`⏱️ Global timeout: ${s}`);
+          scan(s);
+          inp.focus();
+        }
+      }, 150);  // Aumenté a 150ms para ser más confiable
     }
   });
 
-  // Clic en contenido → foco (excepto botones interactivos)
+  // 5. CLIC EN PANTALLA → ENFOCAR INPUT (para reactivar scanner)
   document.addEventListener('click', e => {
     if (!e.target.closest('#btn-teclado') &&
         !e.target.closest('#btn-confirmar') &&
         !e.target.closest('#btn-cam') &&
         !e.target.closest('#cam-overlay') &&
         !e.target.closest('.g-hdr')) {
-      if (!_tecladoVisible && !_camaraActiva) inp.focus();
+      if (!_tecladoVisible && !_camaraActiva) {
+        inp.focus();
+        debug('🔫 Scanner activo');
+      }
     }
   });
 
-  // Foco inicial
+  // 6. FOCO INICIAL
   inp.focus();
+
+  // 8. MANTENER FOCO CADA 3s (asegura scanner siempre funcione)
+  setInterval(() => {
+    if (!_tecladoVisible && !_camaraActiva && document.activeElement !== inp) {
+      inp.focus();
+    }
+  }, 3000);
 
   // Botón cámara: solo en dispositivos táctiles
   const btnCam = document.getElementById('btn-cam');
@@ -933,14 +971,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Auto-refresh del estado cada 5 segundos (silencioso)
   setInterval(loadQ, 5000);
-
-  // Mantener foco en el input cada 3s — asegura que el escáner siempre funcione
-  // Solo si el teclado manual y la cámara no están activos
-  setInterval(() => {
-    if (!_tecladoVisible && !_camaraActiva && document.activeElement !== inp) {
-      inp.focus();
-    }
-  }, 3000);
 });
 </script>
 </body>
