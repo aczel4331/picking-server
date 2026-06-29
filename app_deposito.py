@@ -471,103 +471,138 @@ class VentanaConfiguracion(tk.Toplevel):
         lbl_sec("PERSONALIZACION DE ETIQUETAS")
         lbl_sub("Agrega tu logo y texto personalizado a las etiquetas de envio.")
 
-        # Logo archivo local
-        tk.Label(body, text="Logo (archivo local PNG/JPG)",
-                 font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
-                 fg=C["text_lo"]).pack(anchor="w", pady=(8,0))
-        logo_row = tk.Frame(body, bg=C["bg_dark"])
-        logo_row.pack(fill="x", pady=(4,0))
-        
-        self.lbl_logo_file = tk.Label(logo_row, text="Ningún archivo seleccionado",
-                                       font=("Segoe UI", 9), bg=C["bg_dark"],
-                                       fg=C["text_mid"], wraplength=380)
-        self.lbl_logo_file.pack(anchor="w", pady=(0,4))
-        
-        # Guardar ruta del logo (si existe)
-        self._logo_path = config_actual.get("etiqueta_logo_path", "")
-        if self._logo_path and os.path.exists(self._logo_path):
-            self.lbl_logo_file.config(text=f"✓ {os.path.basename(self._logo_path)}")
-        
-        btn_logo_row = tk.Frame(logo_row, bg=C["bg_dark"])
-        btn_logo_row.pack(fill="x")
-        tk.Button(btn_logo_row, text="Seleccionar archivo",
-                  font=FONT_SMALL, bg=C["accent"], fg="white",
-                  activebackground=C["accent2"], activeforeground="white",
-                  relief="flat", cursor="hand2", padx=12, pady=5, bd=0,
-                  command=self._seleccionar_logo).pack(side="left")
-        
-        if self._logo_path and os.path.exists(self._logo_path):
-            tk.Button(btn_logo_row, text="Borrar",
-                      font=FONT_SMALL, bg=C["danger"], fg="white",
-                      activebackground="#DC2626", activeforeground="white",
-                      relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
-                      command=self._borrar_logo).pack(side="left", padx=(8,0))
-
-        # Posición del logo
-        tk.Label(body, text="Posicion del Logo",
+        # ── Logo ──────────────────────────────────────────────────────────────
+        tk.Label(body, text="Logo (archivo PNG/JPG desde tu PC)",
                  font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
                  fg=C["text_lo"]).pack(anchor="w", pady=(10,0))
-        pos_row = tk.Frame(body, bg=C["bg_dark"])
-        pos_row.pack(fill="x", pady=(4,0))
+
+        self._logo_path = config_actual.get("etiqueta_logo_path", "")
+        nombre_logo = (os.path.basename(self._logo_path)
+                       if self._logo_path and os.path.exists(self._logo_path)
+                       else "Ningún archivo seleccionado")
+        self.lbl_logo_file = tk.Label(body, text=f"✓ {nombre_logo}" if self._logo_path and os.path.exists(self._logo_path) else nombre_logo,
+                                       font=("Segoe UI", 9), bg=C["bg_dark"],
+                                       fg=C["accent"] if self._logo_path and os.path.exists(self._logo_path) else C["text_mid"],
+                                       wraplength=460)
+        self.lbl_logo_file.pack(anchor="w", pady=(4,0))
+
+        btn_fila_logo = tk.Frame(body, bg=C["bg_dark"])
+        btn_fila_logo.pack(fill="x", pady=(6,0))
+        tk.Button(btn_fila_logo, text="📂  Seleccionar archivo",
+                  font=FONT_SMALL, bg=C["accent"], fg="white",
+                  activebackground=C["accent2"], activeforeground="white",
+                  relief="flat", cursor="hand2", padx=12, pady=6, bd=0,
+                  command=self._seleccionar_logo).pack(side="left")
+        self._btn_borrar_logo_ref = tk.Button(btn_fila_logo, text="✕  Borrar logo",
+                  font=FONT_SMALL, bg=C["danger"], fg="white",
+                  activebackground="#DC2626", activeforeground="white",
+                  relief="flat", cursor="hand2", padx=10, pady=6, bd=0,
+                  command=self._borrar_logo)
+        if self._logo_path and os.path.exists(self._logo_path):
+            self._btn_borrar_logo_ref.pack(side="left", padx=(8,0))
+
+        # ── Posición del logo ─────────────────────────────────────────────────
+        tk.Label(body, text="Posición del logo en la etiqueta",
+                 font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
+                 fg=C["text_lo"]).pack(anchor="w", pady=(12,4))
+
         self.var_logo_pos = tk.StringVar(
             value=config_actual.get("etiqueta_logo_pos", "superior_izq"))
-        for pos, lbl_pos in [("superior_izq", "📍 Superior Izquierda"),
-                              ("superior_der", "📍 Superior Derecha"),
-                              ("borde", "📌 Lateral Izquierdo (en el borde)")]:
-            tk.Radiobutton(pos_row, text=lbl_pos, variable=self.var_logo_pos,
-                          value=pos, bg=C["bg_dark"], fg=C["text_hi"],
-                          selectcolor=C["accent"],
-                          activebackground=C["bg_dark"],
-                          activeforeground=C["accent"],
-                          relief="flat", bd=0, font=("Segoe UI", 10)).pack(
-                          anchor="w", pady=2)
 
-        # Tamaño del logo
-        tk.Label(body, text="Tamaño del Logo (% del ancho)",
+        # Usar botones tipo toggle para posición (más confiables que Radiobutton en scroll canvas)
+        self._btns_logo_pos = {}
+        pos_opciones = [
+            ("superior_izq", "⬆ Superior Izquierda"),
+            ("superior_der", "⬆ Superior Derecha"),
+            ("borde",        "◀ Lateral Izquierdo"),
+        ]
+        fila_pos = tk.Frame(body, bg=C["bg_dark"])
+        fila_pos.pack(fill="x", pady=(0,4))
+
+        def _sel_logo_pos(valor):
+            self.var_logo_pos.set(valor)
+            for v, btn in self._btns_logo_pos.items():
+                if v == valor:
+                    btn.config(bg=C["accent"], fg="white", relief="flat")
+                else:
+                    btn.config(bg=C["panel"], fg=C["text_mid"], relief="flat")
+
+        for val, etiqueta in pos_opciones:
+            activo = (self.var_logo_pos.get() == val)
+            b = tk.Button(fila_pos, text=etiqueta,
+                          font=("Segoe UI", 9),
+                          bg=C["accent"] if activo else C["panel"],
+                          fg="white" if activo else C["text_mid"],
+                          activebackground=C["accent2"], activeforeground="white",
+                          relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
+                          command=lambda v=val: _sel_logo_pos(v))
+            b.pack(side="left", padx=(0,6))
+            self._btns_logo_pos[val] = b
+
+        # ── Tamaño del logo ───────────────────────────────────────────────────
+        tk.Label(body, text="Tamaño del logo  (% del ancho de la página, ej: 15)",
                  font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
                  fg=C["text_lo"]).pack(anchor="w", pady=(10,0))
         size_wrap = tk.Frame(body, bg=C["border"], padx=2, pady=2)
         size_wrap.pack(fill="x", pady=(4,0))
         size_in = tk.Frame(size_wrap, bg=C["card"]); size_in.pack(fill="x")
-        self.entry_logo_size = tk.Entry(size_in, font=("Segoe UI", 10),
+        self.entry_logo_size = tk.Entry(size_in, font=("Segoe UI", 11),
             bg=C["card"], fg=C["text_hi"],
-            insertbackground=C["accent"], relief="flat", bd=0, width=5)
+            insertbackground=C["accent"], relief="flat", bd=0)
         self.entry_logo_size.insert(0, str(config_actual.get("etiqueta_logo_size", 15)))
-        self.entry_logo_size.pack(fill="x", ipady=6, padx=8)
-        lbl_sub("Recomendado: 10-20%")
+        self.entry_logo_size.pack(fill="x", ipady=7, padx=8)
+        lbl_sub("Recomendado: 10–20%")
 
-        # Texto personalizado
-        tk.Label(body, text="Texto Adicional en Etiqueta",
+        # ── Texto personalizado ───────────────────────────────────────────────
+        tk.Label(body, text="Texto adicional en la etiqueta",
                  font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
-                 fg=C["text_lo"]).pack(anchor="w", pady=(10,0))
-        lbl_sub("Ejemplo: '10% DESCUENTO por nuestro WhatsApp: 098123456'")
-        texto_wrap = tk.Frame(body, bg=C["border"], padx=2, pady=2)
+                 fg=C["text_lo"]).pack(anchor="w", pady=(12,0))
+        lbl_sub("Ej: '10% DESCUENTO comprando por nuestro WhatsApp: 098 123 456'")
+        texto_wrap = tk.Frame(body, bg=C["accent"], padx=2, pady=2)
         texto_wrap.pack(fill="x", pady=(4,0))
         texto_in = tk.Frame(texto_wrap, bg=C["card"]); texto_in.pack(fill="x")
-        self.entry_texto_etiqueta = tk.Entry(texto_in, font=("Segoe UI", 10),
+        self.entry_texto_etiqueta = tk.Entry(texto_in, font=("Segoe UI", 11),
             bg=C["card"], fg=C["text_hi"],
             insertbackground=C["accent"], relief="flat", bd=0)
         self.entry_texto_etiqueta.insert(0, config_actual.get("etiqueta_texto", ""))
-        self.entry_texto_etiqueta.pack(fill="x", ipady=6, padx=8)
+        self.entry_texto_etiqueta.pack(fill="x", ipady=7, padx=8)
 
-        # Posición del texto
-        tk.Label(body, text="Donde mostrar el Texto",
+        # ── Posición del texto ────────────────────────────────────────────────
+        tk.Label(body, text="Dónde mostrar el texto",
                  font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
-                 fg=C["text_lo"]).pack(anchor="w", pady=(10,0))
-        txt_pos_row = tk.Frame(body, bg=C["bg_dark"])
-        txt_pos_row.pack(fill="x", pady=(4,0))
+                 fg=C["text_lo"]).pack(anchor="w", pady=(12,4))
+
         self.var_txt_pos = tk.StringVar(
             value=config_actual.get("etiqueta_texto_pos", "abajo"))
-        for pos, lbl_txt in [("arriba", "📌 Arriba (encima del código)"),
-                              ("abajo", "📌 Abajo (debajo del código)"),
-                              ("lateral", "📌 Lateral derecho (girado 90°)")]:
-            tk.Radiobutton(txt_pos_row, text=lbl_txt, variable=self.var_txt_pos,
-                          value=pos, bg=C["bg_dark"], fg=C["text_hi"],
-                          selectcolor=C["accent"],
-                          activebackground=C["bg_dark"],
-                          activeforeground=C["accent"],
-                          relief="flat", bd=0, font=("Segoe UI", 10)).pack(
-                          anchor="w", pady=2)
+
+        self._btns_txt_pos = {}
+        txt_opciones = [
+            ("arriba",  "⬆ Arriba"),
+            ("abajo",   "⬇ Abajo"),
+            ("lateral", "◀ Lateral"),
+        ]
+        fila_txt = tk.Frame(body, bg=C["bg_dark"])
+        fila_txt.pack(fill="x", pady=(0,4))
+
+        def _sel_txt_pos(valor):
+            self.var_txt_pos.set(valor)
+            for v, btn in self._btns_txt_pos.items():
+                if v == valor:
+                    btn.config(bg=C["accent"], fg="white", relief="flat")
+                else:
+                    btn.config(bg=C["panel"], fg=C["text_mid"], relief="flat")
+
+        for val, etiqueta in txt_opciones:
+            activo = (self.var_txt_pos.get() == val)
+            b = tk.Button(fila_txt, text=etiqueta,
+                          font=("Segoe UI", 9),
+                          bg=C["accent"] if activo else C["panel"],
+                          fg="white" if activo else C["text_mid"],
+                          activebackground=C["accent2"], activeforeground="white",
+                          relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
+                          command=lambda v=val: _sel_txt_pos(v))
+            b.pack(side="left", padx=(0,6))
+            self._btns_txt_pos[val] = b
 
         # RAILWAY
         sep()
@@ -1131,28 +1166,20 @@ class VentanaConfiguracion(tk.Toplevel):
                       ("JPEG", "*.jpg *.jpeg"),
                       ("Todos", "*.*")],
             parent=self)
-        
         if archivo:
             self._logo_path = archivo
             nombre = os.path.basename(archivo)
             self.lbl_logo_file.config(text=f"✓ {nombre}", fg=C["accent"])
-            
-            # Mostrar botón de borrar
-            if not hasattr(self, '_btn_borrar_logo'):
-                self._btn_borrar_logo = tk.Button(
-                    self.lbl_logo_file.master, text="Borrar",
-                    font=FONT_SMALL, bg=C["danger"], fg="white",
-                    activebackground="#DC2626", activeforeground="white",
-                    relief="flat", cursor="hand2", padx=10, pady=5, bd=0,
-                    command=self._borrar_logo)
-                self._btn_borrar_logo.pack(side="left", padx=(8,0))
+            # Mostrar botón borrar
+            if hasattr(self, '_btn_borrar_logo_ref'):
+                self._btn_borrar_logo_ref.pack(side="left", padx=(8,0))
 
     def _borrar_logo(self):
         """Borra el archivo de logo seleccionado."""
         self._logo_path = ""
         self.lbl_logo_file.config(text="Ningún archivo seleccionado", fg=C["text_mid"])
-        if hasattr(self, '_btn_borrar_logo'):
-            self._btn_borrar_logo.destroy()
+        if hasattr(self, '_btn_borrar_logo_ref'):
+            self._btn_borrar_logo_ref.pack_forget()
 
     def _guardar(self):
         imp = self.combo_var.get()

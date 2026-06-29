@@ -1167,10 +1167,16 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         from reportlab.pdfgen import canvas
         from reportlab.lib.utils import ImageReader
         from PIL import Image
-        import PyPDF2
         
         # 1. Cargar el PDF original
-        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+        try:
+            from pypdf import PdfReader, PdfWriter
+        except ImportError:
+            import PyPDF2
+            PdfReader = PyPDF2.PdfReader
+            PdfWriter  = PyPDF2.PdfWriter
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
         if not reader.pages:
             return pdf_bytes
         
@@ -1253,8 +1259,15 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         overlay_buffer.seek(0)
         
         # 5. Mezclar PDF original con overlay
-        overlay_reader = PyPDF2.PdfReader(overlay_buffer)
-        writer = PyPDF2.PdfWriter()
+        try:
+            from pypdf import PdfReader as PR2, PdfWriter as PW2
+        except ImportError:
+            import PyPDF2
+            PR2 = PyPDF2.PdfReader
+            PW2 = PyPDF2.PdfWriter
+
+        overlay_reader = PR2(overlay_buffer)
+        writer = PW2()
         
         for i, page in enumerate(reader.pages):
             if i == 0 and overlay_reader.pages:
