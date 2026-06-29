@@ -1145,6 +1145,139 @@ def api_refresh():
     })
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ETIQUETA PERSONALIZADA — Logo + Texto
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
+    """
+    Aplica logo y texto personalizado a un PDF de etiqueta.
+    El logo puede venir en base64 (desde la app) o como URL.
+    """
+    if not config:
+        return pdf_bytes
+    
+    # Si no hay personalización, devolver PDF original
+    if not config.get("etiqueta_logo_b64") and not config.get("etiqueta_logo_url") and not config.get("etiqueta_texto"):
+        return pdf_bytes
+    
+    try:
+        import io
+        import base64
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.utils import ImageReader
+        from PIL import Image
+        import PyPDF2
+        
+        # 1. Cargar el PDF original
+        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+        if not reader.pages:
+            return pdf_bytes
+        
+        first_page = reader.pages[0]
+        page_width = float(first_page.mediabox.width)
+        page_height = float(first_page.mediabox.height)
+        
+        # 2. Crear overlay
+        overlay_buffer = io.BytesIO()
+        c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+        
+        # 3. Agregar logo
+        logo_data = None
+        
+        # Preferir base64 (desde archivo local) sobre URL
+        if config.get("etiqueta_logo_b64"):
+            try:
+                logo_bytes = base64.b64decode(config.get("etiqueta_logo_b64"))
+                logo_data = logo_bytes
+            except Exception as e:
+                print(f"[ETIQUETA] Error decodificando logo base64: {e}")
+        elif config.get("etiqueta_logo_url"):
+            try:
+                r = requests.get(config.get("etiqueta_logo_url"), timeout=5)
+                if r.status_code == 200:
+                    logo_data = r.content
+            except Exception as e:
+                print(f"[ETIQUETA] Error descargando logo URL: {e}")
+        
+        if logo_data:
+            try:
+                logo_size = int(config.get("etiqueta_logo_size", 15))
+                logo_size = max(5, min(50, logo_size))
+                
+                img_pil = Image.open(io.BytesIO(logo_data))
+                new_width = (page_width * logo_size) / 100
+                ratio = img_pil.height / img_pil.width if img_pil.width > 0 else 1
+                new_height = new_width * ratio
+                
+                img_pil.thumbnail((int(new_width), int(new_height)), Image.Resampling.LANCZOS)
+                
+                # Posición
+                pos = config.get("etiqueta_logo_pos", "superior_izq")
+                if pos == "superior_izq":
+                    x, y = 10, page_height - img_pil.height - 10
+                elif pos == "superior_der":
+                    x, y = page_width - img_pil.width - 10, page_height - img_pil.height - 10
+                else:  # borde
+                    x, y = (page_width - img_pil.width) / 2, page_height - img_pil.height - 5
+                
+                img_buffer = io.BytesIO()
+                img_pil.save(img_buffer, format='PNG')
+                img_buffer.seek(0)
+                
+                c.drawImage(ImageReader(img_buffer), x, y,
+                           width=img_pil.width, height=img_pil.height)
+                print(f"[ETIQUETA] Logo aplicado: {pos} ({logo_size}%)")
+            except Exception as e:
+                print(f"[ETIQUETA] Error aplicando logo: {e}")
+        
+        # 4. Agregar texto
+        texto = config.get("etiqueta_texto", "").strip()
+        if texto:
+            from reportlab.lib import colors
+            c.setFont("Helvetica-Bold", 9)
+            c.setFillColor(colors.black)
+            
+            pos_txt = config.get("etiqueta_texto_pos", "abajo")
+            if pos_txt == "arriba":
+                c.drawString(15, page_height - 40, texto[:80])
+            elif pos_txt == "lateral":
+                c.rotate(90)
+                c.drawString(15, -page_width + 15, texto[:80])
+                c.rotate(-90)
+            else:  # abajo
+                c.drawString(15, 15, texto[:80])
+            print(f"[ETIQUETA] Texto agregado: {pos_txt}")
+        
+        c.save()
+        overlay_buffer.seek(0)
+        
+        # 5. Mezclar PDF original con overlay
+        overlay_reader = PyPDF2.PdfReader(overlay_buffer)
+        writer = PyPDF2.PdfWriter()
+        
+        for i, page in enumerate(reader.pages):
+            if i == 0 and overlay_reader.pages:
+                page.merge_page(overlay_reader.pages[0])
+            writer.add_page(page)
+        
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
+        print(f"[ETIQUETA] PDF personalizado generado ({len(output.getvalue())} bytes)")
+        return output.getvalue()
+    
+    except Exception as e:
+        print(f"[ETIQUETA] Error en personalización: {e}")
+        import traceback
+        traceback.print_exc()
+        return pdf_bytes
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENDPOINT: Descargar etiqueta de envío (ML integrado)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @app.route("/api/etiqueta/<order_id>")
 def api_etiqueta(order_id):
     """Proxy de etiqueta ML - sirve PDF directo sin marcar como impresa en ML."""
@@ -1242,13 +1375,21 @@ def _api_etiqueta_impl(order_id):
             continue
 
     if pdf_content:
+        # Recibir configuración de personalización
+        config_str = request.args.get("config", "{}")
+        config = {}
+        try:
+            config = json.loads(config_str) if config_str else {}
+        except Exception:
+            pass
+        
+        # Aplicar personalización (logo + texto)
+        pdf_final = _aplicar_personalizacion_etiqueta(pdf_content, config)
+        
         return Response(
-            pdf_content, status=200, mimetype="application/pdf",
+            pdf_final, status=200, mimetype="application/pdf",
             headers={"Content-Disposition": f"inline; filename=etiqueta_{shipping_id}.pdf",
                      "Content-Type": "application/pdf"})
-
-    # PDF no disponible - consultar estado real
-    estado = substatus = logistic = ""
     try:
         ri = requests.get(f"{ML_API_URL}/shipments/{shipping_id}",
                           headers={"Authorization": f"Bearer {at}"}, timeout=8)
