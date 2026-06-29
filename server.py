@@ -1218,8 +1218,8 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
                     x, y = 10, page_height - img_pil.height - 10
                 elif pos == "superior_der":
                     x, y = page_width - img_pil.width - 10, page_height - img_pil.height - 10
-                else:  # borde
-                    x, y = (page_width - img_pil.width) / 2, page_height - img_pil.height - 5
+                else:  # borde = lateral izquierdo
+                    x, y = 5, (page_height - img_pil.height) / 2
                 
                 img_buffer = io.BytesIO()
                 img_pil.save(img_buffer, format='PNG')

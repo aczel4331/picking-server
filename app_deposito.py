@@ -511,9 +511,9 @@ class VentanaConfiguracion(tk.Toplevel):
         pos_row.pack(fill="x", pady=(4,0))
         self.var_logo_pos = tk.StringVar(
             value=config_actual.get("etiqueta_logo_pos", "superior_izq"))
-        for pos, lbl_pos in [("superior_izq", "Superior Izquierda"),
-                              ("superior_der", "Superior Derecha"),
-                              ("borde", "Borde (todo alrededor)")]:
+        for pos, lbl_pos in [("superior_izq", "📍 Superior Izquierda"),
+                              ("superior_der", "📍 Superior Derecha"),
+                              ("borde", "📌 Lateral Izquierdo (en el borde)")]:
             tk.Radiobutton(pos_row, text=lbl_pos, variable=self.var_logo_pos,
                           value=pos, bg=C["bg_dark"], fg=C["text_hi"],
                           selectcolor=C["accent"],
@@ -558,9 +558,9 @@ class VentanaConfiguracion(tk.Toplevel):
         txt_pos_row.pack(fill="x", pady=(4,0))
         self.var_txt_pos = tk.StringVar(
             value=config_actual.get("etiqueta_texto_pos", "abajo"))
-        for pos, lbl_txt in [("arriba", "Arriba"),
-                              ("abajo", "Abajo"),
-                              ("lateral", "Lateral derecho")]:
+        for pos, lbl_txt in [("arriba", "📌 Arriba (encima del código)"),
+                              ("abajo", "📌 Abajo (debajo del código)"),
+                              ("lateral", "📌 Lateral derecho (girado 90°)")]:
             tk.Radiobutton(txt_pos_row, text=lbl_txt, variable=self.var_txt_pos,
                           value=pos, bg=C["bg_dark"], fg=C["text_hi"],
                           selectcolor=C["accent"],
@@ -5513,16 +5513,22 @@ class AsistenteDepositoApp:
                     except Exception as e:
                         print(f"[ETIQUETA] Error leyendo logo: {e}")
                 
-                # Otros parámetros de config
+                # Otros parámetros de config (SIEMPRE guardar)
                 config_etiq["etiqueta_logo_pos"] = self.config.get("etiqueta_logo_pos", "superior_izq")
                 config_etiq["etiqueta_logo_size"] = self.config.get("etiqueta_logo_size", 15)
                 config_etiq["etiqueta_texto"] = self.config.get("etiqueta_texto", "").strip()
                 config_etiq["etiqueta_texto_pos"] = self.config.get("etiqueta_texto_pos", "abajo")
                 
-                # Agregar config a la URL (solo si hay algo personalizado)
-                if config_etiq.get("etiqueta_logo_b64") or config_etiq.get("etiqueta_texto"):
+                # Agregar config a la URL SI HAY ALGO PERSONALIZADO
+                # (logo en base64, o texto, o posición no-default)
+                tiene_logo = config_etiq.get("etiqueta_logo_b64")
+                tiene_texto = config_etiq.get("etiqueta_texto")
+                pos_custom = config_etiq.get("etiqueta_logo_pos", "superior_izq") != "superior_izq"
+                
+                if tiene_logo or tiene_texto or pos_custom:
                     config_json = _json.dumps(config_etiq)
                     etiqueta_url += f"?config={_uparse.quote(config_json)}"
+                    print(f"[ETIQUETA] Enviando config personalizada: logo={bool(tiene_logo)}, texto={bool(tiene_texto)}, pos={config_etiq.get('etiqueta_logo_pos')}")
                 
                 self.lbl_imprimiendo.config(text="⬇  Descargando etiqueta...", fg=C["accent"])
                 self.root.update_idletasks()
