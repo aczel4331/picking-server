@@ -1949,8 +1949,10 @@ class AsistenteDepositoApp:
         # ── Colores por tipo de logística ────────────────────────────────────
         self._logistica_cfg = {
             "flex":        {"label": "⚡ FLEX",      "color": "#7C3AED", "emoji": "⚡"},
+            "colecta":     {"label": "🚚 COLECTA",   "color": "#2563EB", "emoji": "🚚"},
             "me2":         {"label": "🚚 ME2",        "color": "#2563EB", "emoji": "🚚"},
             "me1":         {"label": "📦 ME1",        "color": "#0891B2", "emoji": "📦"},
+            "full":        {"label": "🏭 FULL",       "color": "#059669", "emoji": "🏭"},
             "desconocido": {"label": "⏳ Pendiente", "color": "#CA8A04", "emoji": "⏳"},
         }
         # Etiquetas por sub-tipo de logistica (según doc oficial ML)
@@ -2040,10 +2042,10 @@ class AsistenteDepositoApp:
         self._ml_sub_btns = {}
 
         for key, txt, color in [
-            ("todos",  "Todos los pedidos", C["accent"]),
-            ("flex",   "⚡ Mercado Flex",    "#7C3AED"),
-            ("me2",    "🚚 Mercado Envios",  "#2563EB"),
-            ("me1",    "📦 ME1 / Propio",    "#0891B2"),
+            ("todos",   "Todos los pedidos", C["accent"]),
+            ("flex",    "⚡ Flex",            "#7C3AED"),
+            ("colecta", "🚚 Colecta",         "#2563EB"),
+            ("me1",     "📦 ME1 / Acordar",   "#0891B2"),
         ]:
             btn = tk.Button(sub_tabs, text=txt,
                             font=("Segoe UI Semibold", 9),
@@ -2128,17 +2130,33 @@ class AsistenteDepositoApp:
 
     def _tipo_logistica(self, ped):
         """
-        Clasifica un pedido en: flex, me2, me1, desconocido.
+        Clasifica un pedido según la documentación oficial de ML:
+
+        ME2 (mode=me2) se divide por logistic_type:
+          - self_service              → flex
+          - cross_docking, xd_drop_off, drop_off → colecta
+          - fulfillment               → full (el vendedor NO imprime etiqueta)
+        ME1 (mode=me1) / acordar con vendedor:
+          - default, custom, not_specified → me1
+
         SIEMPRE recalcula desde logistica. No asume me2 sin confirmar.
         """
         log = (ped.get("logistica") or "").lower().strip()
 
-        # Clasificacion definitiva por logistic_type
+        # FLEX = self_service
         if log == "self_service":
             return "flex"
-        if log in ("cross_docking", "drop_off", "xd_drop_off",
-                   "fulfillment", "turbo", "xd_same_day"):
-            return "me2"
+
+        # COLECTA = cross_docking, places (xd_drop_off), drop_off
+        if log in ("cross_docking", "xd_drop_off", "drop_off",
+                   "turbo", "xd_same_day"):
+            return "colecta"
+
+        # FULL = fulfillment (Mercado Libre imprime, no el vendedor)
+        if log == "fulfillment":
+            return "full"
+
+        # ME1 / acordar con vendedor
         if log in ("default", "custom", "not_specified"):
             return "me1"
 
@@ -2146,13 +2164,19 @@ class AsistenteDepositoApp:
         tags_str = " ".join(t.lower() for t in ped.get("tags", []))
         if "self_service" in tags_str or "flex" in tags_str:
             return "flex"
+        if "cross_docking" in tags_str or "xd_drop_off" in tags_str:
+            return "colecta"
 
         # Fallback por tipo pre-calculado del servidor
         tipo = (ped.get("tipo") or "").lower()
-        if tipo in ("flex", "me1", "me2"):
-            return tipo
+        if tipo == "flex":
+            return "flex"
+        if tipo == "me2":
+            return "colecta"   # me2 genérico → asumimos colecta
+        if tipo == "me1":
+            return "me1"
 
-        # Sin info confirmada → desconocido (NO asumir me2)
+        # Sin info confirmada → desconocido (NO asumir nada)
         return "desconocido"
 
     def _ml_set_filtro(self, key, color):
@@ -2164,10 +2188,10 @@ class AsistenteDepositoApp:
                        fg="white" if k==key else C["text_mid"])
         # Actualizar label del botón Generar Lote según pestaña activa
         NOMBRES = {
-            "todos": "▶  Generar Lote de Picking",
-            "flex":  "▶  Generar Lote Flex",
-            "me2":   "▶  Generar Lote ME2",
-            "me1":   "▶  Generar Lote ME1",
+            "todos":   "▶  Generar Lote de Picking",
+            "flex":    "▶  Generar Lote Flex",
+            "colecta": "▶  Generar Lote Colecta",
+            "me1":     "▶  Generar Lote ME1",
         }
         if hasattr(self, "btn_ml_lote"):
             self.btn_ml_lote.config(text=NOMBRES.get(key, "▶  Generar Lote"))
@@ -2220,7 +2244,7 @@ class AsistenteDepositoApp:
             peds = [p for p in peds if self._tipo_logistica(p) == tipo]
 
         # Actualizar badges de conteo por tipo (solo pendientes)
-        for key, badge_attr in [("flex","lbl_flex_badge"),("me2","lbl_me2_badge")]:
+        for key, badge_attr in [("flex","lbl_flex_badge"),("colecta","lbl_me2_badge")]:
             n   = sum(1 for p in pendientes if self._tipo_logistica(p) == key)
             lbl = getattr(self, badge_attr, None)
             if lbl:
@@ -2251,9 +2275,10 @@ class AsistenteDepositoApp:
                               tk.BooleanVar(value=False)).get()
 
         SECCIONES = [
-            ("flex",        "⚡  MERCADO FLEX",         "#7C3AED"),
-            ("me2",         "🚚  MERCADO ENVÍOS",        "#2563EB"),
-            ("me1",         "📦  ME1 / PROPIO",          "#0891B2"),
+            ("flex",        "⚡  FLEX (Self Service)",  "#7C3AED"),
+            ("colecta",     "🚚  COLECTA / PLACES",      "#2563EB"),
+            ("me1",         "📦  ME1 / ACORDAR",         "#0891B2"),
+            ("full",        "🏭  FULL (imprime ML)",     "#059669"),
             ("desconocido", "⏳  PENDIENTES SIN ENVÍO",  "#CA8A04"),
         ]
         COLORES    = {k: c for k,_,c in SECCIONES}
@@ -2367,8 +2392,9 @@ class AsistenteDepositoApp:
 
             # Color del borde y chip según tipo
             TIPO_COLOR = {
-                "flex": "#7C3AED", "me2": "#2563EB",
-                "me1": "#0891B2",  "desconocido": "#CA8A04"
+                "flex": "#7C3AED", "colecta": "#2563EB",
+                "me1": "#0891B2",  "full": "#059669",
+                "desconocido": "#CA8A04"
             }
             SUBTIPO_LABEL = {
                 "self_service": "⚡ Flex",
@@ -2445,7 +2471,10 @@ class AsistenteDepositoApp:
             col_data.append((est_txt, "estado", est_color))
 
             # 7. Acción (etiqueta o impreso)
-            if impreso:
+            # FULL: ML imprime, el vendedor NO puede imprimir etiqueta de envío
+            if tipo == "full":
+                col_data.append(("🏭 ML imprime", "accion", C["text_lo"]))
+            elif impreso:
                 col_data.append(("✅ Impreso", "accion", C["success"]))
             elif ped.get("shipping_id"):
                 col_data.append(("🏷 Etiqueta", "accion_btn", borde_color))
@@ -3265,9 +3294,11 @@ class AsistenteDepositoApp:
         tipo_activo = self._ml_filtro_tipo.get()
         ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
         NOMBRES_TIPO = {
-            "flex":        "⚡ Mercado Flex",
+            "flex":        "⚡ Flex",
+            "colecta":     "🚚 Colecta / Places",
             "me2":         "🚚 Mercado Envíos",
-            "me1":         "📦 ME1 / Propio",
+            "me1":         "📦 ME1 / Acordar",
+            "full":        "🏭 Full",
             "desconocido": "⏳ Pendientes sin envío",
             "todos":       "Todos los tipos",
         }

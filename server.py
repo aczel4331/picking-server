@@ -428,37 +428,39 @@ def _calcular_tipo(logistica, tags_order=None, shipping_id=""):
     """
     Clasifica el tipo de logistica segun documentacion oficial ML.
     SOLO clasifica con certeza si hay logistic_type o tags claros.
-    Si no hay info suficiente, devuelve 'desconocido' (NO asume me2).
+    Si no hay info suficiente, devuelve 'desconocido'.
 
     ME2 (Mercado Envios 2):
-      - self_service  -> Flex
-      - cross_docking -> Colectas
-      - xd_drop_off   -> Places
-      - drop_off      -> Drop Off
-      - fulfillment   -> Full
-      - turbo         -> Turbo
-    ME1:
-      - default       -> logistica propia
+      - self_service                       -> flex
+      - cross_docking, xd_drop_off, drop_off -> colecta
+      - fulfillment                        -> full (ML imprime)
+    ME1 / acordar con vendedor:
+      - default, custom, not_specified     -> me1
     """
     log = (logistica or "").lower().strip()
 
-    # Clasificacion definitiva por logistic_type
+    # FLEX
     if log == "self_service":
         return "flex"
-    if log in ("cross_docking", "drop_off", "xd_drop_off",
-               "fulfillment", "turbo", "xd_same_day"):
-        return "me2"
-    if log == "default":
-        return "me1"
-    if log in ("custom", "not_specified"):
+    # COLECTA (cross_docking, places, drop_off)
+    if log in ("cross_docking", "xd_drop_off", "drop_off",
+               "turbo", "xd_same_day"):
+        return "colecta"
+    # FULL (ML imprime, no el vendedor)
+    if log == "fulfillment":
+        return "full"
+    # ME1 / acordar con vendedor
+    if log in ("default", "custom", "not_specified"):
         return "me1"
 
     # Fallback por tags del order
     tags_str = " ".join(t.lower() for t in (tags_order or []))
     if "self_service" in tags_str or "flex" in tags_str:
         return "flex"
+    if "cross_docking" in tags_str or "xd_drop_off" in tags_str:
+        return "colecta"
 
-    # Sin logistic_type confirmado → desconocido (no asumir me2)
+    # Sin logistic_type confirmado → desconocido
     return "desconocido"
 
 
@@ -2674,5 +2676,4 @@ if __name__ == "__main__":
             serve(app, host="0.0.0.0", port=port, threads=8)
         except ImportError:
             print(f"✅ Servidor iniciado (flask dev) en http://0.0.0.0:{port}")
-            app.run(host="0.0.0.0", port=port, debug=False)
             app.run(host="0.0.0.0", port=port, debug=False)
