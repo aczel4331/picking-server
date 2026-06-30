@@ -3058,9 +3058,36 @@ class AsistenteDepositoApp:
 
         def _worker():
             try:
-                req = _ur.Request(proxy_url,
-                                  headers={"Accept":    "application/pdf",
-                                           "X-API-Key": clave_api})
+                import json as _json, base64 as _b64, urllib.request as _ur
+
+                # Construir config de personalización
+                config_etiq = {
+                    "etiqueta_logo_pos":  self.config.get("etiqueta_logo_pos", "superior_izq"),
+                    "etiqueta_logo_size": self.config.get("etiqueta_logo_size", 15),
+                    "etiqueta_texto":     self.config.get("etiqueta_texto", "").strip(),
+                    "etiqueta_texto_pos": self.config.get("etiqueta_texto_pos", "abajo"),
+                }
+                logo_path = self.config.get("etiqueta_logo_path", "").strip()
+                if logo_path and os.path.exists(logo_path):
+                    try:
+                        with open(logo_path, "rb") as f:
+                            config_etiq["etiqueta_logo_b64"] = _b64.b64encode(
+                                f.read()).decode("utf-8")
+                        config_etiq["etiqueta_logo_ext"] = os.path.splitext(logo_path)[1].lower()
+                    except Exception as e:
+                        print(f"[ML_ETIQ] Error leyendo logo: {e}")
+
+                body_bytes = _json.dumps(config_etiq).encode("utf-8")
+                req = _ur.Request(
+                    proxy_url,
+                    data=body_bytes,
+                    headers={
+                        "Accept":       "application/pdf",
+                        "X-API-Key":    clave_api,
+                        "Content-Type": "application/json",
+                    },
+                    method="POST"
+                )
                 with _ur.urlopen(req, timeout=20) as resp:
                     ct  = resp.headers.get("Content-Type", "")
                     raw = resp.read()
@@ -5607,73 +5634,53 @@ class AsistenteDepositoApp:
                 clave_api    = self.config.get("clave_nube", "everest2024").strip()
                 etiqueta_url = url_base.rstrip("/") + f"/api/etiqueta/{order_id}"
                 
-                # ── Agregar configuración de personalización ──────────────────
-                import json as _json
-                import urllib.parse as _uparse
-                import base64 as _b64
-                
-                config_etiq = {}
-                
-                # Logo (si existe, convertir a base64)
+                # ── Personalización de etiqueta ───────────────────────────────
+                import json as _json, base64 as _b64
+
+                config_etiq = {
+                    "etiqueta_logo_pos":  self.config.get("etiqueta_logo_pos", "superior_izq"),
+                    "etiqueta_logo_size": self.config.get("etiqueta_logo_size", 15),
+                    "etiqueta_texto":     self.config.get("etiqueta_texto", "").strip(),
+                    "etiqueta_texto_pos": self.config.get("etiqueta_texto_pos", "abajo"),
+                }
+
+                # Logo en base64
                 logo_path = self.config.get("etiqueta_logo_path", "").strip()
                 if logo_path and os.path.exists(logo_path):
                     try:
                         with open(logo_path, "rb") as f_logo:
-                            logo_b64 = _b64.b64encode(f_logo.read()).decode('utf-8')
-                        config_etiq["etiqueta_logo_b64"] = logo_b64
+                            config_etiq["etiqueta_logo_b64"] = _b64.b64encode(
+                                f_logo.read()).decode("utf-8")
                         config_etiq["etiqueta_logo_ext"] = os.path.splitext(logo_path)[1].lower()
+                        print(f"[ETIQUETA] Logo cargado: {os.path.basename(logo_path)}")
                     except Exception as e:
                         print(f"[ETIQUETA] Error leyendo logo: {e}")
-                
-                # Otros parámetros de config (SIEMPRE guardar)
-                config_etiq["etiqueta_logo_pos"] = self.config.get("etiqueta_logo_pos", "superior_izq")
-                config_etiq["etiqueta_logo_size"] = self.config.get("etiqueta_logo_size", 15)
-                config_etiq["etiqueta_texto"] = self.config.get("etiqueta_texto", "").strip()
-                config_etiq["etiqueta_texto_pos"] = self.config.get("etiqueta_texto_pos", "abajo")
-                
-                # Agregar config a la URL SI HAY ALGO PERSONALIZADO
-                # (logo en base64, o texto, o posición no-default)
-                tiene_logo = config_etiq.get("etiqueta_logo_b64")
-                tiene_texto = config_etiq.get("etiqueta_texto")
-                pos_custom = config_etiq.get("etiqueta_logo_pos", "superior_izq") != "superior_izq"
-                
-                if tiene_logo or tiene_texto or pos_custom:
-                    config_json = _json.dumps(config_etiq)
-                    etiqueta_url += f"?config={_uparse.quote(config_json)}"
-                    print(f"[ETIQUETA] Enviando config personalizada: logo={bool(tiene_logo)}, texto={bool(tiene_texto)}, pos={config_etiq.get('etiqueta_logo_pos')}")
-                
+
+                tiene_logo  = bool(config_etiq.get("etiqueta_logo_b64"))
+                tiene_texto = bool(config_etiq.get("etiqueta_texto"))
+                print(f"[ETIQUETA] Config: logo={tiene_logo}, "
+                      f"texto='{config_etiq.get('etiqueta_texto', '')}', "
+                      f"pos_logo={config_etiq['etiqueta_logo_pos']}, "
+                      f"pos_txt={config_etiq['etiqueta_texto_pos']}")
+
                 self.lbl_imprimiendo.config(text="⬇  Descargando etiqueta...", fg=C["accent"])
                 self.root.update_idletasks()
 
                 import urllib.request as _ur
-                import json as _json
 
-                # Enviar config como POST con JSON (el logo en base64 puede ser
-                # muy grande para una URL → usamos body)
-                tiene_logo  = bool(config_etiq.get("etiqueta_logo_b64"))
-                tiene_texto = bool(config_etiq.get("etiqueta_texto"))
-                usa_config  = tiene_logo or tiene_texto
-
-                if usa_config:
-                    # POST /api/etiqueta/<order_id>  con body JSON
-                    body_bytes = _json.dumps(config_etiq).encode("utf-8")
-                    req_obj = _ur.Request(
-                        etiqueta_url,
-                        data=body_bytes,
-                        headers={
-                            "Accept":       "application/pdf",
-                            "X-API-Key":    clave_api,
-                            "Content-Type": "application/json",
-                        },
-                        method="POST"
-                    )
-                    print(f"[ETIQUETA] POST con config: logo={tiene_logo}, texto={tiene_texto}")
-                else:
-                    # GET simple sin personalización
-                    req_obj = _ur.Request(
-                        etiqueta_url,
-                        headers={"Accept": "application/pdf", "X-API-Key": clave_api}
-                    )
+                # SIEMPRE enviar como POST con JSON en el body.
+                # Así el servidor siempre recibe la config aunque no haya logo.
+                body_bytes = _json.dumps(config_etiq).encode("utf-8")
+                req_obj = _ur.Request(
+                    etiqueta_url,           # URL limpia, sin ?config=
+                    data=body_bytes,
+                    headers={
+                        "Accept":       "application/pdf",
+                        "X-API-Key":    clave_api,
+                        "Content-Type": "application/json",
+                    },
+                    method="POST"
+                )
 
                 with _ur.urlopen(req_obj, timeout=25) as resp:
                     content_type = resp.headers.get("Content-Type", "")

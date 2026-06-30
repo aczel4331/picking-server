@@ -1153,139 +1153,137 @@ def api_refresh():
 
 def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
     """
-    Aplica logo y texto personalizado a un PDF de etiqueta.
-    El logo puede venir en base64 (desde la app) o como URL.
+    Aplica logo y texto personalizado al PDF de la etiqueta ML.
+    Si algo falla, devuelve el PDF original sin modificar.
     """
-    if not config:
+    tiene_logo  = bool(config.get("etiqueta_logo_b64"))
+    tiene_texto = bool((config.get("etiqueta_texto") or "").strip())
+
+    print(f"[ETIQUETA-PERS] tiene_logo={tiene_logo}, tiene_texto={tiene_texto}, "
+          f"config_keys={list(config.keys())}")
+
+    if not tiene_logo and not tiene_texto:
+        print("[ETIQUETA-PERS] Sin personalización — devolviendo PDF original")
         return pdf_bytes
-    
-    # Si no hay personalización, devolver PDF original
-    if not config.get("etiqueta_logo_b64") and not config.get("etiqueta_logo_url") and not config.get("etiqueta_texto"):
-        return pdf_bytes
-    
+
     try:
-        import io
-        import base64
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.utils import ImageReader
-        from PIL import Image
-        
-        # 1. Cargar el PDF original
+        import io, base64
+
+        # ── Cargar librerías PDF ──────────────────────────────────────────────
         try:
             from pypdf import PdfReader, PdfWriter
+            print("[ETIQUETA-PERS] usando pypdf")
         except ImportError:
-            import PyPDF2
-            PdfReader = PyPDF2.PdfReader
-            PdfWriter  = PyPDF2.PdfWriter
+            try:
+                import PyPDF2
+                PdfReader = PyPDF2.PdfReader
+                PdfWriter  = PyPDF2.PdfWriter
+                print("[ETIQUETA-PERS] usando PyPDF2 (fallback)")
+            except ImportError:
+                print("[ETIQUETA-PERS] ERROR: ni pypdf ni PyPDF2 disponibles")
+                return pdf_bytes
 
+        from reportlab.pdfgen import canvas as rl_canvas
+        from reportlab.lib.utils import ImageReader
+        from PIL import Image
+
+        # ── Leer PDF original ─────────────────────────────────────────────────
         reader = PdfReader(io.BytesIO(pdf_bytes))
         if not reader.pages:
+            print("[ETIQUETA-PERS] PDF sin páginas")
             return pdf_bytes
-        
-        first_page = reader.pages[0]
-        page_width = float(first_page.mediabox.width)
-        page_height = float(first_page.mediabox.height)
-        
-        # 2. Crear overlay
-        overlay_buffer = io.BytesIO()
-        c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
-        
-        # 3. Agregar logo
-        logo_data = None
-        
-        # Preferir base64 (desde archivo local) sobre URL
-        if config.get("etiqueta_logo_b64"):
+
+        page_width  = float(reader.pages[0].mediabox.width)
+        page_height = float(reader.pages[0].mediabox.height)
+        print(f"[ETIQUETA-PERS] Página: {page_width:.0f}x{page_height:.0f} pts")
+
+        # ── Crear overlay en blanco ───────────────────────────────────────────
+        overlay_buf = io.BytesIO()
+        c = rl_canvas.Canvas(overlay_buf, pagesize=(page_width, page_height))
+
+        # ── LOGO ─────────────────────────────────────────────────────────────
+        if tiene_logo:
             try:
-                logo_bytes = base64.b64decode(config.get("etiqueta_logo_b64"))
-                logo_data = logo_bytes
-            except Exception as e:
-                print(f"[ETIQUETA] Error decodificando logo base64: {e}")
-        elif config.get("etiqueta_logo_url"):
-            try:
-                r = requests.get(config.get("etiqueta_logo_url"), timeout=5)
-                if r.status_code == 200:
-                    logo_data = r.content
-            except Exception as e:
-                print(f"[ETIQUETA] Error descargando logo URL: {e}")
-        
-        if logo_data:
-            try:
-                logo_size = int(config.get("etiqueta_logo_size", 15))
-                logo_size = max(5, min(50, logo_size))
-                
-                img_pil = Image.open(io.BytesIO(logo_data))
-                new_width = (page_width * logo_size) / 100
-                ratio = img_pil.height / img_pil.width if img_pil.width > 0 else 1
-                new_height = new_width * ratio
-                
-                img_pil.thumbnail((int(new_width), int(new_height)), Image.Resampling.LANCZOS)
-                
+                logo_bytes = base64.b64decode(config["etiqueta_logo_b64"])
+                img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
+
+                # Tamaño como % del ancho de la página
+                pct  = max(5, min(50, int(config.get("etiqueta_logo_size", 15))))
+                w_pt = (page_width * pct) / 100
+                h_pt = w_pt * (img.height / img.width)
+
+                img = img.resize((int(w_pt), int(h_pt)), Image.Resampling.LANCZOS)
+
                 # Posición
                 pos = config.get("etiqueta_logo_pos", "superior_izq")
                 if pos == "superior_izq":
-                    x, y = 10, page_height - img_pil.height - 10
+                    x = 8
+                    y = page_height - h_pt - 8
                 elif pos == "superior_der":
-                    x, y = page_width - img_pil.width - 10, page_height - img_pil.height - 10
-                else:  # borde = lateral izquierdo
-                    x, y = 5, (page_height - img_pil.height) / 2
-                
-                img_buffer = io.BytesIO()
-                img_pil.save(img_buffer, format='PNG')
-                img_buffer.seek(0)
-                
-                c.drawImage(ImageReader(img_buffer), x, y,
-                           width=img_pil.width, height=img_pil.height)
-                print(f"[ETIQUETA] Logo aplicado: {pos} ({logo_size}%)")
-            except Exception as e:
-                print(f"[ETIQUETA] Error aplicando logo: {e}")
-        
-        # 4. Agregar texto
-        texto = config.get("etiqueta_texto", "").strip()
-        if texto:
-            from reportlab.lib import colors
-            c.setFont("Helvetica-Bold", 9)
-            c.setFillColor(colors.black)
-            
-            pos_txt = config.get("etiqueta_texto_pos", "abajo")
-            if pos_txt == "arriba":
-                c.drawString(15, page_height - 40, texto[:80])
-            elif pos_txt == "lateral":
-                c.rotate(90)
-                c.drawString(15, -page_width + 15, texto[:80])
-                c.rotate(-90)
-            else:  # abajo
-                c.drawString(15, 15, texto[:80])
-            print(f"[ETIQUETA] Texto agregado: {pos_txt}")
-        
-        c.save()
-        overlay_buffer.seek(0)
-        
-        # 5. Mezclar PDF original con overlay
-        try:
-            from pypdf import PdfReader as PR2, PdfWriter as PW2
-        except ImportError:
-            import PyPDF2
-            PR2 = PyPDF2.PdfReader
-            PW2 = PyPDF2.PdfWriter
+                    x = page_width - w_pt - 8
+                    y = page_height - h_pt - 8
+                else:  # borde = lateral izquierdo centrado verticalmente
+                    x = 5
+                    y = (page_height - h_pt) / 2
 
-        overlay_reader = PR2(overlay_buffer)
-        writer = PW2()
-        
+                # Guardar como PNG temporal y dibujar
+                tmp_img = io.BytesIO()
+                img.save(tmp_img, format="PNG")
+                tmp_img.seek(0)
+                c.drawImage(ImageReader(tmp_img), x, y,
+                            width=w_pt, height=h_pt, mask="auto")
+                print(f"[ETIQUETA-PERS] Logo dibujado: pos={pos}, "
+                      f"size={pct}%, x={x:.0f}, y={y:.0f}, "
+                      f"w={w_pt:.0f}, h={h_pt:.0f}")
+            except Exception as e:
+                print(f"[ETIQUETA-PERS] Error aplicando logo: {e}")
+                import traceback; traceback.print_exc()
+
+        # ── TEXTO ─────────────────────────────────────────────────────────────
+        if tiene_texto:
+            try:
+                from reportlab.lib import colors as rl_colors
+                texto    = config["etiqueta_texto"].strip()
+                pos_txt  = config.get("etiqueta_texto_pos", "abajo")
+                # Fuente y tamaño — más grande para que sea visible
+                c.setFont("Helvetica-Bold", 10)
+                c.setFillColor(rl_colors.black)
+
+                if pos_txt == "arriba":
+                    c.drawString(10, page_height - 30, texto[:90])
+                elif pos_txt == "lateral":
+                    c.saveState()
+                    c.rotate(90)
+                    c.drawString(10, -(page_width - 10), texto[:90])
+                    c.restoreState()
+                else:  # abajo
+                    c.drawString(10, 10, texto[:90])
+                print(f"[ETIQUETA-PERS] Texto dibujado: pos={pos_txt}, texto='{texto[:40]}'")
+            except Exception as e:
+                print(f"[ETIQUETA-PERS] Error aplicando texto: {e}")
+
+        c.save()
+        overlay_buf.seek(0)
+
+        # ── Fusionar overlay con PDF original ─────────────────────────────────
+        overlay_reader = PdfReader(overlay_buf)
+        writer = PdfWriter()
+
         for i, page in enumerate(reader.pages):
             if i == 0 and overlay_reader.pages:
                 page.merge_page(overlay_reader.pages[0])
             writer.add_page(page)
-        
-        output = io.BytesIO()
-        writer.write(output)
-        output.seek(0)
-        print(f"[ETIQUETA] PDF personalizado generado ({len(output.getvalue())} bytes)")
-        return output.getvalue()
-    
+
+        out = io.BytesIO()
+        writer.write(out)
+        result = out.getvalue()
+        print(f"[ETIQUETA-PERS] ✅ PDF final: {len(result)} bytes "
+              f"(original: {len(pdf_bytes)} bytes)")
+        return result
+
     except Exception as e:
-        print(f"[ETIQUETA] Error en personalización: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"[ETIQUETA-PERS] ❌ Error general: {e}")
+        import traceback; traceback.print_exc()
         return pdf_bytes
 
 
