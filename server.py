@@ -1208,34 +1208,48 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         if not reader.pages:
             return pdf_bytes
 
-        pw = float(reader.pages[0].mediabox.width)   # ancho en puntos
-        ph = float(reader.pages[0].mediabox.height)  # alto  en puntos
-        print(f"[ETIQUETA-PERS] Página: {pw:.0f} x {ph:.0f} pts")
+        pw_orig = float(reader.pages[0].mediabox.width)    # ancho original
+        ph_orig = float(reader.pages[0].mediabox.height)   # alto original
+        print(f"[ETIQUETA-PERS] Etiqueta original: {pw_orig:.0f} x {ph_orig:.0f} pts "
+              f"({pw_orig/28.3465:.1f} x {ph_orig/28.3465:.1f} cm)")
 
-        # Zona superior = ticket de corte (~28% del alto total)
-        zona_ticket = ph * 0.28
-        # Zona de etiqueta real = el 72% restante (abajo del ticket)
-        zona_alto_etiq = ph * 0.72
+        # ── Márgenes nuevos para logo (arriba) y texto (lateral) ───────────────
+        MARGEN_LOGO  = 60 if tiene_logo  else 0   # franja arriba para el logo
+        MARGEN_TEXTO = 22 if tiene_texto else 0   # franja lateral para el texto
 
-        # ── Overlay ───────────────────────────────────────────────────────────
-        ov_buf = io.BytesIO()
-        c = rl_canvas.Canvas(ov_buf, pagesize=(pw, ph))
+        pw_nuevo = pw_orig + MARGEN_TEXTO
+        ph_nuevo = ph_orig + MARGEN_LOGO
+        print(f"[ETIQUETA-PERS] Página nueva: {pw_nuevo:.0f} x {ph_nuevo:.0f} pts "
+              f"({pw_nuevo/28.3465:.1f} x {ph_nuevo/28.3465:.1f} cm) — "
+              f"margen_logo={MARGEN_LOGO}, margen_texto={MARGEN_TEXTO}")
+
+        # ── Crear página nueva con fondo blanco + logo + texto ─────────────────
+        bg_buf = io.BytesIO()
+        c = rl_canvas.Canvas(bg_buf, pagesize=(pw_nuevo, ph_nuevo))
+
+        # Fondo blanco completo
+        c.setFillColor(rl_colors.white)
+        c.setStrokeColor(rl_colors.white)
+        c.rect(0, 0, pw_nuevo, ph_nuevo, fill=1, stroke=0)
 
         # ══════════════════════════════════════════════════════════════════════
-        # LOGO — siempre en la parte superior, sin tapar nada
+        # LOGO — en la franja nueva de arriba (no toca la etiqueta original)
         # ══════════════════════════════════════════════════════════════════════
         if tiene_logo:
             try:
                 logo_bytes = base64.b64decode(config["etiqueta_logo_b64"])
                 img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
 
-                # Tamaño: 30% del ancho de la página
-                w_pt = pw * 0.30
-                h_pt = w_pt * (img.height / img.width)
+                # El logo entra en la franja de MARGEN_LOGO pts de alto
+                ratio = img.height / img.width
+                h_pt  = MARGEN_LOGO - 10          # 5pt de aire arriba/abajo
+                w_pt  = h_pt / ratio
+                if w_pt > pw_nuevo * 0.6:         # si queda muy ancho, limitar
+                    w_pt = pw_nuevo * 0.6
+                    h_pt = w_pt * ratio
 
-                # Siempre esquina superior derecha
-                x = pw - w_pt - 5
-                y = ph - h_pt - 5
+                x = (pw_nuevo - w_pt) / 2          # centrado horizontal
+                y = ph_orig + (MARGEN_LOGO - h_pt) / 2  # centrado en la franja
 
                 img_r = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
                                    Image.Resampling.LANCZOS)
@@ -1244,50 +1258,51 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
                 tmp.seek(0)
                 c.drawImage(ImageReader(tmp), x, y,
                             width=w_pt, height=h_pt, mask="auto")
-                print(f"[ETIQUETA-PERS] Logo superior: x={x:.0f}, y={y:.0f}, "
+                print(f"[ETIQUETA-PERS] Logo: x={x:.0f}, y={y:.0f}, "
                       f"w={w_pt:.0f}, h={h_pt:.0f}")
             except Exception as e:
                 print(f"[ETIQUETA-PERS] Error logo: {e}")
                 import traceback; traceback.print_exc()
 
         # ══════════════════════════════════════════════════════════════════════
-        # TEXTO — franja lateral izquierda, rotado 90°
-        # Sin fondo — texto negro sobre blanco (compatible con impresora térmica)
+        # TEXTO — en la franja nueva lateral derecha, rotado 90°, negro sobre blanco
         # ══════════════════════════════════════════════════════════════════════
         if tiene_texto:
             try:
-                texto       = config["etiqueta_texto"].strip()
-                franja_ancho = 18
-                etiq_inicio  = 0
-                etiq_alto    = ph * 0.72
+                texto = config["etiqueta_texto"].strip()
 
-                # Fondo blanco (tapa contenido original si lo hubiera)
-                c.setFillColor(rl_colors.white)
-                c.setStrokeColor(rl_colors.white)
-                c.rect(0, etiq_inicio, franja_ancho, etiq_alto, fill=1, stroke=0)
-
-                # Texto negro rotado 90°
                 c.saveState()
                 c.setFont("Helvetica-Bold", 8)
                 c.setFillColor(rl_colors.black)
-                c.translate(franja_ancho / 2, etiq_inicio + etiq_alto / 2)
+                # Centro de la franja lateral (a la derecha de la etiqueta original)
+                cx = pw_orig + MARGEN_TEXTO / 2
+                cy = ph_orig / 2
+                c.translate(cx, cy)
                 c.rotate(90)
-                c.drawCentredString(0, 0, texto[:100])
+                c.drawCentredString(0, 0, texto[:110])
                 c.restoreState()
                 print(f"[ETIQUETA-PERS] Texto: '{texto[:50]}'")
             except Exception as e:
                 print(f"[ETIQUETA-PERS] Error texto: {e}")
 
         c.save()
-        ov_buf.seek(0)
+        bg_buf.seek(0)
 
-        # ── Fusionar ─────────────────────────────────────────────────────────
-        ov_reader = PdfReader(ov_buf)
-        writer    = PdfWriter()
-        for i, page in enumerate(reader.pages):
-            if i == 0 and ov_reader.pages:
-                page.merge_page(ov_reader.pages[0])
-            writer.add_page(page)
+        # ── Componer: página nueva (fondo) + etiqueta original (sin tocar) ─────
+        bg_reader = PdfReader(bg_buf)
+        bg_page   = bg_reader.pages[0]
+        orig_page = reader.pages[0]
+
+        try:
+            # pypdf moderno: merge_transformed_page + Transformation
+            from pypdf import Transformation
+            bg_page.merge_transformed_page(orig_page, Transformation())
+        except (ImportError, AttributeError):
+            # Fallback: merge_page simple (asume misma esquina inferior-izq)
+            bg_page.merge_page(orig_page)
+
+        writer = PdfWriter()
+        writer.add_page(bg_page)
 
         out = io.BytesIO()
         writer.write(out)
