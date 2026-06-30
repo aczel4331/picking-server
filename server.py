@@ -1814,8 +1814,34 @@ def _procesar_notificacion_orden(order_id, user_id):
             _pedidos_ml[str(order_id)] = pedido
 
         print(f"[WEBHOOK] ✅ Orden {order_id} agregada ({nick}) — {len(items)} items")
-        # NO descargar etiqueta automaticamente — marca como printed en ML.
-        # La etiqueta se descarga solo cuando el operario hace clic en el boton.
+
+        # Consultar shipment inmediatamente para obtener logistica y estado
+        # (no esperar al próximo "Actualizar")
+        if ship_id:
+            def _fetch_ship_now():
+                try:
+                    rs = _ml_get_cuenta(f"/shipments/{ship_id}", cuenta_id)
+                    if rs and rs.status_code == 200:
+                        sd        = rs.json()
+                        log_new   = (sd.get("logistic") or {}).get("type", "")
+                        log_old   = sd.get("logistic_type", "")
+                        logistica = log_new or log_old
+                        status    = sd.get("status", "")
+                        substatus = sd.get("substatus", "")
+                        with _lock:
+                            p = _pedidos_ml.get(str(order_id))
+                            if p:
+                                p["logistica"]    = logistica
+                                p["estado_envio"] = status
+                                p["substatus"]    = substatus
+                                p["tipo"]         = _calcular_tipo(
+                                    logistica, p.get("tags",[]), ship_id)
+                        print(f"[WEBHOOK] Shipment {ship_id}: logistica={logistica}, "
+                              f"status={status}, substatus={substatus}")
+                except Exception as e:
+                    print(f"[WEBHOOK] No se pudo consultar shipment {ship_id}: {e}")
+            import threading as _th
+            _th.Thread(target=_fetch_ship_now, daemon=True).start()
 
     except Exception as e:
         print(f"[WEBHOOK] Error procesando orden {order_id}: {e}")

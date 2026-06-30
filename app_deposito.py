@@ -2130,53 +2130,43 @@ class AsistenteDepositoApp:
 
     def _tipo_logistica(self, ped):
         """
-        Clasifica un pedido según la documentación oficial de ML:
+        Clasifica un pedido según la documentación oficial de ML.
+        SOLO usa el campo 'logistica' (logistic_type real de ML).
+        NO usa el campo 'tipo' del servidor — puede estar desactualizado.
 
         ME2 (mode=me2) se divide por logistic_type:
-          - self_service              → flex
+          - self_service                          → flex
           - cross_docking, xd_drop_off, drop_off → colecta
-          - fulfillment               → full (el vendedor NO imprime etiqueta)
-        ME1 (mode=me1) / acordar con vendedor:
-          - default, custom, not_specified → me1
-
-        SIEMPRE recalcula desde logistica. No asume me2 sin confirmar.
+          - fulfillment                           → full
+        ME1 / acordar con vendedor:
+          - default, custom, not_specified        → me1
         """
         log = (ped.get("logistica") or "").lower().strip()
 
-        # FLEX = self_service
+        # ── Clasificación DIRECTA por logistic_type ──────────────────────────
         if log == "self_service":
             return "flex"
 
-        # COLECTA = cross_docking, places (xd_drop_off), drop_off
         if log in ("cross_docking", "xd_drop_off", "drop_off",
                    "turbo", "xd_same_day"):
             return "colecta"
 
-        # FULL = fulfillment (Mercado Libre imprime, no el vendedor)
         if log == "fulfillment":
             return "full"
 
-        # ME1 / acordar con vendedor
         if log in ("default", "custom", "not_specified"):
             return "me1"
 
-        # Fallback por tags
+        # ── Fallback por tags del pedido (si logistica está vacía) ───────────
         tags_str = " ".join(t.lower() for t in ped.get("tags", []))
-        if "self_service" in tags_str or "flex" in tags_str:
+        if "self_service" in tags_str:
             return "flex"
         if "cross_docking" in tags_str or "xd_drop_off" in tags_str:
             return "colecta"
 
-        # Fallback por tipo pre-calculado del servidor
-        tipo = (ped.get("tipo") or "").lower()
-        if tipo == "flex":
-            return "flex"
-        if tipo == "me2":
-            return "colecta"   # me2 genérico → asumimos colecta
-        if tipo == "me1":
-            return "me1"
-
-        # Sin info confirmada → desconocido (NO asumir nada)
+        # ── Sin logistica conocida → desconocido ─────────────────────────────
+        # NO usar ped.get("tipo") — ese campo puede tener valores viejos ("me2")
+        # que ya no son válidos y causarían clasificación incorrecta.
         return "desconocido"
 
     def _ml_set_filtro(self, key, color):
