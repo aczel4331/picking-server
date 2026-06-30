@@ -1151,7 +1151,20 @@ def api_refresh():
 # ETIQUETA PERSONALIZADA — Logo + Texto
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
+@app.route("/api/test-libs")
+def api_test_libs():
+    """Verifica qué librerías de personalización están disponibles."""
+    resultado = {}
+    for lib in ["reportlab", "PIL", "pypdf", "PyPDF2"]:
+        try:
+            __import__(lib)
+            resultado[lib] = "✅ instalada"
+        except ImportError:
+            resultado[lib] = "❌ NO instalada"
+    return jsonify(resultado)
+
+
+
     """
     Aplica logo y texto personalizado al PDF de la etiqueta ML.
     Si algo falla, devuelve el PDF original sin modificar.

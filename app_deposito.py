@@ -3058,7 +3058,7 @@ class AsistenteDepositoApp:
 
         def _worker():
             try:
-                import json as _json, base64 as _b64, urllib.request as _ur
+                import json as _json, base64 as _b64, urllib.request as _ur, tempfile, os as _os
 
                 # Construir config de personalización
                 config_etiq = {
@@ -3068,12 +3068,12 @@ class AsistenteDepositoApp:
                     "etiqueta_texto_pos": self.config.get("etiqueta_texto_pos", "abajo"),
                 }
                 logo_path = self.config.get("etiqueta_logo_path", "").strip()
-                if logo_path and os.path.exists(logo_path):
+                if logo_path and _os.path.exists(logo_path):
                     try:
                         with open(logo_path, "rb") as f:
                             config_etiq["etiqueta_logo_b64"] = _b64.b64encode(
                                 f.read()).decode("utf-8")
-                        config_etiq["etiqueta_logo_ext"] = os.path.splitext(logo_path)[1].lower()
+                        config_etiq["etiqueta_logo_ext"] = _os.path.splitext(logo_path)[1].lower()
                     except Exception as e:
                         print(f"[ML_ETIQ] Error leyendo logo: {e}")
 
