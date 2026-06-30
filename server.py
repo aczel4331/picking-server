@@ -1164,134 +1164,145 @@ def api_test_libs():
     return jsonify(resultado)
 
 
-
+def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
     """
     Aplica logo y texto personalizado al PDF de la etiqueta ML.
+
+    Según las imágenes del usuario:
+    - LOGO  → zona roja  = franja SUPERIOR (ticket de corte, encima de la etiqueta)
+    - TEXTO → zona azul  = franja LATERAL IZQUIERDA (borde izquierdo, rotado 90°)
+
     Si algo falla, devuelve el PDF original sin modificar.
     """
     tiene_logo  = bool(config.get("etiqueta_logo_b64"))
     tiene_texto = bool((config.get("etiqueta_texto") or "").strip())
 
-    print(f"[ETIQUETA-PERS] tiene_logo={tiene_logo}, tiene_texto={tiene_texto}, "
-          f"config_keys={list(config.keys())}")
+    print(f"[ETIQUETA-PERS] tiene_logo={tiene_logo}, tiene_texto={tiene_texto}")
 
     if not tiene_logo and not tiene_texto:
-        print("[ETIQUETA-PERS] Sin personalización — devolviendo PDF original")
+        print("[ETIQUETA-PERS] Sin personalización — PDF original")
         return pdf_bytes
 
     try:
         import io, base64
 
-        # ── Cargar librerías PDF ──────────────────────────────────────────────
+        # ── Librerías PDF ─────────────────────────────────────────────────────
         try:
             from pypdf import PdfReader, PdfWriter
-            print("[ETIQUETA-PERS] usando pypdf")
         except ImportError:
             try:
                 import PyPDF2
                 PdfReader = PyPDF2.PdfReader
                 PdfWriter  = PyPDF2.PdfWriter
-                print("[ETIQUETA-PERS] usando PyPDF2 (fallback)")
             except ImportError:
-                print("[ETIQUETA-PERS] ERROR: ni pypdf ni PyPDF2 disponibles")
+                print("[ETIQUETA-PERS] ERROR: pypdf / PyPDF2 no disponibles")
                 return pdf_bytes
 
         from reportlab.pdfgen import canvas as rl_canvas
         from reportlab.lib.utils import ImageReader
+        from reportlab.lib import colors as rl_colors
         from PIL import Image
 
-        # ── Leer PDF original ─────────────────────────────────────────────────
+        # ── Leer PDF ─────────────────────────────────────────────────────────
         reader = PdfReader(io.BytesIO(pdf_bytes))
         if not reader.pages:
-            print("[ETIQUETA-PERS] PDF sin páginas")
             return pdf_bytes
 
-        page_width  = float(reader.pages[0].mediabox.width)
-        page_height = float(reader.pages[0].mediabox.height)
-        print(f"[ETIQUETA-PERS] Página: {page_width:.0f}x{page_height:.0f} pts")
+        pw = float(reader.pages[0].mediabox.width)   # ancho en puntos
+        ph = float(reader.pages[0].mediabox.height)  # alto  en puntos
+        print(f"[ETIQUETA-PERS] Página: {pw:.0f} x {ph:.0f} pts")
 
-        # ── Crear overlay en blanco ───────────────────────────────────────────
-        overlay_buf = io.BytesIO()
-        c = rl_canvas.Canvas(overlay_buf, pagesize=(page_width, page_height))
+        # ── Overlay ───────────────────────────────────────────────────────────
+        ov_buf = io.BytesIO()
+        c = rl_canvas.Canvas(ov_buf, pagesize=(pw, ph))
 
-        # ── LOGO ─────────────────────────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════════════════
+        # LOGO — zona ROJA = franja superior (ticket de corte)
+        # La etiqueta real empieza ~30% desde arriba; el logo va en el 30%
+        # superior que corresponde al ticket de recorte.
+        # ══════════════════════════════════════════════════════════════════════
         if tiene_logo:
             try:
                 logo_bytes = base64.b64decode(config["etiqueta_logo_b64"])
                 img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
 
-                # Tamaño como % del ancho de la página
-                pct  = max(5, min(50, int(config.get("etiqueta_logo_size", 15))))
-                w_pt = (page_width * pct) / 100
-                h_pt = w_pt * (img.height / img.width)
+                # Zona disponible: franja superior ≈ 28% del alto de la página
+                zona_alto  = ph * 0.28          # alto de la zona roja
+                zona_ancho = pw * 0.80          # ancho disponible (centrado)
 
-                img = img.resize((int(w_pt), int(h_pt)), Image.Resampling.LANCZOS)
+                # Calcular tamaño manteniendo proporción y respetando la zona
+                ratio     = img.height / img.width
+                w_pt      = min(zona_ancho, zona_alto / ratio)
+                h_pt      = w_pt * ratio
+                if h_pt > zona_alto * 0.85:     # si es muy alto, recortar
+                    h_pt  = zona_alto * 0.85
+                    w_pt  = h_pt / ratio
 
-                # Posición
-                pos = config.get("etiqueta_logo_pos", "superior_izq")
-                if pos == "superior_izq":
-                    x = 8
-                    y = page_height - h_pt - 8
-                elif pos == "superior_der":
-                    x = page_width - w_pt - 8
-                    y = page_height - h_pt - 8
-                else:  # borde = lateral izquierdo centrado verticalmente
-                    x = 5
-                    y = (page_height - h_pt) / 2
+                # Centrar horizontalmente en la zona superior
+                x = (pw - w_pt) / 2
+                # y en PDF = 0 es abajo. La zona roja va desde (ph - zona_alto) a ph
+                y = ph - h_pt - (zona_alto - h_pt) / 2   # centrado vertical en la franja
 
-                # Guardar como PNG temporal y dibujar
-                tmp_img = io.BytesIO()
-                img.save(tmp_img, format="PNG")
-                tmp_img.seek(0)
-                c.drawImage(ImageReader(tmp_img), x, y,
+                img_resized = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
+                                         Image.Resampling.LANCZOS)
+                tmp = io.BytesIO()
+                img_resized.save(tmp, format="PNG")
+                tmp.seek(0)
+                c.drawImage(ImageReader(tmp), x, y,
                             width=w_pt, height=h_pt, mask="auto")
-                print(f"[ETIQUETA-PERS] Logo dibujado: pos={pos}, "
-                      f"size={pct}%, x={x:.0f}, y={y:.0f}, "
-                      f"w={w_pt:.0f}, h={h_pt:.0f}")
+                print(f"[ETIQUETA-PERS] Logo en zona superior: "
+                      f"x={x:.0f}, y={y:.0f}, w={w_pt:.0f}, h={h_pt:.0f}")
             except Exception as e:
-                print(f"[ETIQUETA-PERS] Error aplicando logo: {e}")
+                print(f"[ETIQUETA-PERS] Error logo: {e}")
                 import traceback; traceback.print_exc()
 
-        # ── TEXTO ─────────────────────────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════════════════
+        # TEXTO — zona AZUL = franja lateral izquierda, rotado 90°
+        # Cubre toda la altura de la etiqueta (parte inferior ~70% del PDF)
+        # ══════════════════════════════════════════════════════════════════════
         if tiene_texto:
             try:
-                from reportlab.lib import colors as rl_colors
-                texto    = config["etiqueta_texto"].strip()
-                pos_txt  = config.get("etiqueta_texto_pos", "abajo")
-                # Fuente y tamaño — más grande para que sea visible
-                c.setFont("Helvetica-Bold", 10)
-                c.setFillColor(rl_colors.black)
+                texto = config["etiqueta_texto"].strip()
 
-                if pos_txt == "arriba":
-                    c.drawString(10, page_height - 30, texto[:90])
-                elif pos_txt == "lateral":
-                    c.saveState()
-                    c.rotate(90)
-                    c.drawString(10, -(page_width - 10), texto[:90])
-                    c.restoreState()
-                else:  # abajo
-                    c.drawString(10, 10, texto[:90])
-                print(f"[ETIQUETA-PERS] Texto dibujado: pos={pos_txt}, texto='{texto[:40]}'")
+                # Franja azul: 18 pts de ancho en el borde izquierdo,
+                # cubriendo la zona de etiqueta (70% inferior)
+                franja_ancho = 18        # pts
+                etiq_inicio  = 0         # desde abajo
+                etiq_alto    = ph * 0.72 # zona de la etiqueta
+
+                # Fondo de color de la franja (opcional — comentar para sin fondo)
+                c.setFillColor(rl_colors.HexColor("#1E3A8A"))  # azul Everest
+                c.rect(0, etiq_inicio, franja_ancho, etiq_alto, fill=1, stroke=0)
+
+                # Texto rotado 90° dentro de la franja
+                c.saveState()
+                c.setFont("Helvetica-Bold", 8)
+                c.setFillColor(rl_colors.white)
+                # Mover al centro de la franja y rotar
+                c.translate(franja_ancho / 2, etiq_inicio + etiq_alto / 2)
+                c.rotate(90)
+                # Dibujar centrado
+                c.drawCentredString(0, 0, texto[:100])
+                c.restoreState()
+                print(f"[ETIQUETA-PERS] Texto lateral: '{texto[:50]}'")
             except Exception as e:
-                print(f"[ETIQUETA-PERS] Error aplicando texto: {e}")
+                print(f"[ETIQUETA-PERS] Error texto: {e}")
 
         c.save()
-        overlay_buf.seek(0)
+        ov_buf.seek(0)
 
-        # ── Fusionar overlay con PDF original ─────────────────────────────────
-        overlay_reader = PdfReader(overlay_buf)
-        writer = PdfWriter()
-
+        # ── Fusionar ─────────────────────────────────────────────────────────
+        ov_reader = PdfReader(ov_buf)
+        writer    = PdfWriter()
         for i, page in enumerate(reader.pages):
-            if i == 0 and overlay_reader.pages:
-                page.merge_page(overlay_reader.pages[0])
+            if i == 0 and ov_reader.pages:
+                page.merge_page(ov_reader.pages[0])
             writer.add_page(page)
 
         out = io.BytesIO()
         writer.write(out)
         result = out.getvalue()
-        print(f"[ETIQUETA-PERS] ✅ PDF final: {len(result)} bytes "
-              f"(original: {len(pdf_bytes)} bytes)")
+        print(f"[ETIQUETA-PERS] ✅ PDF generado: {len(result)} bytes")
         return result
 
     except Exception as e:
