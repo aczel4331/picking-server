@@ -1222,85 +1222,30 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         c = rl_canvas.Canvas(ov_buf, pagesize=(pw, ph))
 
         # ══════════════════════════════════════════════════════════════════════
-        # LOGO
-        # pos = "superior_der" → zona superior del ticket (tapa contenido original)
-        # pos = "superior_izq" → esquina superior izquierda de la etiqueta
-        # pos = "borde"        → lateral izquierdo centrado
+        # LOGO — siempre en la parte superior, sin tapar nada
         # ══════════════════════════════════════════════════════════════════════
         if tiene_logo:
             try:
                 logo_bytes = base64.b64decode(config["etiqueta_logo_b64"])
                 img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
 
-                pos = config.get("etiqueta_logo_pos", "superior_izq")
+                # Tamaño: 30% del ancho de la página
+                w_pt = pw * 0.30
+                h_pt = w_pt * (img.height / img.width)
 
-                if pos == "superior_der":
-                    # ── Zona superior = ticket de corte (≈28% del alto) ───────
-                    # Tapa TODO el contenido original con blanco y centra el logo
-                    zona_alto  = ph * 0.28
-                    zona_y     = ph - zona_alto   # coordenada Y base de la zona
+                # Siempre esquina superior derecha
+                x = pw - w_pt - 5
+                y = ph - h_pt - 5
 
-                    # Tamaño del logo respetando la zona
-                    ratio = img.height / img.width
-                    w_pt  = min(pw * 0.80, (zona_alto * 0.80) / ratio)
-                    h_pt  = w_pt * ratio
-                    if h_pt > zona_alto * 0.80:
-                        h_pt = zona_alto * 0.80
-                        w_pt = h_pt / ratio
-
-                    # 1. Rectángulo blanco que tapa TODO — ancho y alto completos
-                    c.setFillColor(rl_colors.white)
-                    c.setStrokeColor(rl_colors.white)
-                    c.rect(0, zona_y, pw + 2, zona_alto + 2, fill=1, stroke=0)
-
-                    # 2. Logo centrado en la zona
-                    x = (pw - w_pt) / 2
-                    y = zona_y + (zona_alto - h_pt) / 2
-
-                    img_r = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
-                                       Image.Resampling.LANCZOS)
-                    tmp = io.BytesIO()
-                    img_r.save(tmp, format="PNG")
-                    tmp.seek(0)
-                    c.drawImage(ImageReader(tmp), x, y,
-                                width=w_pt, height=h_pt, mask="auto")
-                    print(f"[ETIQUETA-PERS] Logo SUPERIOR (tapa zona): "
-                          f"zona_y={zona_y:.0f}, x={x:.0f}, y={y:.0f}, "
-                          f"w={w_pt:.0f}, h={h_pt:.0f}")
-
-                elif pos == "superior_izq":
-                    # ── Esquina superior izquierda de la etiqueta ─────────────
-                    pct  = max(5, min(40, int(config.get("etiqueta_logo_size", 20))))
-                    w_pt = (pw * pct) / 100
-                    h_pt = w_pt * (img.height / img.width)
-                    x    = 8
-                    y    = ph - zona_alto_etiq - h_pt - 8  # dentro de la etiqueta
-
-                    img_r = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
-                                       Image.Resampling.LANCZOS)
-                    tmp = io.BytesIO()
-                    img_r.save(tmp, format="PNG")
-                    tmp.seek(0)
-                    c.drawImage(ImageReader(tmp), x, y,
-                                width=w_pt, height=h_pt, mask="auto")
-                    print(f"[ETIQUETA-PERS] Logo SUPERIOR IZQ: x={x:.0f}, y={y:.0f}")
-
-                else:  # borde = lateral derecho de la etiqueta
-                    pct  = max(5, min(40, int(config.get("etiqueta_logo_size", 20))))
-                    w_pt = (pw * pct) / 100
-                    h_pt = w_pt * (img.height / img.width)
-                    x    = pw - w_pt - 8
-                    y    = (ph - h_pt) / 2
-
-                    img_r = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
-                                       Image.Resampling.LANCZOS)
-                    tmp = io.BytesIO()
-                    img_r.save(tmp, format="PNG")
-                    tmp.seek(0)
-                    c.drawImage(ImageReader(tmp), x, y,
-                                width=w_pt, height=h_pt, mask="auto")
-                    print(f"[ETIQUETA-PERS] Logo BORDE DER: x={x:.0f}, y={y:.0f}")
-
+                img_r = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
+                                   Image.Resampling.LANCZOS)
+                tmp = io.BytesIO()
+                img_r.save(tmp, format="PNG")
+                tmp.seek(0)
+                c.drawImage(ImageReader(tmp), x, y,
+                            width=w_pt, height=h_pt, mask="auto")
+                print(f"[ETIQUETA-PERS] Logo superior: x={x:.0f}, y={y:.0f}, "
+                      f"w={w_pt:.0f}, h={h_pt:.0f}")
             except Exception as e:
                 print(f"[ETIQUETA-PERS] Error logo: {e}")
                 import traceback; traceback.print_exc()
