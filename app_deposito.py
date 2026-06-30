@@ -512,9 +512,9 @@ class VentanaConfiguracion(tk.Toplevel):
         # Usar botones tipo toggle para posición (más confiables que Radiobutton en scroll canvas)
         self._btns_logo_pos = {}
         pos_opciones = [
-            ("superior_izq", "⬆ Superior Izquierda"),
-            ("superior_der", "⬆ Superior Derecha"),
-            ("borde",        "◀ Lateral Izquierdo"),
+            ("superior_izq", "↖ Superior Izquierda (sobre etiqueta)"),
+            ("superior_der", "⬆ Zona superior — SOLO logo (tapa contenido)"),
+            ("borde",        "→ Lateral derecho"),
         ]
         fila_pos = tk.Frame(body, bg=C["bg_dark"])
         fila_pos.pack(fill="x", pady=(0,4))
