@@ -210,28 +210,46 @@ def leer_planilla_pasillos_google(ruta):
     db = {}
     try:
         wb = openpyxl.load_workbook(ruta, data_only=True)
-        for hoja in wb.sheetnames:
-            ws    = wb[hoja]
-            filas = list(ws.iter_rows(values_only=True))
-            if not filas:
-                continue
+
+        # IMPORTANTE: leer ÚNICAMENTE la hoja llamada "productos" (case-insensitive)
+        # No iterar por todas las hojas para evitar confusiones con hoja7, etc.
+        hoja_objetivo = None
+        for nombre_hoja in wb.sheetnames:
+            if nombre_hoja.strip().lower() == "productos":
+                hoja_objetivo = nombre_hoja
+                break
+
+        if not hoja_objetivo:
+            print(f"[EXCEL] ⚠ No se encontró la hoja 'productos'. "
+                  f"Hojas disponibles: {wb.sheetnames}")
+            return {}
+
+        print(f"[EXCEL] Leyendo SOLO la hoja: '{hoja_objetivo}'")
+        ws    = wb[hoja_objetivo]
+        filas = list(ws.iter_rows(values_only=True))
+        if filas:
 
             # Buscar la fila de encabezado: debe tener "SKU" y alguna con "PASILLO"
             hdr_idx = None
-            for i, fila in enumerate(filas[:6]):
+            for i, fila in enumerate(filas[:10]):
                 vals = [_norm(c) for c in fila]
                 if "SKU" in vals and any("PASILLO" in v for v in vals):
                     hdr_idx = i
                     break
             if hdr_idx is None:
-                continue   # no es una hoja de pasillos
+                print(f"[EXCEL] ⚠ No se encontró fila de encabezado con SKU + PASILLO "
+                      f"en la hoja 'productos'")
+                return {}
 
             hdr     = [_norm(c) for c in filas[hdr_idx]]
             col_sku = hdr.index("SKU")
             col_pas = next(i for i, v in enumerate(hdr) if "PASILLO" in v)
             col_nom = next((i for i, v in enumerate(hdr)
-                            if "PRODUCTO" in v or "TITULO" in v or "TÍTULO" in v), None)
+                            if "PRODUCTO" in v or "TITULO" in v or "TÍTULO" in v
+                            or "NOMBRE" in v), None)
             col_id  = col_sku - 1 if col_sku > 0 else None
+            print(f"[EXCEL] Columnas detectadas: SKU={col_sku}, "
+                  f"PASILLO={col_pas}, NOMBRE={col_nom}, ID={col_id}")
 
             for fila in filas[hdr_idx + 1:]:
                 if not fila:
@@ -1719,6 +1737,8 @@ class AsistenteDepositoApp:
         self._img_full_cache   = {}  # {sku: PIL.Image full} para agrandar al hacer clic
         self._img_url_cache    = {}  # {sku: imagen_url} URL ya resuelta
         self._img_cargando     = set()  # SKUs cuya imagen se está descargando
+        self._img_fallos       = {}  # {sku: n_intentos_fallidos}
+        self._img_labels       = {}  # {sku: tk.Label} para reintentos posteriores
         self._servidor_thread  = None
         self._servidor_activo  = False
         self._export_pending   = False   # debounce flag para exportar estado
@@ -3802,6 +3822,12 @@ class AsistenteDepositoApp:
                   activebackground=C["accent2"], activeforeground="white",
                   relief="flat", cursor="hand2", padx=8, pady=3, bd=0,
                   command=self._diagnostico_google_base).pack(anchor="w", pady=(3, 0))
+        # Botón para recargar miniaturas/descripciones (cuando alguna no se cargó)
+        tk.Button(sec1, text="🖼️ Recargar imágenes y nombres",
+                  font=("Segoe UI", 8), bg="#7C3AED", fg="white",
+                  activebackground="#6D28D9", activeforeground="white",
+                  relief="flat", cursor="hand2", padx=8, pady=3, bd=0,
+                  command=self._forzar_recarga_imagenes).pack(anchor="w", pady=(3, 0))
         # ALIAS: varias rutas (generar lote, subida a nube) usan self.lbl_estado_pdf,
         # que nunca se creaba y lanzaba AttributeError JUSTO antes de arrancar el
         # poller de la nube. Lo apuntamos al label que sí existe para que el
@@ -4801,8 +4827,16 @@ class AsistenteDepositoApp:
             header.pack(fill="x")
             header.pack_propagate(False)
 
-            nombre = self._nombre_pedido(pn)
-            tk.Label(header, text=nombre, font=("Segoe UI Black", 11),
+            # ── Título de la franja azul: NÚMERO DE VENTA ─────────────────────
+            # Se prioriza el order_id de MercadoLibre (#2000017...). Si no hay
+            # order_id (ej. modo Excel), se usa "CAJA {pn}" como fallback.
+            order_id = str(d.get("_order_id", "")).strip()
+            if order_id:
+                titulo = f"📦  Venta #{order_id}"
+            else:
+                titulo = f"📦  CAJA {pn}"
+
+            tk.Label(header, text=titulo, font=("Segoe UI Black", 11),
                      bg=C["accent"], fg="white",
                      wraplength=280, justify="left").pack(side="left", padx=10, pady=4)
 
@@ -5170,6 +5204,16 @@ class AsistenteDepositoApp:
         # 2. Si ya se está descargando → no duplicar
         if sku in self._img_cargando:
             return
+
+        # 3. Si ya falló 3 veces → no insistir (se reintenta al refrescar lote)
+        if self._img_fallos.get(sku, 0) >= 3:
+            try:
+                lbl_destino.config(image="", text="📷", fg=C["text_lo"],
+                                   font=("Segoe UI", 12), cursor="")
+            except Exception:
+                pass
+            return
+
         self._img_cargando.add(sku)
 
         # Placeholder mientras carga
@@ -5246,6 +5290,8 @@ class AsistenteDepositoApp:
 
     def _on_miniatura_fallo(self, sku, lbl_destino):
         """Callback en la UI cuando no se pudo cargar la miniatura."""
+        # Registrar el fallo para limitar reintentos
+        self._img_fallos[sku] = self._img_fallos.get(sku, 0) + 1
         try:
             if lbl_destino.winfo_exists():
                 lbl_destino.config(image="", text="📷", fg=C["text_lo"],
@@ -5596,6 +5642,69 @@ class AsistenteDepositoApp:
         except Exception as e:
             pass
 
+    def _resetear_lote_completo(self):
+        """Limpia COMPLETAMENTE el estado del lote anterior:
+        - pedidos, colecta, contadores
+        - caches de imágenes pendientes
+        - estado en Railway (manda lote vacío)
+        Llamado cuando se termina un lote y vuelve a Fase 1."""
+        try:
+            print("[LOTE-RESET] Limpiando lote anterior completamente...")
+
+            # 1. Limpiar estructuras locales
+            self.pedidos.clear()
+            self.colecta_global.clear()
+            self.sku_item_id.clear()
+            self.sku_nombre_ml.clear()
+            self._pedidos_previos.clear() if hasattr(self, "_pedidos_previos") else None
+
+            # 2. Limpiar caches de imágenes pendientes (las del nuevo lote
+            #    serán distintas, no sirve mantener fallos viejos)
+            self._img_fallos.clear()
+            self._img_cargando.clear()
+            self._img_labels.clear()
+
+            # 3. Volver a fase1 internamente (estado, no UI todavía)
+            self.fase_actual = "fase1"
+
+            # 4. Subir lote VACÍO a Railway para que los celulares se enteren
+            try:
+                import threading, urllib.request as _ur, json as _json
+                def _subir_vacio():
+                    try:
+                        payload = _json.dumps({
+                            "fase":              "fase1",
+                            "grupos":            [],
+                            "colecta":           {},
+                            "colecta_completa":  False,
+                            "total_skus":        0,
+                            "total_uds":         0,
+                            "pedidos":           {},
+                        }).encode("utf-8")
+                        url = (self.config.get("servidor_nube", RAILWAY_URL).rstrip("/")
+                               + "/api/subir_estado")
+                        req = _ur.Request(url,
+                            data=payload,
+                            headers={
+                                "Content-Type": "application/json",
+                                "X-API-Key":    self.config.get("clave_nube",
+                                                                "everest2024").strip(),
+                            },
+                            method="POST")
+                        with _ur.urlopen(req, timeout=8) as resp:
+                            resp.read()
+                        print("[LOTE-RESET] Lote vacío subido a Railway")
+                    except Exception as e:
+                        print(f"[LOTE-RESET] Error subiendo lote vacío: {e}")
+                threading.Thread(target=_subir_vacio, daemon=True).start()
+            except Exception:
+                pass
+
+            print("[LOTE-RESET] ✅ Lote anterior limpiado")
+        except Exception as e:
+            print(f"[LOTE-RESET] Error: {e}")
+            import traceback; traceback.print_exc()
+
     def _imprimir_automatico(self, p_num):
         impresora = self.config.get("impresora", "").strip()
         if not impresora:
@@ -5606,6 +5715,53 @@ class AsistenteDepositoApp:
             if resp:
                 self.abrir_configuracion()
             return
+
+        # ── ANTI-DUPLICADO: verificar que no se haya impreso antes ────────────
+        ped = self.pedidos.get(p_num, {})
+        order_id = str(ped.get("_order_id", "")).strip()
+
+        # Verificación local: ¿ya está marcado como impreso?
+        if ped.get("impreso") or ped.get("_impreso_local"):
+            resp = messagebox.askyesno(
+                "⚠ Etiqueta ya impresa",
+                f"La etiqueta del pedido #{order_id or p_num} YA FUE IMPRESA antes.\n\n"
+                f"¿Querés imprimir de nuevo igual?",
+                parent=self.root)
+            if not resp:
+                self.lbl_imprimiendo.config(
+                    text="❌  Impresión cancelada (ya impresa)", fg=C["warning"])
+                # Marcar como impreso local y saltar al siguiente
+                self.pedidos[p_num]["_impreso_local"] = True
+                self.root.after(1500, self.saltar_sku_actual)
+                return
+
+        # Verificación remota: consultar al servidor si está en la lista de impresas
+        if order_id:
+            try:
+                import urllib.request as _ur, json as _json
+                url_chk = (self.config.get("servidor_nube", RAILWAY_URL).rstrip("/")
+                           + f"/api/pedidos/impreso/{order_id}")
+                req = _ur.Request(url_chk, headers={"X-API-Key":
+                    self.config.get("clave_nube", "everest2024").strip()})
+                with _ur.urlopen(req, timeout=4) as resp:
+                    data = _json.loads(resp.read())
+                if data.get("impreso"):
+                    r = messagebox.askyesno(
+                        "⚠ Etiqueta ya impresa",
+                        f"El servidor indica que la etiqueta #{order_id} "
+                        f"YA FUE IMPRESA anteriormente.\n\n"
+                        f"¿Querés imprimirla de nuevo igual?",
+                        parent=self.root)
+                    if not r:
+                        # Marcar como impresa local para que no la vuelva a procesar
+                        self.pedidos[p_num]["_impreso_local"] = True
+                        self.lbl_imprimiendo.config(
+                            text="❌  Ya impresa — saltando", fg=C["warning"])
+                        self.root.after(1500, self.saltar_sku_actual)
+                        return
+            except Exception as e:
+                # Si falla la verificación, no bloquear — solo loguear
+                print(f"[ANTI-DUP] No se pudo verificar #{order_id}: {e}")
 
         try:
             self.lbl_imprimiendo.config(text="⏳  Imprimiendo...", fg=C["accent"])
@@ -5742,6 +5898,15 @@ class AsistenteDepositoApp:
                     "🎉  Todos los pedidos fueron procesados e impresos.\n\n"
                     "Generá un nuevo lote desde la pestaña «Pedidos ML».",
                     parent=self.root)
+
+                # ── LIMPIEZA COMPLETA del lote anterior ───────────────────────
+                # Antes de volver a la pestaña ML, hay que dejar todo en cero
+                # para evitar que aparezcan pedidos del lote anterior.
+                try:
+                    self._resetear_lote_completo()
+                except Exception as e:
+                    print(f"[LOTE-RESET] Error limpiando lote: {e}")
+
                 # Volver a la pestaña Pedidos ML para iniciar un nuevo lote
                 try:
                     self._switch_tab("ml")
@@ -6552,10 +6717,44 @@ try {{
         # miniaturas que aún no se cargaron (el servidor ya puede resolverlas).
         self.root.after(1500, self._recargar_miniaturas_pendientes)
 
+    def _forzar_recarga_imagenes(self):
+        """Limpia TODO el cache de imágenes y nombres, y vuelve a cargarlos.
+        Útil cuando la app lleva mucho rato abierta y algunas imágenes no
+        se descargaron por error de red o token caducado."""
+        try:
+            # Limpiar TODOS los caches
+            self._img_cache.clear()
+            self._img_full_cache.clear()
+            self._img_url_cache.clear()
+            self._img_cargando.clear()
+            self._img_fallos.clear()
+
+            self.lbl_estado_excel.config(
+                text="🖼️ Recargando imágenes y nombres...", fg=C["accent"])
+            self.root.update_idletasks()
+
+            # Redibujar fase 1 / 2 desde cero — esto vuelve a llamar a
+            # _cargar_miniatura_async para cada SKU, que ahora descargará
+            # de nuevo porque el cache está limpio.
+            if self.fase_actual == "fase1":
+                self._dibujar_fase1()
+            elif self.fase_actual == "fase2":
+                self._dibujar_fase2()
+
+            self.root.after(800, lambda: self.lbl_estado_excel.config(
+                text="✅ Imágenes y nombres recargados", fg=C["success"]))
+        except Exception as e:
+            self.lbl_estado_excel.config(
+                text=f"❌ Error al recargar: {e}", fg=C["danger"])
+
     def _recargar_miniaturas_pendientes(self):
         """Reintenta cargar las miniaturas que quedaron en estado 'fallo' (📷),
         por ejemplo porque se pidieron antes de que el lote llegara a Railway."""
         try:
+            # IMPORTANTE: resetear contador de fallos para que el reintento
+            # funcione (el servidor ya tiene el lote y los item_ids ahora).
+            self._img_fallos.clear()
+
             cache_labels = getattr(self, "_img_labels", {})
             for sku, lbl in list(cache_labels.items()):
                 # Solo reintentar si no hay imagen cargada y el label sigue vivo

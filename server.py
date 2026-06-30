@@ -1114,12 +1114,77 @@ def api_pedidos():
         if log and (not p.get("tipo") or p.get("tipo") == "desconocido"):
             p["tipo"] = _calcular_tipo(log, p.get("tags",[]), p.get("shipping_id",""))
 
+    # Disparar refresh de shipments faltantes en background (no bloquea respuesta)
+    faltantes = [p for p in pedidos
+                 if not p.get("logistica","") and p.get("shipping_id","")]
+    if faltantes:
+        print(f"[PEDIDOS] {len(faltantes)} pedidos sin logistica — refrescando en background")
+        def _refresh_faltantes():
+            for p in faltantes[:20]:   # límite para no saturar
+                try:
+                    ship_id = p.get("shipping_id","")
+                    cuenta  = p.get("_cuenta","cuenta_0")
+                    if not ship_id:
+                        continue
+                    rs = _ml_get_cuenta(f"/shipments/{ship_id}", cuenta)
+                    if rs and rs.status_code == 200:
+                        sd = rs.json()
+                        log_new = (sd.get("logistic") or {}).get("type", "")
+                        log_old = sd.get("logistic_type", "")
+                        logistica = log_new or log_old
+                        with _lock:
+                            oid = str(p.get("order_id",""))
+                            pp = _pedidos_ml.get(oid)
+                            if pp:
+                                pp["logistica"]    = logistica
+                                pp["estado_envio"] = sd.get("status","")
+                                pp["substatus"]    = sd.get("substatus","")
+                                pp["tipo"]         = _calcular_tipo(
+                                    logistica, pp.get("tags",[]), ship_id)
+                                print(f"[PEDIDOS] #{oid} → logistica={logistica}")
+                except Exception as e:
+                    print(f"[PEDIDOS] Error refrescando shipment: {e}")
+        import threading as _th
+        _th.Thread(target=_refresh_faltantes, daemon=True).start()
+
     return jsonify({
         "ok":      True,
         "pedidos": pedidos,
         "total":   len(pedidos),
         "ts":      _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S")
                    if _ultimo_refresh_pedidos else "—",
+    })
+
+
+@app.route("/api/diag-pedidos")
+def api_diag_pedidos():
+    """Diagnóstico: lista cada pedido con su logistica y tipo calculado."""
+    with _lock:
+        pedidos = list(_pedidos_ml.values())
+
+    detalle = []
+    contadores = {"flex":0, "colecta":0, "me1":0, "full":0, "desconocido":0,
+                  "sin_logistica":0}
+    for p in pedidos:
+        log = p.get("logistica","")
+        tipo_calc = _calcular_tipo(log, p.get("tags",[]), p.get("shipping_id",""))
+        if not log:
+            contadores["sin_logistica"] += 1
+        contadores[tipo_calc] = contadores.get(tipo_calc, 0) + 1
+        detalle.append({
+            "order_id":    str(p.get("order_id","")),
+            "nick":        p.get("nickname",""),
+            "logistica":   log or "(vacío)",
+            "tipo_guardado": p.get("tipo",""),
+            "tipo_calculado": tipo_calc,
+            "shipping_id": p.get("shipping_id",""),
+            "estado":      p.get("estado_envio",""),
+            "impreso":     p.get("impreso", False),
+        })
+    return jsonify({
+        "total": len(pedidos),
+        "contadores": contadores,
+        "pedidos": detalle,
     })
 
 
@@ -1973,6 +2038,51 @@ def api_etiquetas_cache():
         "politica":        "PDF disponible por 24 horas — se borra al cumplir 24h o al marcar impreso",
         "etiquetas":       resultado,
     })
+
+@app.route("/api/pedidos/impreso/<order_id>", methods=["GET"])
+def chequear_impreso(order_id):
+    """
+    Verifica si un pedido ya fue marcado como impreso (anti-duplicado).
+    No requiere auth: solo lee estado, no modifica.
+    """
+    order_id = str(order_id).strip()
+    impreso = False
+    fuente  = None
+    ts      = None
+
+    with _lock:
+        # 1. ¿Está en _pedidos_ml con flag impreso?
+        for k in (order_id, str(order_id)):
+            p = _pedidos_ml.get(k)
+            if p and p.get("impreso"):
+                impreso = True
+                fuente  = "pedidos_ml"
+                ts      = p.get("impreso_ts", "")
+                break
+
+        # 2. ¿Está en la lista de etiquetas_impresas?
+        if not impreso:
+            impresas = _estado.get("etiquetas_impresas", [])
+            if order_id in impresas or str(order_id) in impresas:
+                impreso = True
+                fuente  = "etiquetas_impresas"
+
+        # 3. ¿Está en _etiquetas_cache marcado como impreso?
+        if not impreso:
+            cache = _etiquetas_cache.get(order_id) or _etiquetas_cache.get(str(order_id))
+            if cache and cache.get("impreso"):
+                impreso = True
+                fuente  = "etiquetas_cache"
+                ts      = cache.get("impreso_ts", "")
+
+    return jsonify({
+        "ok":       True,
+        "order_id": order_id,
+        "impreso":  impreso,
+        "fuente":   fuente,
+        "ts":       ts,
+    })
+
 
 @app.route("/api/pedidos/marcar_impreso/<order_id>", methods=["POST"])
 @requiere_auth
