@@ -1217,9 +1217,8 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         c = rl_canvas.Canvas(ov_buf, pagesize=(pw, ph))
 
         # ══════════════════════════════════════════════════════════════════════
-        # LOGO — zona ROJA = franja superior (ticket de corte)
-        # La etiqueta real empieza ~30% desde arriba; el logo va en el 30%
-        # superior que corresponde al ticket de recorte.
+        # LOGO — zona superior (ticket de corte)
+        # Primero tapa con blanco, luego dibuja el logo centrado
         # ══════════════════════════════════════════════════════════════════════
         if tiene_logo:
             try:
@@ -1227,64 +1226,64 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
                 img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
 
                 # Zona disponible: franja superior ≈ 28% del alto de la página
-                zona_alto  = ph * 0.28          # alto de la zona roja
-                zona_ancho = pw * 0.80          # ancho disponible (centrado)
+                zona_alto  = ph * 0.28
+                zona_ancho = pw
 
-                # Calcular tamaño manteniendo proporción y respetando la zona
-                ratio     = img.height / img.width
-                w_pt      = min(zona_ancho, zona_alto / ratio)
-                h_pt      = w_pt * ratio
-                if h_pt > zona_alto * 0.85:     # si es muy alto, recortar
-                    h_pt  = zona_alto * 0.85
-                    w_pt  = h_pt / ratio
+                # Calcular tamaño manteniendo proporción
+                ratio = img.height / img.width
+                w_pt  = min(zona_ancho * 0.75, zona_alto / ratio)
+                h_pt  = w_pt * ratio
+                if h_pt > zona_alto * 0.85:
+                    h_pt = zona_alto * 0.85
+                    w_pt = h_pt / ratio
 
-                # Centrar horizontalmente en la zona superior
+                # ── Rectángulo blanco que tapa el contenido original ──────────
+                c.setFillColor(rl_colors.white)
+                c.setStrokeColor(rl_colors.white)
+                c.rect(0, ph - zona_alto, pw, zona_alto, fill=1, stroke=0)
+
+                # ── Logo centrado sobre el blanco ─────────────────────────────
                 x = (pw - w_pt) / 2
-                # y en PDF = 0 es abajo. La zona roja va desde (ph - zona_alto) a ph
-                y = ph - h_pt - (zona_alto - h_pt) / 2   # centrado vertical en la franja
+                y = ph - zona_alto + (zona_alto - h_pt) / 2
 
-                img_resized = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
-                                         Image.Resampling.LANCZOS)
+                img_r = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
+                                   Image.Resampling.LANCZOS)
                 tmp = io.BytesIO()
-                img_resized.save(tmp, format="PNG")
+                img_r.save(tmp, format="PNG")
                 tmp.seek(0)
                 c.drawImage(ImageReader(tmp), x, y,
                             width=w_pt, height=h_pt, mask="auto")
-                print(f"[ETIQUETA-PERS] Logo en zona superior: "
-                      f"x={x:.0f}, y={y:.0f}, w={w_pt:.0f}, h={h_pt:.0f}")
+                print(f"[ETIQUETA-PERS] Logo: x={x:.0f}, y={y:.0f}, "
+                      f"w={w_pt:.0f}, h={h_pt:.0f}")
             except Exception as e:
                 print(f"[ETIQUETA-PERS] Error logo: {e}")
                 import traceback; traceback.print_exc()
 
         # ══════════════════════════════════════════════════════════════════════
-        # TEXTO — zona AZUL = franja lateral izquierda, rotado 90°
-        # Cubre toda la altura de la etiqueta (parte inferior ~70% del PDF)
+        # TEXTO — franja lateral izquierda, rotado 90°
+        # Sin fondo — texto negro sobre blanco (compatible con impresora térmica)
         # ══════════════════════════════════════════════════════════════════════
         if tiene_texto:
             try:
-                texto = config["etiqueta_texto"].strip()
+                texto       = config["etiqueta_texto"].strip()
+                franja_ancho = 18
+                etiq_inicio  = 0
+                etiq_alto    = ph * 0.72
 
-                # Franja azul: 18 pts de ancho en el borde izquierdo,
-                # cubriendo la zona de etiqueta (70% inferior)
-                franja_ancho = 18        # pts
-                etiq_inicio  = 0         # desde abajo
-                etiq_alto    = ph * 0.72 # zona de la etiqueta
-
-                # Fondo de color de la franja (opcional — comentar para sin fondo)
-                c.setFillColor(rl_colors.HexColor("#1E3A8A"))  # azul Everest
+                # Fondo blanco (tapa contenido original si lo hubiera)
+                c.setFillColor(rl_colors.white)
+                c.setStrokeColor(rl_colors.white)
                 c.rect(0, etiq_inicio, franja_ancho, etiq_alto, fill=1, stroke=0)
 
-                # Texto rotado 90° dentro de la franja
+                # Texto negro rotado 90°
                 c.saveState()
                 c.setFont("Helvetica-Bold", 8)
-                c.setFillColor(rl_colors.white)
-                # Mover al centro de la franja y rotar
+                c.setFillColor(rl_colors.black)
                 c.translate(franja_ancho / 2, etiq_inicio + etiq_alto / 2)
                 c.rotate(90)
-                # Dibujar centrado
                 c.drawCentredString(0, 0, texto[:100])
                 c.restoreState()
-                print(f"[ETIQUETA-PERS] Texto lateral: '{texto[:50]}'")
+                print(f"[ETIQUETA-PERS] Texto: '{texto[:50]}'")
             except Exception as e:
                 print(f"[ETIQUETA-PERS] Error texto: {e}")
 
