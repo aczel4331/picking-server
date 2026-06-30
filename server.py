@@ -1208,98 +1208,107 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         if not reader.pages:
             return pdf_bytes
 
-        pw_orig = float(reader.pages[0].mediabox.width)    # ancho original
-        ph_orig = float(reader.pages[0].mediabox.height)   # alto original
-        print(f"[ETIQUETA-PERS] Etiqueta original: {pw_orig:.0f} x {ph_orig:.0f} pts "
-              f"({pw_orig/28.3465:.1f} x {ph_orig/28.3465:.1f} cm)")
+        pw = float(reader.pages[0].mediabox.width)    # ancho ORIGINAL (no cambia)
+        ph = float(reader.pages[0].mediabox.height)   # alto  ORIGINAL (no cambia)
+        print(f"[ETIQUETA-PERS] Tamaño página (se mantiene igual): {pw:.0f} x {ph:.0f} pts "
+              f"({pw/28.3465:.2f} x {ph/28.3465:.2f} cm) — driver 'USER' de la impresora")
 
-        # ── Márgenes nuevos para logo (arriba) y texto (lateral) ───────────────
-        MARGEN_LOGO  = 60 if tiene_logo  else 0   # franja arriba para el logo
-        MARGEN_TEXTO = 22 if tiene_texto else 0   # franja lateral para el texto
+        # ── Franjas para logo (arriba) y texto (derecha) ────────────────────────
+        # El contenido ORIGINAL de ML se ESCALA hacia abajo para liberar estas
+        # franjas, sin cambiar el tamaño total de la hoja (la impresora térmica
+        # tiene un tamaño de papel fijo "USER" y no acepta otro tamaño).
+        FRANJA_LOGO  = 50 if tiene_logo  else 0   # pts de alto arriba
+        FRANJA_TEXTO = 16 if tiene_texto else 0   # pts de ancho a la derecha
 
-        pw_nuevo = pw_orig + MARGEN_TEXTO
-        ph_nuevo = ph_orig + MARGEN_LOGO
-        print(f"[ETIQUETA-PERS] Página nueva: {pw_nuevo:.0f} x {ph_nuevo:.0f} pts "
-              f"({pw_nuevo/28.3465:.1f} x {ph_nuevo/28.3465:.1f} cm) — "
-              f"margen_logo={MARGEN_LOGO}, margen_texto={MARGEN_TEXTO}")
+        # Espacio que le queda al contenido original de ML
+        esc_x = (pw - FRANJA_TEXTO) / pw
+        esc_y = (ph - FRANJA_LOGO)  / ph
+        escala = min(esc_x, esc_y)   # mantener proporción de la etiqueta
+        print(f"[ETIQUETA-PERS] Escala contenido ML: {escala:.3f} "
+              f"(franja_logo={FRANJA_LOGO}, franja_texto={FRANJA_TEXTO})")
 
-        # ── Crear página nueva con fondo blanco + logo + texto ─────────────────
+        # ── Página final = MISMO tamaño que la original ─────────────────────────
         bg_buf = io.BytesIO()
-        c = rl_canvas.Canvas(bg_buf, pagesize=(pw_nuevo, ph_nuevo))
-
-        # Fondo blanco completo
+        c = rl_canvas.Canvas(bg_buf, pagesize=(pw, ph))
         c.setFillColor(rl_colors.white)
         c.setStrokeColor(rl_colors.white)
-        c.rect(0, 0, pw_nuevo, ph_nuevo, fill=1, stroke=0)
+        c.rect(0, 0, pw, ph, fill=1, stroke=0)
+        c.save()
+        bg_buf.seek(0)
 
-        # ══════════════════════════════════════════════════════════════════════
-        # LOGO — en la franja nueva de arriba (no toca la etiqueta original)
-        # ══════════════════════════════════════════════════════════════════════
+        bg_reader = PdfReader(bg_buf)
+        bg_page   = bg_reader.pages[0]
+        orig_page = reader.pages[0]
+
+        # Escalar y trasladar el contenido original hacia abajo-izquierda,
+        # dejando libres la franja superior (logo) y la franja derecha (texto)
+        try:
+            from pypdf import Transformation
+            tx = 0
+            ty = 0
+            transform = Transformation().scale(sx=escala, sy=escala).translate(tx=tx, ty=ty)
+            bg_page.merge_transformed_page(orig_page, transform)
+            print("[ETIQUETA-PERS] Contenido ML escalado y fusionado")
+        except (ImportError, AttributeError) as e:
+            print(f"[ETIQUETA-PERS] Transformation no disponible ({e}) — pegando sin escalar")
+            bg_page.merge_page(orig_page)
+
+        # ── Overlay: logo arriba + texto a la derecha, sobre la misma página ───
+        ov_buf = io.BytesIO()
+        c2 = rl_canvas.Canvas(ov_buf, pagesize=(pw, ph))
+
+        # LOGO en la franja superior liberada
         if tiene_logo:
             try:
                 logo_bytes = base64.b64decode(config["etiqueta_logo_b64"])
                 img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
 
-                # El logo entra en la franja de MARGEN_LOGO pts de alto
                 ratio = img.height / img.width
-                h_pt  = MARGEN_LOGO - 10          # 5pt de aire arriba/abajo
+                h_pt  = FRANJA_LOGO - 8
                 w_pt  = h_pt / ratio
-                if w_pt > pw_nuevo * 0.6:         # si queda muy ancho, limitar
-                    w_pt = pw_nuevo * 0.6
+                ancho_disponible = pw - FRANJA_TEXTO
+                if w_pt > ancho_disponible * 0.7:
+                    w_pt = ancho_disponible * 0.7
                     h_pt = w_pt * ratio
 
-                x = (pw_nuevo - w_pt) / 2          # centrado horizontal
-                y = ph_orig + (MARGEN_LOGO - h_pt) / 2  # centrado en la franja
+                x = (ancho_disponible - w_pt) / 2
+                y = ph - FRANJA_LOGO + (FRANJA_LOGO - h_pt) / 2
 
                 img_r = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
                                    Image.Resampling.LANCZOS)
                 tmp = io.BytesIO()
                 img_r.save(tmp, format="PNG")
                 tmp.seek(0)
-                c.drawImage(ImageReader(tmp), x, y,
-                            width=w_pt, height=h_pt, mask="auto")
+                c2.drawImage(ImageReader(tmp), x, y,
+                             width=w_pt, height=h_pt, mask="auto")
                 print(f"[ETIQUETA-PERS] Logo: x={x:.0f}, y={y:.0f}, "
                       f"w={w_pt:.0f}, h={h_pt:.0f}")
             except Exception as e:
                 print(f"[ETIQUETA-PERS] Error logo: {e}")
                 import traceback; traceback.print_exc()
 
-        # ══════════════════════════════════════════════════════════════════════
-        # TEXTO — en la franja nueva lateral derecha, rotado 90°, negro sobre blanco
-        # ══════════════════════════════════════════════════════════════════════
+        # TEXTO en la franja derecha liberada, rotado 90°, negro sobre blanco
         if tiene_texto:
             try:
                 texto = config["etiqueta_texto"].strip()
-
-                c.saveState()
-                c.setFont("Helvetica-Bold", 8)
-                c.setFillColor(rl_colors.black)
-                # Centro de la franja lateral (a la derecha de la etiqueta original)
-                cx = pw_orig + MARGEN_TEXTO / 2
-                cy = ph_orig / 2
-                c.translate(cx, cy)
-                c.rotate(90)
-                c.drawCentredString(0, 0, texto[:110])
-                c.restoreState()
+                c2.saveState()
+                c2.setFont("Helvetica-Bold", 7)
+                c2.setFillColor(rl_colors.black)
+                cx = pw - FRANJA_TEXTO / 2
+                cy = (ph - FRANJA_LOGO) / 2
+                c2.translate(cx, cy)
+                c2.rotate(90)
+                c2.drawCentredString(0, 0, texto[:110])
+                c2.restoreState()
                 print(f"[ETIQUETA-PERS] Texto: '{texto[:50]}'")
             except Exception as e:
                 print(f"[ETIQUETA-PERS] Error texto: {e}")
 
-        c.save()
-        bg_buf.seek(0)
+        c2.save()
+        ov_buf.seek(0)
 
-        # ── Componer: página nueva (fondo) + etiqueta original (sin tocar) ─────
-        bg_reader = PdfReader(bg_buf)
-        bg_page   = bg_reader.pages[0]
-        orig_page = reader.pages[0]
-
-        try:
-            # pypdf moderno: merge_transformed_page + Transformation
-            from pypdf import Transformation
-            bg_page.merge_transformed_page(orig_page, Transformation())
-        except (ImportError, AttributeError):
-            # Fallback: merge_page simple (asume misma esquina inferior-izq)
-            bg_page.merge_page(orig_page)
+        ov_reader = PdfReader(ov_buf)
+        bg_page.merge_page(ov_reader.pages[0])
 
         writer = PdfWriter()
         writer.add_page(bg_page)
@@ -1307,7 +1316,8 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         out = io.BytesIO()
         writer.write(out)
         result = out.getvalue()
-        print(f"[ETIQUETA-PERS] ✅ PDF generado: {len(result)} bytes")
+        print(f"[ETIQUETA-PERS] ✅ PDF generado: {len(result)} bytes, "
+              f"tamaño página IGUAL al original ({pw:.0f}x{ph:.0f})")
         return result
 
     except Exception as e:
