@@ -1114,38 +1114,20 @@ def api_pedidos():
         if log and (not p.get("tipo") or p.get("tipo") == "desconocido"):
             p["tipo"] = _calcular_tipo(log, p.get("tags",[]), p.get("shipping_id",""))
 
-    # Disparar refresh de shipments faltantes en background (no bloquea respuesta)
-    faltantes = [p for p in pedidos
-                 if not p.get("logistica","") and p.get("shipping_id","")]
-    if faltantes:
-        print(f"[PEDIDOS] {len(faltantes)} pedidos sin logistica — refrescando en background")
-        def _refresh_faltantes():
-            for p in faltantes[:20]:   # límite para no saturar
-                try:
-                    ship_id = p.get("shipping_id","")
-                    cuenta  = p.get("_cuenta","cuenta_0")
-                    if not ship_id:
-                        continue
-                    rs = _ml_get_cuenta(f"/shipments/{ship_id}", cuenta)
-                    if rs and rs.status_code == 200:
-                        sd = rs.json()
-                        log_new = (sd.get("logistic") or {}).get("type", "")
-                        log_old = sd.get("logistic_type", "")
-                        logistica = log_new or log_old
-                        with _lock:
-                            oid = str(p.get("order_id",""))
-                            pp = _pedidos_ml.get(oid)
-                            if pp:
-                                pp["logistica"]    = logistica
-                                pp["estado_envio"] = sd.get("status","")
-                                pp["substatus"]    = sd.get("substatus","")
-                                pp["tipo"]         = _calcular_tipo(
-                                    logistica, pp.get("tags",[]), ship_id)
-                                print(f"[PEDIDOS] #{oid} → logistica={logistica}")
-                except Exception as e:
-                    print(f"[PEDIDOS] Error refrescando shipment: {e}")
+    # ── AUTO-REFRESH agresivo: TODOS los pedidos no-impresos con shipping_id ──
+    # Cada vez que la app pide pedidos, actualizamos el estado real de ML
+    # para los que están marcados como pendientes. Así los que ya se
+    # imprimieron en ML pasan a estar marcados como impresos automáticamente.
+    necesitan_refresh = [p for p in pedidos
+                         if p.get("shipping_id","")
+                         and not p.get("impreso", False)]
+
+    if necesitan_refresh:
+        print(f"[PEDIDOS] Refrescando {len(necesitan_refresh)} pedidos pendientes contra ML")
+        def _refresh_bg():
+            _refrescar_estado_pedidos_bg(necesitan_refresh, limite=40)
         import threading as _th
-        _th.Thread(target=_refresh_faltantes, daemon=True).start()
+        _th.Thread(target=_refresh_bg, daemon=True).start()
 
     return jsonify({
         "ok":      True,
@@ -1156,7 +1138,171 @@ def api_pedidos():
     })
 
 
-@app.route("/api/diag-pedidos")
+def _refrescar_estado_pedidos_bg(pedidos_lista, limite=40):
+    """
+    Consulta el shipment de cada pedido en ML y actualiza logistica,
+    estado_envio, substatus, tipo e impreso con los datos frescos.
+
+    Se llama:
+    - desde api_pedidos() cada vez que la app pide la lista
+    - desde el thread periódico _sync_pedidos_ml_periodico()
+    """
+    ESTADOS_IMPRESOS = ("printed", "shipped", "delivered",
+                        "ready_to_ship_wt_route")
+    procesados = 0
+    marcados_impresos = 0
+    for p in pedidos_lista[:limite]:
+        try:
+            ship_id = p.get("shipping_id","")
+            cuenta  = p.get("_cuenta","cuenta_0")
+            if not ship_id:
+                continue
+            rs = _ml_get_cuenta(f"/shipments/{ship_id}", cuenta)
+            if not rs or rs.status_code != 200:
+                continue
+            sd        = rs.json()
+            log_new   = (sd.get("logistic") or {}).get("type", "")
+            log_old   = sd.get("logistic_type", "")
+            logistica = log_new or log_old
+            status    = sd.get("status", "")
+            substatus = sd.get("substatus", "")
+
+            with _lock:
+                oid = str(p.get("order_id",""))
+                pp  = _pedidos_ml.get(oid)
+                if not pp:
+                    continue
+                pp["logistica"]    = logistica
+                pp["estado_envio"] = status
+                pp["substatus"]    = substatus
+                pp["tipo"]         = _calcular_tipo(
+                    logistica, pp.get("tags",[]), ship_id)
+
+                # ── Recalcular flag "impreso" con datos FRESCOS de ML ────
+                # Según documentación oficial ML:
+                #   substatus == "printed"   → ya se imprimió la etiqueta
+                #   substatus == "shipped"   → impreso y enviado
+                #   substatus == "delivered" → impreso, enviado y entregado
+                #   substatus == "ready_to_print" → PENDIENTE (falta imprimir)
+                #   status == "shipped/delivered/cancelled/not_delivered" → impreso
+                antes = pp.get("impreso", False)
+                if substatus in ESTADOS_IMPRESOS or status in (
+                        "shipped", "delivered", "not_delivered", "cancelled"):
+                    pp["impreso"] = True
+                elif substatus == "ready_to_print":
+                    pp["impreso"] = False
+                elif status == "ready_to_ship" and not substatus:
+                    pp["impreso"] = False
+
+                if not antes and pp.get("impreso"):
+                    marcados_impresos += 1
+                    print(f"[PEDIDOS] ✅ #{oid} marcado como IMPRESO "
+                          f"(status={status}, substatus={substatus})")
+            procesados += 1
+        except Exception as e:
+            print(f"[PEDIDOS] Error refrescando #{p.get('order_id','')}: {e}")
+
+    if marcados_impresos:
+        print(f"[PEDIDOS] Refresh completo: {procesados} consultados, "
+              f"{marcados_impresos} pasaron a impresos")
+
+
+def _sync_pedidos_ml_periodico():
+    """
+    Thread que corre en background y cada 90 segundos consulta el estado real
+    de los pedidos pendientes contra ML. Esto es lo que garantiza que si
+    el vendedor imprime una etiqueta directamente en ML (fuera de la app),
+    la app lo detecta automáticamente sin necesidad de tocar ningún botón.
+
+    - Primer sync: 30 segundos después del startup (para dejar arrancar tokens)
+    - Sync recurrente: cada 90 segundos
+    - Cada sync procesa hasta 60 pedidos por vez
+    """
+    import time
+    print("[SYNC-ML] Thread de sincronización iniciado (primer sync en 30s)")
+    time.sleep(30)   # esperar a que carguen tokens
+
+    while True:
+        try:
+            with _lock:
+                pendientes = [p for p in _pedidos_ml.values()
+                              if p.get("shipping_id","")
+                              and not p.get("impreso", False)]
+            if pendientes:
+                print(f"[SYNC-ML] Sincronizando {len(pendientes)} pedidos "
+                      f"pendientes con ML...")
+                _refrescar_estado_pedidos_bg(pendientes, limite=60)
+            else:
+                print("[SYNC-ML] Sin pedidos pendientes para sincronizar")
+        except Exception as e:
+            print(f"[SYNC-ML] Error: {e}")
+            import traceback; traceback.print_exc()
+
+        time.sleep(90)   # esperar 90s antes del próximo sync
+
+
+@app.route("/api/diag-colecta")
+def api_diag_colecta():
+    """Diagnóstico específico para Colecta: muestra los pedidos clasificados
+    como colecta con su estado real."""
+    with _lock:
+        pedidos = list(_pedidos_ml.values())
+
+    LOGS_COLECTA = ("cross_docking", "xd_drop_off", "xd_same_day", "drop_off")
+    ESTADOS_IMPRESOS = ("printed", "shipped", "delivered", "ready_to_ship_wt_route")
+
+    colecta_pendientes = []
+    colecta_impresos   = []
+    sin_logistica      = []
+
+    for p in pedidos:
+        log       = (p.get("logistica","") or "").lower()
+        substatus = (p.get("substatus","") or "").lower()
+        status    = (p.get("estado_envio","") or "").lower()
+        impreso   = p.get("impreso", False)
+
+        info = {
+            "order_id":     str(p.get("order_id","")),
+            "nickname":     p.get("nickname",""),
+            "logistica":    log or "(vacío)",
+            "estado":       status,
+            "substatus":    substatus,
+            "impreso_flag": impreso,
+            "shipping_id":  p.get("shipping_id",""),
+        }
+
+        if not log:
+            sin_logistica.append(info)
+            continue
+
+        if log not in LOGS_COLECTA:
+            continue
+
+        # Calcular estado real
+        realmente_impreso = (impreso or
+                             substatus in ESTADOS_IMPRESOS or
+                             status in ("shipped","delivered","not_delivered","cancelled"))
+        if realmente_impreso:
+            colecta_impresos.append(info)
+        else:
+            colecta_pendientes.append(info)
+
+    return jsonify({
+        "total_pedidos":            len(pedidos),
+        "sin_logistica":            len(sin_logistica),
+        "colecta_pendientes":       len(colecta_pendientes),
+        "colecta_impresos":         len(colecta_impresos),
+        "detalle_pendientes":       colecta_pendientes,
+        "detalle_impresos":         colecta_impresos[:20],
+        "detalle_sin_logistica":    sin_logistica[:20],
+        "nota": ("Los pedidos en 'detalle_pendientes' son los que la app "
+                 "muestra en la pestaña Colecta como pendientes. "
+                 "Si alguno YA está impreso en ML, revisá su estado real "
+                 "consultando el shipment en la API de ML."),
+    })
+
+
+
 def api_diag_pedidos():
     """Diagnóstico: lista cada pedido con su logistica y tipo calculado."""
     with _lock:
@@ -2902,6 +3048,9 @@ def _startup():
                     tok["expires_at"] = datetime.now() + timedelta(hours=1)
                     _cuentas[cid] = tok
         threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
+        # Thread que cada 2 minutos sincroniza el estado real de los pedidos
+        # pendientes con ML — sin necesidad de que el usuario apriete nada.
+        threading.Thread(target=_sync_pedidos_ml_periodico, daemon=True).start()
     else:
         print("[STARTUP] ⚠ Sin tokens. Conectar ML desde la app.")
 
