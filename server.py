@@ -1147,8 +1147,19 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=40):
     - desde api_pedidos() cada vez que la app pide la lista
     - desde el thread periódico _sync_pedidos_ml_periodico()
     """
-    ESTADOS_IMPRESOS = ("printed", "shipped", "delivered",
-                        "ready_to_ship_wt_route")
+    # Todos los substatus de ML que indican que la etiqueta YA FUE IMPRESA
+    # y el paquete ya está en proceso de colecta/envío.
+    # Fuente: diagnóstico real del servidor (api/diag-colecta).
+    SUBSTATUS_IMPRESOS = (
+        "printed",               # etiqueta impresa (oficial)
+        "ready_for_pickup",      # impresa, esperando que pase colecta
+        "in_packing_list",       # en lista de empaque del HUB (ya colectado)
+        "in_hub",                # llegó al HUB (ya colectado)
+        "shipped",               # enviado al comprador
+        "delivered",             # entregado al comprador
+        "ready_to_ship_wt_route", # listo para enviar con ruta asignada
+        "to_be_agreed",          # a acordar (ya procesado)
+    )
     procesados = 0
     marcados_impresos = 0
     for p in pedidos_lista[:limite]:
@@ -1179,25 +1190,27 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=40):
                     logistica, pp.get("tags",[]), ship_id)
 
                 # ── Recalcular flag "impreso" con datos FRESCOS de ML ────
-                # Según documentación oficial ML:
-                #   substatus == "printed"   → ya se imprimió la etiqueta
-                #   substatus == "shipped"   → impreso y enviado
-                #   substatus == "delivered" → impreso, enviado y entregado
-                #   substatus == "ready_to_print" → PENDIENTE (falta imprimir)
-                #   status == "shipped/delivered/cancelled/not_delivered" → impreso
+                # Substatus que indican que la etiqueta ya se imprimió:
+                #   ready_to_print   → PENDIENTE (falta imprimir)
+                #   printed          → impresa
+                #   ready_for_pickup → impresa, esperando colecta
+                #   in_packing_list  → en lista del HUB (ya colectado)
+                #   in_hub           → llegó al HUB
+                #   shipped/delivered → enviado/entregado
                 antes = pp.get("impreso", False)
-                if substatus in ESTADOS_IMPRESOS or status in (
+                if substatus in SUBSTATUS_IMPRESOS or status in (
                         "shipped", "delivered", "not_delivered", "cancelled"):
                     pp["impreso"] = True
                 elif substatus == "ready_to_print":
                     pp["impreso"] = False
+                # Si no hay substatus y status es ready_to_ship → pendiente
                 elif status == "ready_to_ship" and not substatus:
                     pp["impreso"] = False
 
                 if not antes and pp.get("impreso"):
                     marcados_impresos += 1
-                    print(f"[PEDIDOS] ✅ #{oid} marcado como IMPRESO "
-                          f"(status={status}, substatus={substatus})")
+                    print(f"[PEDIDOS] ✅ #{oid} IMPRESO "
+                          f"(status={status}, sub={substatus})")
             procesados += 1
         except Exception as e:
             print(f"[PEDIDOS] Error refrescando #{p.get('order_id','')}: {e}")
@@ -1249,7 +1262,10 @@ def api_diag_colecta():
         pedidos = list(_pedidos_ml.values())
 
     LOGS_COLECTA = ("cross_docking", "xd_drop_off", "xd_same_day", "drop_off")
-    ESTADOS_IMPRESOS = ("printed", "shipped", "delivered", "ready_to_ship_wt_route")
+    SUBSTATUS_IMPRESOS = {
+        "printed", "ready_for_pickup", "in_packing_list",
+        "in_hub", "shipped", "delivered", "ready_to_ship_wt_route",
+    }
 
     colecta_pendientes = []
     colecta_impresos   = []
@@ -1280,7 +1296,7 @@ def api_diag_colecta():
 
         # Calcular estado real
         realmente_impreso = (impreso or
-                             substatus in ESTADOS_IMPRESOS or
+                             substatus in SUBSTATUS_IMPRESOS or
                              status in ("shipped","delivered","not_delivered","cancelled"))
         if realmente_impreso:
             colecta_impresos.append(info)

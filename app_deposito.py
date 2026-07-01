@@ -2232,7 +2232,15 @@ class AsistenteDepositoApp:
 
         # Separar en dos grupos bien definidos (sin solapamientos)
         ESTADOS_FINALES     = {"shipped","delivered","cancelled","not_delivered"}
-        SUBESTADOS_IMPRESOS = {"printed"}
+        SUBESTADOS_IMPRESOS = {
+            "printed",           # etiqueta impresa
+            "ready_for_pickup",  # impresa, esperando colecta
+            "in_packing_list",   # en lista del HUB (ya colectado)
+            "in_hub",            # llegó al HUB
+            "shipped",           # enviado al comprador
+            "delivered",         # entregado
+            "ready_to_ship_wt_route",
+        }
 
         def _es_impreso(p):
             return (p.get("impreso", False)
