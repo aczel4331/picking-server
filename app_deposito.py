@@ -189,98 +189,112 @@ def leer_excel_skus(ruta):
 
 def leer_planilla_pasillos_google(ruta):
     """
-    Lee la planilla NUEVA (una sola hoja consolidada con columnas
-    SKU / Nombre del producto / PASILLOS, mas el ID de MercadoLibre).
-    Detecta las columnas POR NOMBRE de encabezado, asi aguanta si las reordenan.
-    Devuelve { CLAVE_UPPER: {"nombre","pasillo","estanteria"} } keyado por SKU y por ID.
+    Lee la hoja 'productos' del Excel de Google Sheets.
+
+    Estructura esperada según columnas FIJAS:
+        B = SKU
+        C = Nombre del producto
+        D = VERTICAL
+        E = PASILLOS
+
+    Devuelve { SKU_UPPER: {"nombre", "vertical", "pasillo"} }
     """
     if not _OPENPYXL_OK or not ruta or not os.path.exists(ruta):
         return {}
 
-    def _norm(s):
-        return re.sub(r"\s+", " ", str(s).strip().upper()) if s is not None else ""
-
-    def _limpiar_pasillo(v):
+    def _limpiar(v):
         if v is None:
             return ""
-        s = str(v).replace("\t", " ").replace("\n", " ")
-        s = re.sub(r"\s+", " ", s).strip()
-        return "" if s in ("·", "-", "NONE", "") else s
+        s = re.sub(r"\s+", " ", str(v).replace("\t"," ").replace("\n"," ")).strip()
+        return "" if s in ("·", "-", "NONE", "None", "") else s
 
     db = {}
     try:
         wb = openpyxl.load_workbook(ruta, data_only=True)
 
-        # IMPORTANTE: leer ÚNICAMENTE la hoja llamada "productos" (case-insensitive)
-        # No iterar por todas las hojas para evitar confusiones con hoja7, etc.
-        hoja_objetivo = None
-        for nombre_hoja in wb.sheetnames:
-            if nombre_hoja.strip().lower() == "productos":
-                hoja_objetivo = nombre_hoja
-                break
+        # Buscar hoja "productos" (case-insensitive)
+        hoja_objetivo = next(
+            (n for n in wb.sheetnames if n.strip().lower() == "productos"), None)
 
         if not hoja_objetivo:
-            print(f"[EXCEL] ⚠ No se encontró la hoja 'productos'. "
-                  f"Hojas disponibles: {wb.sheetnames}")
+            print(f"[EXCEL] ⚠ Hoja 'productos' no encontrada. "
+                  f"Hojas: {wb.sheetnames}")
             return {}
 
-        print(f"[EXCEL] Leyendo SOLO la hoja: '{hoja_objetivo}'")
+        print(f"[EXCEL] Leyendo hoja: '{hoja_objetivo}'")
         ws    = wb[hoja_objetivo]
         filas = list(ws.iter_rows(values_only=True))
-        if filas:
+        if not filas:
+            return {}
 
-            # Buscar la fila de encabezado: debe tener "SKU" y alguna con "PASILLO"
-            hdr_idx = None
-            for i, fila in enumerate(filas[:10]):
-                vals = [_norm(c) for c in fila]
-                if "SKU" in vals and any("PASILLO" in v for v in vals):
-                    hdr_idx = i
-                    break
-            if hdr_idx is None:
-                print(f"[EXCEL] ⚠ No se encontró fila de encabezado con SKU + PASILLO "
-                      f"en la hoja 'productos'")
-                return {}
+        # ── Detectar fila de encabezado (busca "SKU" en columna B, índice 1) ──
+        # El Excel tiene encabezados en la fila 1: B=SKU, C=Nombre, D=VERTICAL, E=PASILLOS
+        hdr_idx = 0
+        for i, fila in enumerate(filas[:5]):
+            vals = [str(v).strip().upper() if v is not None else "" for v in fila]
+            # Fila de encabezado: buscar "SKU" en cualquier columna
+            if "SKU" in vals:
+                hdr_idx = i
+                break
 
-            hdr     = [_norm(c) for c in filas[hdr_idx]]
-            col_sku = hdr.index("SKU")
-            col_pas = next(i for i, v in enumerate(hdr) if "PASILLO" in v)
-            col_nom = next((i for i, v in enumerate(hdr)
-                            if "PRODUCTO" in v or "TITULO" in v or "TÍTULO" in v
-                            or "NOMBRE" in v), None)
-            col_id  = col_sku - 1 if col_sku > 0 else None
-            print(f"[EXCEL] Columnas detectadas: SKU={col_sku}, "
-                  f"PASILLO={col_pas}, NOMBRE={col_nom}, ID={col_id}")
+        hdr = [str(v).strip().upper() if v is not None else ""
+               for v in filas[hdr_idx]]
+        print(f"[EXCEL] Encabezados fila {hdr_idx+1}: {hdr}")
 
-            for fila in filas[hdr_idx + 1:]:
-                if not fila:
-                    continue
-                sku_b   = (str(fila[col_sku]).strip()
-                           if col_sku < len(fila) and fila[col_sku] is not None else "")
-                nombre  = (str(fila[col_nom]).strip().replace("\n", " ")
-                           if col_nom is not None and col_nom < len(fila)
-                           and fila[col_nom] is not None else "")
-                pasillo = _limpiar_pasillo(fila[col_pas]) if col_pas < len(fila) else ""
-                item_id = (str(fila[col_id]).strip()
-                           if col_id is not None and col_id < len(fila)
-                           and fila[col_id] is not None else "")
+        # Mapear columnas por nombre (flexible ante reordenamientos)
+        # Si no encuentra por nombre, usa posición fija (B=1, C=2, D=3, E=4)
+        def _col(nombres, default):
+            for nombre in nombres:
+                for i, h in enumerate(hdr):
+                    if nombre in h:
+                        return i
+            return default
 
-                if not nombre or len(nombre) < 2:
-                    continue
-                if _norm(nombre) in ("NOMBRE DEL PRODUCTO", "PRODUCTO", "TITULO", "TÍTULO"):
-                    continue
+        col_sku      = _col(["SKU"],                   1)  # B (índice 1)
+        col_nombre   = _col(["NOMBRE", "PRODUCTO"],    2)  # C (índice 2)
+        col_vertical = _col(["VERTICAL"],              3)  # D (índice 3)
+        col_pasillo  = _col(["PASILLO"],               4)  # E (índice 4)
 
-                entrada    = {"nombre": nombre, "pasillo": pasillo, "estanteria": ""}
-                sku_valido = sku_b and sku_b not in ("-", "·", "None", "")
-                id_limpio  = item_id.replace(".0", "")
-                id_valido  = id_limpio and id_limpio.isdigit()
+        print(f"[EXCEL] Columnas → SKU:{col_sku}, "
+              f"Nombre:{col_nombre}, Vertical:{col_vertical}, "
+              f"Pasillo:{col_pasillo}")
 
-                if sku_valido:
-                    db[sku_b.upper()] = dict(entrada)
-                if id_valido:
-                    db.setdefault(id_limpio.upper(), dict(entrada))
+        n_ok = 0
+        for fila in filas[hdr_idx + 1:]:
+            if not fila or all(v is None for v in fila):
+                continue
+
+            def _cel(idx):
+                return _limpiar(fila[idx]) if idx < len(fila) else ""
+
+            sku      = _cel(col_sku)
+            nombre   = _cel(col_nombre)
+            vertical = _cel(col_vertical)
+            pasillo  = _cel(col_pasillo)
+
+            # Ignorar filas sin SKU ni nombre
+            if not sku and not nombre:
+                continue
+            if sku in ("-", "·", "SKU"):
+                continue
+
+            entrada = {
+                "nombre":   nombre or sku,
+                "vertical": vertical,
+                "pasillo":  pasillo,
+                # compatibilidad: "estanteria" = vertical para código existente
+                "estanteria": vertical,
+            }
+
+            if sku:
+                db[sku.upper()] = entrada
+                n_ok += 1
+
         wb.close()
-    except Exception:
-        pass
+        print(f"[EXCEL] ✅ {n_ok} SKUs cargados de la hoja '{hoja_objetivo}'")
+    except Exception as e:
+        print(f"[EXCEL] Error: {e}")
+        import traceback; traceback.print_exc()
     return db
 
 
@@ -442,6 +456,69 @@ class VentanaConfiguracion(tk.Toplevel):
         lbl_sec("BASE DE PASILLOS")
         lbl_sub("La base de productos y pasillos se actualiza sola desde Google Sheets "
                 "al generar cada lote. Ya no hace falta cargar un Excel acá.")
+
+        # TAMAÑO DEL LOTE
+        sep()
+        lbl_sec("TAMAÑO DEL LOTE DE COLECTA")
+        lbl_sub("Cuántas etiquetas se incluyen en cada lote al hacer 'Generar Lote'.")
+        lbl_sub("Recomendado: mínimo 10, máximo 20 para facilitar la colecta.")
+
+        lote_row = tk.Frame(body, bg=C["bg_dark"])
+        lote_row.pack(fill="x", pady=(10,0))
+
+        # Mínimo
+        col_min = tk.Frame(lote_row, bg=C["bg_dark"])
+        col_min.pack(side="left", fill="x", expand=True, padx=(0,12))
+        tk.Label(col_min, text="Mínimo de etiquetas por lote",
+                 font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
+                 fg=C["text_lo"]).pack(anchor="w")
+        min_wrap = tk.Frame(col_min, bg=C["border"], padx=2, pady=2)
+        min_wrap.pack(fill="x", pady=(4,0))
+        min_in = tk.Frame(min_wrap, bg=C["card"]); min_in.pack(fill="x")
+        self.entry_lote_min = tk.Entry(min_in, font=("Consolas", 14, "bold"),
+            justify="center", bg=C["card"], fg=C["accent"],
+            insertbackground=C["accent"], relief="flat", bd=0)
+        self.entry_lote_min.insert(0, str(config_actual.get("lote_min", 10)))
+        self.entry_lote_min.pack(fill="x", ipady=8, padx=8)
+
+        # Máximo
+        col_max = tk.Frame(lote_row, bg=C["bg_dark"])
+        col_max.pack(side="left", fill="x", expand=True)
+        tk.Label(col_max, text="Máximo de etiquetas por lote",
+                 font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
+                 fg=C["text_lo"]).pack(anchor="w")
+        max_wrap = tk.Frame(col_max, bg=C["border"], padx=2, pady=2)
+        max_wrap.pack(fill="x", pady=(4,0))
+        max_in = tk.Frame(max_wrap, bg=C["card"]); max_in.pack(fill="x")
+        self.entry_lote_max = tk.Entry(max_in, font=("Consolas", 14, "bold"),
+            justify="center", bg=C["card"], fg=C["success"],
+            insertbackground=C["accent"], relief="flat", bd=0)
+        self.entry_lote_max.insert(0, str(config_actual.get("lote_max", 20)))
+        self.entry_lote_max.pack(fill="x", ipady=8, padx=8)
+
+        # Info visual
+        info_lote = tk.Frame(body, bg=C["bg_dark"])
+        info_lote.pack(fill="x", pady=(8,0))
+        tk.Label(info_lote, text="📦",
+                 font=("Segoe UI", 14), bg=C["bg_dark"]).pack(side="left")
+        self.lbl_lote_preview = tk.Label(info_lote,
+            text=f"Lote de {config_actual.get('lote_min',10)} a "
+                 f"{config_actual.get('lote_max',20)} etiquetas por vez",
+            font=("Segoe UI", 9), bg=C["bg_dark"], fg=C["text_mid"])
+        self.lbl_lote_preview.pack(side="left", padx=8)
+
+        # Actualizar preview al cambiar los valores
+        def _actualizar_preview_lote(*_):
+            try:
+                mn = max(1, int(self.entry_lote_min.get() or 10))
+                mx = max(mn, int(self.entry_lote_max.get() or 20))
+                self.lbl_lote_preview.config(
+                    text=f"Lote de {mn} a {mx} etiquetas por vez",
+                    fg=C["accent"])
+            except ValueError:
+                pass
+        self.entry_lote_min.bind("<KeyRelease>", _actualizar_preview_lote)
+        self.entry_lote_max.bind("<KeyRelease>", _actualizar_preview_lote)
 
         # SUPERVISOR
         sep()
@@ -1233,6 +1310,16 @@ class VentanaConfiguracion(tk.Toplevel):
         self._config["impresora"]     = imp
         self._config["servidor_nube"] = nube_url
         self._config["clave_nube"]    = self.entry_clave_nube.get().strip()
+
+        # Guardar tamaño de lote
+        try:
+            lote_min = max(1, int(self.entry_lote_min.get().strip() or "10"))
+            lote_max = max(lote_min, int(self.entry_lote_max.get().strip() or "20"))
+            self._config["lote_min"] = lote_min
+            self._config["lote_max"] = lote_max
+        except ValueError:
+            self._config["lote_min"] = 10
+            self._config["lote_max"] = 20
         
         # Guardar configuración de etiqueta personalizada
         self._config["etiqueta_logo_path"] = self._logo_path  # Ruta del archivo local
@@ -3348,7 +3435,10 @@ class AsistenteDepositoApp:
             "todos":       "Todos los tipos",
         }
         ESTADOS_FINALES = {"shipped","delivered","cancelled","not_delivered"}
-        SUBESTADOS_IMPRESOS = {"printed"}
+        SUBESTADOS_IMPRESOS = {
+            "printed", "ready_for_pickup", "in_packing_list",
+            "in_hub", "shipped", "delivered", "ready_to_ship_wt_route",
+        }
 
         # Tomar SOLO los pedidos de la pestaña activa y pendientes
         todos = list(self._ml_pedidos.values())
@@ -3397,6 +3487,31 @@ class AsistenteDepositoApp:
                 parent=self.root)
             return
 
+        # ── APLICAR LÍMITE DE TAMAÑO DE LOTE (configurado en Settings) ─────
+        lote_min = int(self.config.get("lote_min", 10))
+        lote_max = int(self.config.get("lote_max", 20))
+        total_disponibles = len(pendientes)
+
+        if total_disponibles < lote_min:
+            resp = messagebox.askyesno(
+                "Pocos pedidos para el lote",
+                f"Hay {total_disponibles} pedido(s) pendientes, "
+                f"pero el mínimo configurado es {lote_min}.\n\n"
+                f"¿Querés generar el lote igual con {total_disponibles} pedido(s)?",
+                parent=self.root)
+            if not resp:
+                return
+
+        if total_disponibles > lote_max:
+            pendientes = pendientes[:lote_max]
+            messagebox.showinfo(
+                "Lote limitado",
+                f"Hay {total_disponibles} pedidos disponibles.\n"
+                f"Se incluyeron solo los primeros {lote_max} (máximo configurado).\n\n"
+                f"Al terminar este lote, generá otro para los restantes "
+                f"{total_disponibles - lote_max} pedidos.",
+                parent=self.root)
+
         # Consolidar SKUs de los pedidos filtrados
         total_req  = {}
         sku_nombre = {}
@@ -3430,10 +3545,11 @@ class AsistenteDepositoApp:
                 parent=self.root)
             return
 
-        # Enriquecer: NOMBRE de MercadoLibre (sku_nombre), pasillo/estante del Excel.
-        # El Excel se usa SOLO para ubicación (pasillo/estantería), como se pidió.
-        grupos_dict = {}
-        SIN_PASILLO = "Sin ubicacion en BD"
+        # Enriquecer: NOMBRE de MercadoLibre (sku_nombre), vertical/pasillo del Excel.
+        # El Excel se usa SOLO para ubicación. B=SKU, C=Nombre, D=Vertical, E=Pasillo
+        SIN_UBICACION = "Sin ubicacion en BD"
+        grupos_dict = {}   # clave: (vertical, pasillo) → lista de items
+
         for sku, qty in sorted(total_req.items()):
             info = self.db_nombres.get(sku, {})
             # Nombre: SIEMPRE preferir el de MercadoLibre; Excel solo como respaldo
@@ -3441,36 +3557,55 @@ class AsistenteDepositoApp:
             if isinstance(info, dict):
                 if not sku_nombre.get(sku):
                     nombre = info.get("nombre", "") or sku
-                pasillo    = info.get("pasillo", "") or SIN_PASILLO
-                estanteria = info.get("estanteria", "")
+                vertical  = info.get("vertical", "")  or SIN_UBICACION
+                pasillo   = info.get("pasillo", "")   or "Sin pasillo"
             else:
-                pasillo    = SIN_PASILLO
-                estanteria = ""
-            grupos_dict.setdefault(pasillo, []).append({
-                "sku": sku, "nombre": nombre, "req": qty,
-                "pasillo": pasillo, "estanteria": estanteria,
-                "item_id": sku_item_id.get(sku, "")  # item_id de MercadoLibre
+                vertical  = SIN_UBICACION
+                pasillo   = "Sin pasillo"
+
+            clave = (vertical, pasillo)
+            grupos_dict.setdefault(clave, []).append({
+                "sku":       sku,
+                "nombre":    nombre,
+                "req":       qty,
+                "vertical":  vertical,
+                "pasillo":   pasillo,
+                "estanteria": vertical,   # compatibilidad con código que usa estanteria
+                "item_id":   sku_item_id.get(sku, "")
             })
 
-        def _orden_pas(n):
-            import re as _re
-            m = _re.search(r'(\d+)', n)
-            return (0, int(m.group(1)), n) if m else (1, 0, n)
-
-        grupos = [{"pasillo": k, "items": v}
-                  for k, v in sorted(grupos_dict.items(),
-                                     key=lambda x: _orden_pas(x[0]))]
+        # Ordenar grupos: primero por vertical alfabético, luego por pasillo alfabético
+        grupos = []
+        for (vertical, pasillo), items in sorted(grupos_dict.items(),
+                                                  key=lambda x: (x[0][0].upper(),
+                                                                  x[0][1].upper())):
+            # Título del grupo = "VERTICAL · Pasillo" o solo vertical si no hay pasillo
+            if pasillo and pasillo != "Sin pasillo":
+                titulo = f"{vertical}  ·  {pasillo}"
+            else:
+                titulo = vertical
+            grupos.append({
+                "pasillo":  titulo,   # usado en Fase 1 como encabezado del grupo
+                "vertical": vertical,
+                "items":    items,
+            })
 
         total_skus = len(total_req)
         total_uds  = sum(total_req.values())
         sin_bd     = sum(1 for sku in total_req if sku not in self.db_nombres)
 
-        # Confirmar con el usuario mostrando de qué pestaña viene el lote
+        # Resumir verticales para el mensaje
+        verticales = sorted({g["vertical"] for g in grupos if g["vertical"] != SIN_UBICACION})
+        v_txt = ", ".join(verticales[:3])
+        if len(verticales) > 3:
+            v_txt += f" (+{len(verticales)-3} más)"
+
         msg = (f"Lote de picking — {nombre_tab}\n\n"
                f"  • {len(pendientes)} pedido(s) pendientes\n"
                f"  • {total_skus} SKUs distintos\n"
                f"  • {total_uds} unidades en total\n"
-               f"  • {len(grupos)} pasillo(s)")
+               f"  • {len(grupos)} grupo(s) — {len(verticales)} vertical(es)\n"
+               f"  • Verticales: {v_txt or '(sin ubicación)'}")
         if sin_bd > 0:
             msg += (f"\n\n⚠  {sin_bd} SKUs sin ubicacion en la BD.\n"
                     f"Apareceran en 'Sin ubicacion en BD'.")
