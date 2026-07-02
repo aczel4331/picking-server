@@ -53,139 +53,21 @@ def cargar_config():
 
 
 def _limpiar_nombre_pasillo(sheet_name):
-    """Extrae un nombre corto de pasillo desde el nombre de la hoja."""
-    s = sheet_name.strip()
-    # Normalizar: quitar espacios extra
-    s = re.sub(r'\s+', ' ', s)
-    # Si dice PASILLO N algo → "Pasillo N · Algo"
-    m = re.match(r'PASILLO\s+(\d+)\s*[-–]?\s*(.*)', s, re.IGNORECASE)
-    if m:
-        num   = m.group(1)
-        resto = m.group(2).strip().title() if m.group(2).strip() else ""
-        return f"Pasillo {num}" + (f" · {resto}" if resto else "")
-    # Otros nombres especiales
-    upper = s.upper()
-    if "MOPA" in upper:
-        return "Stock Mopa"
-    if "MASCOTA" in upper:
-        return "Pasillo 7 · Mascotas"
-    if "PISO" in upper or "CLIMA" in upper:
-        return "Piso · Climatización"
-    if "BOMBA" in upper:
-        return "Stock Bomba"
-    if "CHIQUITAJE" in upper:
-        return "Stock Chiquitaje"
-    if "ODOO" in upper:
-        return ""   # hoja interna, sin pasillo visible
-    if "PALLET" in upper:
-        return "Pallets"
-    return s.title()
+    """Legado — ya no se usa. Se mantiene para compatibilidad."""
+    return sheet_name.strip().title()
 
 
 def leer_excel_skus(ruta):
     """
-    Lee todas las hojas del Excel y devuelve un dict:
-        { SKU_UPPER: {"nombre": str, "pasillo": str, "estanteria": str} }
+    Lee el Excel de productos. SOLO lee la hoja 'productos'.
+    Redirige a leer_planilla_pasillos_google() que es la función correcta.
+
+    ANTES: leía TODAS las hojas y usaba el nombre de la hoja como pasillo
+           (causaba "HOJA 7" en la interfaz).
+    AHORA: lee SOLO hoja 'productos', columnas B=SKU, C=Nombre, D=Vertical, E=Pasillo.
     """
-    if not _OPENPYXL_OK or not ruta or not os.path.exists(ruta):
-        return {}
-    db = {}
-    try:
-        wb = openpyxl.load_workbook(ruta, read_only=True, data_only=True)
-        for sheet_name in wb.sheetnames:
-            ws      = wb[sheet_name]
-            rows    = list(ws.iter_rows(values_only=True))
-            pasillo = _limpiar_nombre_pasillo(sheet_name)
-            if not rows:
-                continue
+    return leer_planilla_pasillos_google(ruta)
 
-            # ── Hoja ODOO: nombre(A) | ref_interna(B) — sin estantería ────────
-            if "ODOO" in sheet_name.upper():
-                for fila in rows:
-                    if len(fila) < 2:
-                        continue
-                    nombre_raw, ref_raw = fila[0], fila[1]
-                    if not nombre_raw or not ref_raw:
-                        continue
-                    nombre = str(nombre_raw).strip()
-                    sku    = str(ref_raw).strip().upper()
-                    if sku and nombre and sku not in ("REFERENCIA INTERNA", "SKU", "COD"):
-                        db.setdefault(sku, {"nombre": nombre, "pasillo": "", "estanteria": ""})
-                continue
-
-            # ── Detectar layout de la hoja ────────────────────────────────────
-            # Pasillo 1: col0=estanteria, col1=producto, col2=SKU  (3 cols)
-            # Pasillo 2+: col0=producto, col1=SKU               (2 cols)
-            ncols = max((len(r) for r in rows[:10] if r), default=0)
-
-            col_est  = None
-            col_prod = None
-            col_sku  = None
-
-            for fila in rows[:15]:
-                vals = [str(v).strip().upper() if v else "" for v in fila]
-                if "PRODUCTO" in vals and "SKU" in vals:
-                    col_prod = vals.index("PRODUCTO")
-                    col_sku  = vals.index("SKU")
-                    # Si hay una columna antes de PRODUCTO, es estantería
-                    if col_prod > 0:
-                        col_est = col_prod - 1
-                    break
-                for i, v in enumerate(vals):
-                    if "COD Y DESCRIPCION" in v:
-                        col_prod = i
-                        col_sku  = None
-                        break
-                if col_prod is not None:
-                    break
-
-            if col_prod is None:
-                if ncols >= 3:
-                    col_est, col_prod, col_sku = 0, 1, 2
-                elif ncols == 2:
-                    col_prod, col_sku = 0, 1
-                else:
-                    continue
-
-            # ── Iterar filas de datos ─────────────────────────────────────────
-            estanteria_actual = ""
-            for fila in rows:
-                if not fila or all(v is None for v in fila):
-                    continue
-
-                # Detectar fila de sección de estantería (col0 = "Estantería X")
-                if col_est is not None and col_est < len(fila) and fila[col_est]:
-                    val_est = str(fila[col_est]).strip().replace("\n", " ")
-                    if val_est and "PASILLO" not in val_est.upper():
-                        estanteria_actual = val_est
-
-                nombre_raw = fila[col_prod] if col_prod < len(fila) else None
-                sku_raw    = fila[col_sku]  if col_sku is not None and col_sku < len(fila) else None
-
-                if not nombre_raw or not sku_raw:
-                    continue
-                nombre = str(nombre_raw).strip().replace("\n", " ")
-                sku    = str(sku_raw).strip().upper()
-
-                # Saltar encabezados
-                if sku  in ("SKU", "PRODUCTO", "COD", "CÓDIGO", "CODIGO", ""):
-                    continue
-                if nombre.upper() in ("PRODUCTO", "SKU", ""):
-                    continue
-                if len(nombre) < 2:
-                    continue
-
-                if sku not in db:
-                    db[sku] = {
-                        "nombre":     nombre,
-                        "pasillo":    pasillo,
-                        "estanteria": estanteria_actual,
-                    }
-
-        wb.close()
-    except Exception:
-        pass
-    return db
 
 def leer_planilla_pasillos_google(ruta):
     """
@@ -3619,6 +3501,11 @@ class AsistenteDepositoApp:
         # Guardar mapeo sku -> nombre de MercadoLibre (para mostrarlo en la lista)
         self.sku_nombre_ml = dict(sku_nombre)
         
+        # Canal del lote: flex o colecta — permite lotes paralelos en el servidor
+        # "todos" se mapea a "default" porque puede tener mezcla
+        self._canal_lote_activo = tipo_activo if tipo_activo in ("flex","colecta") else "default"
+        print(f"[LOTE] Canal activo: {self._canal_lote_activo} (tab: {tipo_activo})")
+
         # Construir pedidos internos para Fase 1 y Fase 2
         self.pedidos.clear()
         for idx, ped in enumerate(pendientes, start=1):
@@ -6653,6 +6540,8 @@ try {{
             "total_skus": len(total_req),
             "total_uds": sum(total_req.values()),
             "pedidos": pedidos_payload,
+            # Canal: flex o colecta — permite lotes paralelos en el servidor
+            "canal": getattr(self, "_canal_lote_activo", "default"),
         }
 
     def _subir_a_nube_async(self):

@@ -175,6 +175,21 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   </div>
 </div>
 
+<!-- SELECTOR DE CANAL — Flex o Colecta -->
+<div id="canal-selector" style="display:flex;gap:0;background:var(--bg);
+     padding:8px 12px;border-bottom:2px solid var(--border)">
+  <button class="canal-btn canal-active" id="btn-canal-flex"
+          onclick="setCanal('flex')"
+          style="flex:1;padding:10px;border:2px solid #7C3AED;background:#7C3AED;
+          color:#fff;font-weight:800;font-size:15px;border-radius:10px 0 0 10px;
+          cursor:pointer">⚡ FLEX</button>
+  <button class="canal-btn" id="btn-canal-colecta"
+          onclick="setCanal('colecta')"
+          style="flex:1;padding:10px;border:2px solid #2563EB;background:var(--card);
+          color:#2563EB;font-weight:800;font-size:15px;border-radius:0 10px 10px 0;
+          cursor:pointer">🚚 COLECTA</button>
+</div>
+
 <!-- BANNER COMPLETADO -->
 <div id="ban">🎉 ¡COLECTA COMPLETA! Avisá al supervisor.</div>
 
@@ -268,6 +283,34 @@ const $ = id => document.getElementById(id);
 let E = null, last = null;
 let _guiaActual = null;   // SKU que se está buscando ahora
 let _vozActiva  = true;   // TTS habilitado
+
+// ── CANAL ACTIVO (flex o colecta) ────────────────────────────────────────────
+// Cada trabajador elige su canal al abrir la app. Los lotes son independientes.
+let _canalActivo = localStorage.getItem('canal_picking') || 'flex';
+
+function setCanal(canal) {
+  _canalActivo = canal;
+  localStorage.setItem('canal_picking', canal);
+  // Actualizar botones
+  const btnF = $('btn-canal-flex');
+  const btnC = $('btn-canal-colecta');
+  if (canal === 'flex') {
+    btnF.style.background = '#7C3AED'; btnF.style.color = '#fff';
+    btnC.style.background = 'var(--card)'; btnC.style.color = '#2563EB';
+    $('t-sub').textContent = 'Colecta FLEX';
+  } else {
+    btnC.style.background = '#2563EB'; btnC.style.color = '#fff';
+    btnF.style.background = 'var(--card)'; btnF.style.color = '#7C3AED';
+    $('t-sub').textContent = 'Colecta en depósito';
+  }
+  // Recargar datos del canal elegido
+  load();
+}
+
+// Inicializar visual del canal guardado al cargar
+document.addEventListener('DOMContentLoaded', () => {
+  setCanal(_canalActivo);
+});
 
 // ── IMAGEN DEL PRODUCTO ────────────────────────────────────────────────────────
 // ── IMÁGENES DE PRODUCTO (miniaturas + lightbox) ────────────────────────────
@@ -452,10 +495,10 @@ function actualizarGuia(anunciar = false) {
 // ── CARGA ──────────────────────────────────────────────────────────────────
 async function load() {
   try {
-    const r = await fetch('/api/estado');
+    const r = await fetch('/api/estado?canal=' + _canalActivo);
     if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
     E = await r.json();
-    console.log('[MOVIL] cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
+    console.log('[MOVIL] canal='+_canalActivo+' cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
     render();
   } catch(e) {
     console.error('[MOVIL] load error:', e);
@@ -465,7 +508,7 @@ async function load() {
 
 async function loadQ() {
   try {
-    const r = await fetch('/api/estado');
+    const r = await fetch('/api/estado?canal=' + _canalActivo);
     if (!r.ok) return;
     E = await r.json();
     render(true);
@@ -582,7 +625,7 @@ async function scan(raw) {
     const r = await fetch('/api/escanear', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ sku })
+      body:    JSON.stringify({ sku, canal: _canalActivo })
     });
     const d = await r.json();
 

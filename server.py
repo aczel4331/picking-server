@@ -113,14 +113,33 @@ _cuentas        = {}
 _tokens         = {}
 _cuenta_activa  = "cuenta_0"
 _pedidos_ml     = {}
-_estado = {
-    "fase": 1, "grupos": [], "colecta": {}, "colecta_completa": False,
-    "total_skus": 0, "total_uds": 0, "ultima_actualizacion": "", "cargado": False,
-    # Fase 2: pedidos del lote { order_id: {comprador, shipping_id, items:[{sku,req}], _cuenta} }
-    "pedidos": {},
-    # order_ids cuya etiqueta ya fue marcada como impresa en esta sesion de fase 2
-    "etiquetas_impresas": [],
+def _estado_vacio():
+    """Crea un estado de lote vacío."""
+    return {
+        "fase": 1, "grupos": [], "colecta": {}, "colecta_completa": False,
+        "total_skus": 0, "total_uds": 0, "ultima_actualizacion": "", "cargado": False,
+        "pedidos": {},
+        "etiquetas_impresas": [],
+    }
+
+# Estado por CANAL — cada canal (flex, colecta) tiene su propio lote independiente
+_estados_canal = {
+    "flex":    _estado_vacio(),
+    "colecta": _estado_vacio(),
 }
+# _estado legacy = alias al primer canal que se use (retrocompatibilidad)
+_estado = _estados_canal["colecta"]
+
+
+def _get_estado(canal=None):
+    """Devuelve el dict de estado para un canal dado.
+    Si el canal no existe, lo crea automáticamente."""
+    if not canal or canal == "default":
+        return _estado
+    canal = canal.lower().strip()
+    if canal not in _estados_canal:
+        _estados_canal[canal] = _estado_vacio()
+    return _estados_canal[canal]
 _colectores          = {}
 # Cache de etiquetas PDF: { order_id: { pdf: bytes, ts: str, shipping_id: str } }
 _etiquetas_cache     = {}
@@ -1687,7 +1706,11 @@ def _api_etiqueta_impl(order_id):
     with _lock:
         cached    = _etiquetas_cache.get(order_id)
         snap      = dict(_pedidos_ml)
-        snap_lote = dict(_estado.get("pedidos", {}))   # pedidos del lote actual
+        # Buscar pedidos en TODOS los canales (flex + colecta)
+        snap_lote = {}
+        for canal_name, canal_est in _estados_canal.items():
+            for k, v in canal_est.get("pedidos", {}).items():
+                snap_lote[k] = v
 
     if cached and cached.get("pdf"):
         print(f"[ETIQUETA] Sirviendo desde cache para {order_id}")
@@ -2285,7 +2308,10 @@ def ping():
         "ok":          True,
         "version":     SERVER_VERSION,
         "ts":          _ts(),
-        "cargado":     _estado["cargado"],
+        "cargado":     any(e.get("cargado") for e in _estados_canal.values()),
+        "canales":     {c: {"cargado": e.get("cargado",False),
+                            "skus": e.get("total_skus",0)}
+                        for c, e in _estados_canal.items()},
         "skus":        len(_sku_db),
         "autenticado": bool(_cuentas),
         "cuentas":     [t.get("nickname","?") for t in _cuentas.values()],
@@ -2454,9 +2480,11 @@ def subir_estado():
     data = request.get_json(force=True)
     if not data or "grupos" not in data:
         return jsonify({"ok": False, "msg": "Datos inválidos"}), 400
+    canal = data.get("canal", "default")
+    est   = _get_estado(canal)
     with _lock:
         nueva_fase = data.get("fase", 1)
-        _estado.update({
+        est.update({
             "fase":             nueva_fase,
             "grupos":           data.get("grupos", []),
             "total_skus":       data.get("total_skus", 0),
@@ -2465,53 +2493,51 @@ def subir_estado():
             "colecta_completa": data.get("colecta_completa", False),
             "ultima_actualizacion": _ts(),
             "cargado":          True,
+            "canal":            canal,
         })
-        # Guardar pedidos del lote si vienen (para Fase 2 — impresion por pedido)
         if "pedidos" in data and isinstance(data["pedidos"], dict):
-            _estado["pedidos"] = data["pedidos"]
-        # Si es un lote nuevo (fase 1 desde cero), resetear etiquetas impresas
+            est["pedidos"] = data["pedidos"]
         if nueva_fase == 1 and not data.get("colecta"):
-            _estado["etiquetas_impresas"] = []
-    # Persistir en /tmp para sobrevivir reinicios de Railway
+            est["etiquetas_impresas"] = []
+    # Persistir
     try:
         import json as _j
         with open(LOTE_PATH, "w") as f:
-            _j.dump(dict(_estado), f)
+            _j.dump({"canales": _estados_canal}, f, default=str)
     except Exception as e:
-        print(f"[LOTE] Error persistiendo estado: {e}")
-    return jsonify({"ok": True, "msg": f"Estado cargado: {_estado['total_skus']} SKUs"})
+        print(f"[LOTE] Error persistiendo: {e}")
+    print(f"[LOTE] Canal '{canal}' cargado: {est['total_skus']} SKUs, fase {nueva_fase}")
+    return jsonify({"ok": True, "canal": canal,
+                    "msg": f"Canal '{canal}': {est['total_skus']} SKUs"})
 
 
 @app.route("/api/estado")
 def get_estado():
-    """Estado del lote para la app móvil."""
+    """Estado del lote para la app móvil. Acepta ?canal=flex o ?canal=colecta."""
+    canal = request.args.get("canal", "default")
+    est   = _get_estado(canal)
     with _lock:
-        estado = dict(_estado)
-    # Asegurar que cargado sea boolean, no string
+        estado = dict(est)
     estado["cargado"] = bool(estado.get("cargado", False))
+    estado["canal"]   = canal
+    # Incluir lista de canales disponibles con info básica
+    estado["canales_disponibles"] = {
+        c: {"cargado": e.get("cargado", False),
+            "total_skus": e.get("total_skus", 0),
+            "fase": e.get("fase", 1)}
+        for c, e in _estados_canal.items()
+    }
     return jsonify(estado)
 
 
-def _pedidos_completos_segun_colecta():
+def _pedidos_completos_segun_colecta(canal="default"):
     """
     Calcula que pedidos del lote estan completos segun la colecta actual.
-
-    Criterio correcto para deposito con pedidos individuales:
-    la colecta global de cada SKU se REPARTE entre los pedidos que lo necesitan,
-    en orden. Un pedido esta completo cuando para CADA uno de sus SKUs hay
-    stock colectado suficiente asignado a el.
-
-    Ejemplo: 3 clientes piden SKU "6104" (1 c/u). req_total = 3.
-      - Colecta 1 unidad → pedido #1 listo (los otros 2 esperan)
-      - Colecta 2 unidades → pedidos #1 y #2 listos
-      - Colecta 3 unidades → los 3 listos
-
-    Devuelve lista de dicts:
-      [{order_id, comprador, shipping_id, _cuenta, items, recien_completado}]
     """
-    pedidos = _estado.get("pedidos", {})
-    colecta = dict(_estado.get("colecta", {}))  # copia para ir descontando
-    impresas = set(_estado.get("etiquetas_impresas", []))
+    est     = _get_estado(canal)
+    pedidos = est.get("pedidos", {})
+    colecta = dict(est.get("colecta", {}))
+    impresas = set(est.get("etiquetas_impresas", []))
 
     # Stock disponible por SKU (lo que se colecto)
     disponible = {}
@@ -2557,14 +2583,15 @@ def _pedidos_completos_segun_colecta():
 @app.route("/api/fase2/pedidos-completos", methods=["GET"])
 def fase2_pedidos_completos():
     """
-    Devuelve los pedidos completos segun la colecta y cuales son nuevos
-    (para imprimir su etiqueta automaticamente).
+    Devuelve los pedidos completos segun la colecta y cuales son nuevos.
     La app desktop hace polling aqui durante la Fase 2.
     """
+    canal = request.args.get("canal", "default")
+    est   = _get_estado(canal)
     with _lock:
-        completos = _pedidos_completos_segun_colecta()
-        fase = _estado.get("fase", 1)
-        impresas = list(_estado.get("etiquetas_impresas", []))
+        completos = _pedidos_completos_segun_colecta(canal)
+        fase = est.get("fase", 1)
+        impresas = list(est.get("etiquetas_impresas", []))
     return jsonify({
         "ok": True,
         "fase": fase,
@@ -2576,9 +2603,12 @@ def fase2_pedidos_completos():
 @app.route("/api/fase2/marcar-impresa/<order_id>", methods=["POST"])
 def fase2_marcar_impresa(order_id):
     """Marca un pedido como ya impreso en Fase 2 para no reimprimir."""
+    data  = request.get_json(silent=True) or {}
+    canal = data.get("canal", request.args.get("canal", "default"))
+    est   = _get_estado(canal)
     with _lock:
-        if order_id not in _estado.get("etiquetas_impresas", []):
-            _estado.setdefault("etiquetas_impresas", []).append(order_id)
+        if order_id not in est.get("etiquetas_impresas", []):
+            est.setdefault("etiquetas_impresas", []).append(order_id)
         # Tambien marcar el pedido ML como impreso si existe
         if order_id in _pedidos_ml:
             _pedidos_ml[order_id]["impreso"] = True
@@ -2593,15 +2623,17 @@ def fase2_marcar_impresa(order_id):
 
 @app.route("/api/escanear", methods=["POST"])
 def escanear():
-    data = request.get_json(force=True)
-    sku  = str(data.get("sku","")).strip().upper()
+    data  = request.get_json(force=True)
+    sku   = str(data.get("sku","")).strip().upper()
+    canal = data.get("canal", "default")
+    est   = _get_estado(canal)
     if not sku:
         return jsonify({"ok": False, "msg": "SKU vacío"})
     with _lock:
-        if not _estado["cargado"]:
-            return jsonify({"ok": False, "msg": "No hay lote cargado"})
-        colecta  = _estado["colecta"]
-        sku_info = next((it for g in _estado["grupos"]
+        if not est["cargado"]:
+            return jsonify({"ok": False, "msg": f"No hay lote cargado en canal '{canal}'"})
+        colecta  = est["colecta"]
+        sku_info = next((it for g in est["grupos"]
                          for it in g.get("items",[]) if it["sku"]==sku), None)
         if not sku_info:
             return jsonify({"ok": False, "tipo": "no_encontrado",
@@ -2613,20 +2645,19 @@ def escanear():
                             "msg": f"'{sku}' ya completo ({req}/{req})",
                             "collected": col, "req": req})
         colecta[sku] = col + 1
-        _estado["ultima_actualizacion"] = _ts()
+        est["ultima_actualizacion"] = _ts()
         todo = all(colecta.get(it["sku"],0) >= it["req"]
-                   for g in _estado["grupos"] for it in g["items"])
-        _estado["colecta_completa"] = todo
-        # Si se completo toda la colecta → pasar automaticamente a Fase 2
-        if todo and _estado.get("fase", 1) == 1:
-            _estado["fase"] = 2
-            print("[FASE] Colecta completa → pasando a Fase 2 automaticamente")
+                   for g in est["grupos"] for it in g["items"])
+        est["colecta_completa"] = todo
+        if todo and est.get("fase", 1) == 1:
+            est["fase"] = 2
+            print(f"[FASE] Canal '{canal}': Colecta completa → Fase 2")
         nuevo = colecta[sku]
-    # Persistir colecta actualizada
+    # Persistir
     try:
         import json as _j
         with open(LOTE_PATH, "w") as f:
-            _j.dump(dict(_estado), f)
+            _j.dump({"canales": _estados_canal}, f, default=str)
     except Exception:
         pass
     return jsonify({"ok": True,
@@ -2642,15 +2673,17 @@ def escanear():
 
 @app.route("/api/reset_sku", methods=["POST"])
 def reset_sku():
-    data = request.get_json(force=True)
-    sku  = str(data.get("sku","")).strip().upper()
+    data  = request.get_json(force=True)
+    sku   = str(data.get("sku","")).strip().upper()
+    canal = data.get("canal", "default")
+    est   = _get_estado(canal)
     with _lock:
-        col = _estado["colecta"]
+        col = est["colecta"]
         if sku in col and col[sku] > 0:
             col[sku] -= 1
             if col[sku] == 0: del col[sku]
-            _estado["colecta_completa"] = False
-            _estado["ultima_actualizacion"] = _ts()
+            est["colecta_completa"] = False
+            est["ultima_actualizacion"] = _ts()
             return jsonify({"ok": True, "msg": f"Deshecho: {sku}"})
     return jsonify({"ok": False, "msg": "Nada que deshacer"})
 
@@ -3075,9 +3108,18 @@ def _startup():
         import json as _j
         with open(LOTE_PATH) as f:
             data = _j.load(f)
-        if data.get("cargado") and data.get("grupos"):
+        # Nuevo formato multi-canal: {"canales": {"flex": {...}, "colecta": {...}}}
+        if "canales" in data:
+            for canal, est_data in data["canales"].items():
+                if est_data.get("cargado") and est_data.get("grupos"):
+                    _estados_canal[canal] = est_data
+                    print(f"[STARTUP] ✅ Canal '{canal}' restaurado: "
+                          f"{est_data.get('total_skus',0)} SKUs")
+        # Formato viejo (un solo lote): migrar a canal "default"
+        elif data.get("cargado") and data.get("grupos"):
+            _estados_canal["default"] = data
             _estado.update(data)
-            print(f"[STARTUP] ✅ Lote restaurado: {data.get('total_skus',0)} SKUs")
+            print(f"[STARTUP] ✅ Lote legacy restaurado: {data.get('total_skus',0)} SKUs")
     except FileNotFoundError:
         pass
     except Exception as e:
