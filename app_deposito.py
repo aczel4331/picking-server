@@ -73,75 +73,103 @@ def leer_planilla_pasillos_google(ruta):
     """
     Lee la hoja 'productos' del Excel de Google Sheets.
 
-    Estructura esperada según columnas FIJAS:
+    Columnas FIJAS según el Excel de Everest:
+        A = (ignorar - numeración interna)
         B = SKU
         C = Nombre del producto
         D = VERTICAL
         E = PASILLOS
 
-    Devuelve { SKU_UPPER: {"nombre", "vertical", "pasillo"} }
+    Devuelve { SKU_UPPER: {"nombre", "vertical", "pasillo", "estanteria"} }
+
+    El SKU se normaliza (sin espacios, sin .0 decimal) para que el match
+    con los SKUs que vienen de MercadoLibre sea siempre exacto.
     """
     if not _OPENPYXL_OK or not ruta or not os.path.exists(ruta):
         return {}
 
     def _limpiar(v):
+        """Limpia un valor de celda → string limpio o vacío."""
         if v is None:
             return ""
-        s = re.sub(r"\s+", " ", str(v).replace("\t"," ").replace("\n"," ")).strip()
-        return "" if s in ("·", "-", "NONE", "None", "") else s
+        s = str(v).replace("\t", " ").replace("\n", " ").replace("\r", "")
+        s = re.sub(r"\s+", " ", s).strip()
+        return "" if s.upper() in ("NONE", "N/A", "-", "·", "") else s
+
+    def _normalizar_sku(v):
+        """
+        Normaliza un SKU para comparación robusta:
+        - Elimina espacios
+        - Elimina sufijo .0 (Excel a veces convierte 1234 → 1234.0)
+        - Convierte a MAYÚSCULAS
+        """
+        if v is None:
+            return ""
+        s = str(v).strip()
+        # Quitar .0 decimal si es un número
+        if s.endswith(".0") and s[:-2].isdigit():
+            s = s[:-2]
+        # Quitar espacios y convertir a mayúsculas
+        return re.sub(r"\s+", "", s).upper()
 
     db = {}
     try:
-        wb = openpyxl.load_workbook(ruta, data_only=True)
+        # ── 1. Cargar Excel solo la hoja "productos" ──────────────────────────
+        wb = openpyxl.load_workbook(ruta, data_only=True, read_only=False)
 
-        # Buscar hoja "productos" (case-insensitive)
         hoja_objetivo = next(
             (n for n in wb.sheetnames if n.strip().lower() == "productos"), None)
 
         if not hoja_objetivo:
-            print(f"[EXCEL] ⚠ Hoja 'productos' no encontrada. "
-                  f"Hojas: {wb.sheetnames}")
+            # Log útil: mostrar todas las hojas para que el usuario sepa
+            print(f"[EXCEL] ❌ Hoja 'productos' NO encontrada.")
+            print(f"[EXCEL]    Hojas disponibles: {wb.sheetnames}")
+            print(f"[EXCEL]    Asegurate que la hoja se llame exactamente 'productos'")
             return {}
 
-        print(f"[EXCEL] Leyendo hoja: '{hoja_objetivo}'")
         ws    = wb[hoja_objetivo]
         filas = list(ws.iter_rows(values_only=True))
         if not filas:
+            print("[EXCEL] ❌ Hoja 'productos' está vacía")
             return {}
 
-        # ── Detectar fila de encabezado (busca "SKU" en columna B, índice 1) ──
-        # El Excel tiene encabezados en la fila 1: B=SKU, C=Nombre, D=VERTICAL, E=PASILLOS
+        # ── 2. Detectar fila de encabezado ───────────────────────────────────
+        # Busca la primera fila que tenga "SKU" en alguna celda (primeras 5 filas)
         hdr_idx = 0
         for i, fila in enumerate(filas[:5]):
             vals = [str(v).strip().upper() if v is not None else "" for v in fila]
-            # Fila de encabezado: buscar "SKU" en cualquier columna
             if "SKU" in vals:
                 hdr_idx = i
+                print(f"[EXCEL] Encabezados encontrados en fila {i+1}: {vals}")
                 break
 
         hdr = [str(v).strip().upper() if v is not None else ""
                for v in filas[hdr_idx]]
-        print(f"[EXCEL] Encabezados fila {hdr_idx+1}: {hdr}")
 
-        # Mapear columnas por nombre (flexible ante reordenamientos)
-        # Si no encuentra por nombre, usa posición fija (B=1, C=2, D=3, E=4)
-        def _col(nombres, default):
-            for nombre in nombres:
+        # ── 3. Mapear columnas ────────────────────────────────────────────────
+        # Estrategia: buscar por nombre de encabezado, si no usa posición fija
+        # Posiciones fijas del Excel de Everest: A=0, B=1(SKU), C=2(Nombre), D=3(Vert), E=4(Pas)
+        def _col(buscar, default_idx):
+            for keyword in buscar:
                 for i, h in enumerate(hdr):
-                    if nombre in h:
+                    if keyword in h:
                         return i
-            return default
+            return default_idx
 
-        col_sku      = _col(["SKU"],                   1)  # B (índice 1)
-        col_nombre   = _col(["NOMBRE", "PRODUCTO"],    2)  # C (índice 2)
-        col_vertical = _col(["VERTICAL"],              3)  # D (índice 3)
-        col_pasillo  = _col(["PASILLO"],               4)  # E (índice 4)
+        col_sku      = _col(["SKU"],                        1)  # B
+        col_nombre   = _col(["NOMBRE", "PRODUCTO", "TITLE"], 2)  # C
+        col_vertical = _col(["VERTICAL"],                   3)  # D
+        col_pasillo  = _col(["PASILLO"],                    4)  # E
 
-        print(f"[EXCEL] Columnas → SKU:{col_sku}, "
-              f"Nombre:{col_nombre}, Vertical:{col_vertical}, "
-              f"Pasillo:{col_pasillo}")
+        print(f"[EXCEL] Columnas mapeadas → "
+              f"SKU={col_sku}(col {chr(65+col_sku)}), "
+              f"Nombre={col_nombre}(col {chr(65+col_nombre)}), "
+              f"Vertical={col_vertical}(col {chr(65+col_vertical)}), "
+              f"Pasillo={col_pasillo}(col {chr(65+col_pasillo)})")
 
+        # ── 4. Leer filas de datos ────────────────────────────────────────────
         n_ok = 0
+        n_sin_sku = 0
         for fila in filas[hdr_idx + 1:]:
             if not fila or all(v is None for v in fila):
                 continue
@@ -149,34 +177,55 @@ def leer_planilla_pasillos_google(ruta):
             def _cel(idx):
                 return _limpiar(fila[idx]) if idx < len(fila) else ""
 
-            sku      = _cel(col_sku)
+            sku_raw  = _cel(col_sku)
             nombre   = _cel(col_nombre)
             vertical = _cel(col_vertical)
             pasillo  = _cel(col_pasillo)
 
-            # Ignorar filas sin SKU ni nombre
-            if not sku and not nombre:
-                continue
-            if sku in ("-", "·", "SKU"):
+            # Saltear filas de encabezado repetido o sin datos útiles
+            if sku_raw.upper() in ("SKU", "COD", "CÓDIGO", "CODIGO", ""):
+                if not nombre:
+                    continue
+
+            sku_norm = _normalizar_sku(sku_raw)
+
+            if not sku_norm:
+                n_sin_sku += 1
                 continue
 
             entrada = {
-                "nombre":   nombre or sku,
-                "vertical": vertical,
-                "pasillo":  pasillo,
-                # compatibilidad: "estanteria" = vertical para código existente
-                "estanteria": vertical,
+                "nombre":     nombre or sku_norm,
+                "vertical":   vertical,
+                "pasillo":    pasillo,
+                "estanteria": vertical,  # compatibilidad: estanteria = vertical
             }
 
-            if sku:
-                db[sku.upper()] = entrada
-                n_ok += 1
+            # Guardar con SKU normalizado (sin espacios, sin .0, en mayúsculas)
+            db[sku_norm] = entrada
+
+            # También guardar variantes del SKU por si ML lo manda diferente:
+            # - Con espacios si el original los tiene: "MOR 0018" → también "MOR0018"
+            # - El original sin normalizar (por si algún código tiene espacios intencionales)
+            sku_orig_upper = sku_raw.strip().upper()
+            if sku_orig_upper != sku_norm:
+                db[sku_orig_upper] = entrada
+
+            n_ok += 1
 
         wb.close()
-        print(f"[EXCEL] ✅ {n_ok} SKUs cargados de la hoja '{hoja_objetivo}'")
+        print(f"[EXCEL] ✅ {n_ok} SKUs cargados de '{hoja_objetivo}' "
+              f"({n_sin_sku} filas sin SKU ignoradas)")
+
+        # Log de muestra para debug
+        sample = list(db.items())[:3]
+        for k, v in sample:
+            print(f"[EXCEL]   '{k}' → pasillo='{v['pasillo']}' "
+                  f"vertical='{v['vertical']}'")
+
     except Exception as e:
-        print(f"[EXCEL] Error: {e}")
+        print(f"[EXCEL] ❌ Error leyendo Excel: {e}")
         import traceback; traceback.print_exc()
+
     return db
 
 
@@ -4093,25 +4142,69 @@ class AsistenteDepositoApp:
         self._cargar_excel_desde_ruta(ruta)
 
     def _nombre_sku(self, sku):
-        """Devuelve el nombre del producto para un SKU.
-        Prioridad: nombre de MercadoLibre → Excel → PDF."""
+        """
+        Devuelve el nombre del producto para un SKU.
+        Prioridad: nombre de MercadoLibre → Excel (normalizado) → PDF.
+        """
         # 1. Nombre de MercadoLibre (capturado al generar el lote)
         nombre_ml = getattr(self, "sku_nombre_ml", {}).get(sku, "")
         if nombre_ml:
             return nombre_ml
-        # 2. Excel (BD interna)
-        if sku in self.db_nombres:
-            entrada = self.db_nombres[sku]
-            return entrada["nombre"] if isinstance(entrada, dict) else entrada
+
+        # Normalizar SKU para buscar en Excel
+        def _norm(s):
+            s = str(s).strip()
+            if s.endswith(".0") and s[:-2].isdigit():
+                s = s[:-2]
+            return re.sub(r"\s+", "", s).upper()
+
+        sku_norm = _norm(sku)
+
+        # 2. Excel — buscar con variantes del SKU
+        for key in (sku_norm, sku.strip().upper(), sku):
+            entrada = self.db_nombres.get(key)
+            if entrada:
+                nombre = entrada["nombre"] if isinstance(entrada, dict) else str(entrada)
+                if nombre:
+                    return nombre
+
         # 3. PDF
         return self.sku_descripciones.get(sku, "")
 
     def _ubicacion_sku(self, sku):
-        """Devuelve (pasillo, estanteria) para un SKU desde el Excel."""
-        if sku in self.db_nombres:
-            entrada = self.db_nombres[sku]
-            if isinstance(entrada, dict):
-                return entrada.get("pasillo", ""), entrada.get("estanteria", "")
+        """
+        Devuelve (pasillo, vertical) para un SKU desde el Excel.
+        Normaliza el SKU antes de buscar para manejar variantes:
+        - con/sin espacios
+        - con/sin .0 decimal
+        - mayúsculas/minúsculas
+        """
+        if not sku:
+            return "", ""
+
+        # Normalizar igual que en leer_planilla_pasillos_google
+        def _norm(s):
+            s = str(s).strip()
+            if s.endswith(".0") and s[:-2].isdigit():
+                s = s[:-2]
+            return re.sub(r"\s+", "", s).upper()
+
+        sku_norm = _norm(sku)
+
+        # 1. Buscar con SKU normalizado (sin espacios, sin .0)
+        entrada = self.db_nombres.get(sku_norm)
+        # 2. Buscar con SKU original en mayúsculas
+        if not entrada:
+            entrada = self.db_nombres.get(sku.strip().upper())
+        # 3. Buscar con SKU original tal cual
+        if not entrada:
+            entrada = self.db_nombres.get(sku)
+
+        if entrada and isinstance(entrada, dict):
+            pasillo  = entrada.get("pasillo", "")
+            vertical = entrada.get("vertical", "") or entrada.get("estanteria", "")
+            return pasillo, vertical
+
         return "", ""
 
     def _ubicacion_texto(self, sku):

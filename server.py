@@ -1338,6 +1338,37 @@ def api_diag_colecta():
 
 
 
+@app.route("/api/diag-sku/<sku>")
+def api_diag_sku(sku):
+    """
+    Diagnóstico: verifica si un SKU de ML está en el lote activo con pasillo/vertical.
+    Útil para confirmar que el Excel está siendo leído correctamente.
+    Ejemplo: /api/diag-sku/MOR00018GRIS
+    """
+    sku = sku.strip().upper()
+    result = {"sku_consultado": sku, "canales": {}}
+
+    for canal, est in _estados_canal.items():
+        grupos = est.get("grupos", [])
+        encontrado = None
+        for g in grupos:
+            for it in g.get("items", []):
+                if str(it.get("sku","")).upper() == sku:
+                    encontrado = {
+                        "pasillo":    it.get("pasillo","(vacío)"),
+                        "vertical":   it.get("vertical","(vacío)"),
+                        "estanteria": it.get("estanteria","(vacío)"),
+                        "nombre":     it.get("nombre","(vacío)"),
+                        "req":        it.get("req", 0),
+                    }
+                    break
+            if encontrado:
+                break
+        result["canales"][canal] = encontrado or "no encontrado en este canal"
+
+    return jsonify(result)
+
+
 def api_diag_pedidos():
     """Diagnóstico: lista cada pedido con su logistica y tipo calculado."""
     with _lock:

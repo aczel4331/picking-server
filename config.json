@@ -9,5 +9,7 @@
   "etiqueta_logo_size": 15,
   "etiqueta_texto": "",
   "etiqueta_texto_pos": "abajo",
-  "etiqueta_logo_path": ""
+  "etiqueta_logo_path": "",
+  "lote_min": 10,
+  "lote_max": 20
 }
