@@ -6974,24 +6974,28 @@ try {{
         messagebox.showinfo("Diagnóstico de sincronización", msg, parent=self.root)
 
     def _sincronizar_desde_nube(self):
-        """Polling: lee la colecta del servidor Railway y sincroniza checkmarks."""
+        """Polling: lee la colecta del servidor Railway y sincroniza checkmarks.
+        Cada desktop pide solo SU canal (el del lote que generó)."""
         import threading
+        canal = getattr(self, "_canal_lote_activo", "default")
+
         def _worker():
             info = {"ok": False, "n": 0, "err": None, "colecta": None}
             try:
                 import urllib.request, json as _json
-                url = RAILWAY_URL.rstrip("/")
-                with urllib.request.urlopen(url + "/api/estado", timeout=6) as resp:
+                url = f"{RAILWAY_URL.rstrip('/')}/api/estado?canal={canal}"
+                with urllib.request.urlopen(url, timeout=6) as resp:
                     data = _json.loads(resp.read())
                 colecta = data.get("colecta", {}) or {}
-                info["ok"] = True
+                info["ok"]      = True
                 info["colecta"] = colecta
-                info["n"] = sum(int(v) for v in colecta.values())
+                info["n"]       = sum(int(v) for v in colecta.values())
+                info["fase"]    = data.get("fase", 1)
             except Exception as ex:
                 info["err"] = str(ex)
             self.root.after(0, lambda: self._on_sync_nube(info))
+
         threading.Thread(target=_worker, daemon=True).start()
-        # Re-programar cada 3 segundos
         self.root.after(3000, self._sincronizar_desde_nube)
 
     def _on_sync_nube(self, info):
