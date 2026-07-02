@@ -29,7 +29,11 @@ RAILWAY_URL = "https://picking-server-production.up.railway.app"
 
 # Planilla de pasillos en Google Sheets (se baja automaticamente al generar el lote)
 GOOGLE_SHEET_ID  = "1SgF12AaFo5zLbHWECrowiY85n_SjbcR0mfCUr4kGQ7g"
-GOOGLE_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=xlsx"
+# gid=1531865244 = hoja "productos" (la que tiene SKU/Nombre/Vertical/Pasillos)
+GOOGLE_SHEET_URL = (
+    f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}"
+    f"/export?format=xlsx&gid=1531865244"
+)
 
 def obtener_impresoras_windows():
     try:
@@ -71,163 +75,171 @@ def leer_excel_skus(ruta):
 
 def leer_planilla_pasillos_google(ruta):
     """
-    Lee la hoja 'productos' del Excel de Google Sheets.
+    Lee la hoja 'productos' de la planilla Google Sheets de Everest Group.
 
-    Columnas FIJAS según el Excel de Everest:
-        A = (ignorar - numeración interna)
-        B = SKU
+    Estructura EXACTA (confirmada visualmente en el Google Sheet):
+        A = ID de ML (número largo — ignorar como SKU)
+        B = SKU  (ej: 8703, JTHOG710, 9655, 9935VERD)
         C = Nombre del producto
-        D = VERTICAL
-        E = PASILLOS
+        D = VERTICAL  (ej: MUEBLES Y ARTÍCULOS PARA EL HOGAR, CPG)
+        E = PASILLOS  (ej: P3 COCINA, P1 CUIDADO PERSONAL, LOBY RECEPCION)
+
+    La hoja se llama "productos" y se descarga con gid=1531865244.
+    Si la hoja no se encuentra, intenta leer todas las hojas que sean
+    de pasillo (fallback para versiones viejas del Excel).
 
     Devuelve { SKU_UPPER: {"nombre", "vertical", "pasillo", "estanteria"} }
-
-    El SKU se normaliza (sin espacios, sin .0 decimal) para que el match
-    con los SKUs que vienen de MercadoLibre sea siempre exacto.
     """
     if not _OPENPYXL_OK or not ruta or not os.path.exists(ruta):
         return {}
 
     def _limpiar(v):
-        """Limpia un valor de celda → string limpio o vacío."""
         if v is None:
             return ""
         s = str(v).replace("\t", " ").replace("\n", " ").replace("\r", "")
         s = re.sub(r"\s+", " ", s).strip()
-        return "" if s.upper() in ("NONE", "N/A", "-", "·", "") else s
+        return "" if s.upper() in ("NONE", "N/A", "") else s
 
     def _normalizar_sku(v):
-        """
-        Normaliza un SKU para comparación robusta:
-        - Elimina espacios
-        - Elimina sufijo .0 (Excel a veces convierte 1234 → 1234.0)
-        - Convierte a MAYÚSCULAS
-        """
+        """Quita .0 decimal, espacios y convierte a MAYÚSCULAS."""
         if v is None:
             return ""
         s = str(v).strip()
-        # Quitar .0 decimal si es un número
-        if s.endswith(".0") and s[:-2].isdigit():
+        if s.endswith(".0") and s[:-2].replace("-", "").isdigit():
             s = s[:-2]
-        # Quitar espacios y convertir a mayúsculas
         return re.sub(r"\s+", "", s).upper()
 
     db = {}
     try:
-        # ── 1. Cargar Excel solo la hoja "productos" ──────────────────────────
-        wb = openpyxl.load_workbook(ruta, data_only=True, read_only=False)
+        wb = openpyxl.load_workbook(ruta, data_only=True)
 
-        hoja_objetivo = next(
+        # ── 1. Intentar leer la hoja "productos" (nombre exacto del GSheet) ──
+        hoja = next(
             (n for n in wb.sheetnames if n.strip().lower() == "productos"), None)
 
-        if not hoja_objetivo:
-            # Log útil: mostrar todas las hojas para que el usuario sepa
-            print(f"[EXCEL] ❌ Hoja 'productos' NO encontrada.")
-            print(f"[EXCEL]    Hojas disponibles: {wb.sheetnames}")
-            print(f"[EXCEL]    Asegurate que la hoja se llame exactamente 'productos'")
-            return {}
+        if hoja:
+            ws    = wb[hoja]
+            filas = list(ws.iter_rows(values_only=True))
+            print(f"[EXCEL] Leyendo hoja '{hoja}' ({len(filas)} filas)")
 
-        ws    = wb[hoja_objetivo]
-        filas = list(ws.iter_rows(values_only=True))
-        if not filas:
-            print("[EXCEL] ❌ Hoja 'productos' está vacía")
-            return {}
+            # Detectar fila de encabezado buscando "SKU" en col B (idx 1)
+            hdr_idx = 0
+            for i, fila in enumerate(filas[:5]):
+                b = str(fila[1]).strip().upper() if len(fila) > 1 and fila[1] else ""
+                if b == "SKU":
+                    hdr_idx = i
+                    print(f"[EXCEL] Encabezados en fila {i+1}")
+                    break
 
-        # ── 2. Detectar fila de encabezado ───────────────────────────────────
-        # Busca la primera fila que tenga "SKU" en alguna celda (primeras 5 filas)
-        hdr_idx = 0
-        for i, fila in enumerate(filas[:5]):
-            vals = [str(v).strip().upper() if v is not None else "" for v in fila]
-            if "SKU" in vals:
-                hdr_idx = i
-                print(f"[EXCEL] Encabezados encontrados en fila {i+1}: {vals}")
-                break
-
-        hdr = [str(v).strip().upper() if v is not None else ""
-               for v in filas[hdr_idx]]
-
-        # ── 3. Mapear columnas ────────────────────────────────────────────────
-        # Estrategia: buscar por nombre de encabezado, si no usa posición fija
-        # Posiciones fijas del Excel de Everest: A=0, B=1(SKU), C=2(Nombre), D=3(Vert), E=4(Pas)
-        def _col(buscar, default_idx):
-            for keyword in buscar:
-                for i, h in enumerate(hdr):
-                    if keyword in h:
-                        return i
-            return default_idx
-
-        col_sku      = _col(["SKU"],                        1)  # B
-        col_nombre   = _col(["NOMBRE", "PRODUCTO", "TITLE"], 2)  # C
-        col_vertical = _col(["VERTICAL"],                   3)  # D
-        col_pasillo  = _col(["PASILLO"],                    4)  # E
-
-        print(f"[EXCEL] Columnas mapeadas → "
-              f"SKU={col_sku}(col {chr(65+col_sku)}), "
-              f"Nombre={col_nombre}(col {chr(65+col_nombre)}), "
-              f"Vertical={col_vertical}(col {chr(65+col_vertical)}), "
-              f"Pasillo={col_pasillo}(col {chr(65+col_pasillo)})")
-
-        # ── 4. Leer filas de datos ────────────────────────────────────────────
-        n_ok = 0
-        n_sin_sku = 0
-        for fila in filas[hdr_idx + 1:]:
-            if not fila or all(v is None for v in fila):
-                continue
-
-            def _cel(idx):
-                return _limpiar(fila[idx]) if idx < len(fila) else ""
-
-            sku_raw  = _cel(col_sku)
-            nombre   = _cel(col_nombre)
-            vertical = _cel(col_vertical)
-            pasillo  = _cel(col_pasillo)
-
-            # Saltear filas de encabezado repetido o sin datos útiles
-            if sku_raw.upper() in ("SKU", "COD", "CÓDIGO", "CODIGO", ""):
-                if not nombre:
+            n_ok = 0
+            for fila in filas[hdr_idx + 1:]:
+                if not fila or all(v is None for v in fila):
+                    continue
+                if len(fila) < 2:
                     continue
 
-            sku_norm = _normalizar_sku(sku_raw)
+                # Columnas fijas: A=0(ID_ML), B=1(SKU), C=2(Nombre), D=3(Vertical), E=4(Pasillo)
+                sku_raw  = fila[1] if len(fila) > 1 else None
+                nombre   = fila[2] if len(fila) > 2 else None
+                vertical = fila[3] if len(fila) > 3 else None
+                pasillo  = fila[4] if len(fila) > 4 else None
 
-            if not sku_norm:
-                n_sin_sku += 1
-                continue
+                sku_norm = _normalizar_sku(sku_raw)
 
-            entrada = {
-                "nombre":     nombre or sku_norm,
-                "vertical":   vertical,
-                "pasillo":    pasillo,
-                "estanteria": vertical,  # compatibilidad: estanteria = vertical
+                # Saltear encabezados, guiones o SKUs que son IDs de ML
+                if not sku_norm or sku_norm in ("-", "·", "SKU", "COD"):
+                    continue
+                if sku_norm.isdigit() and len(sku_norm) > 9:
+                    continue
+
+                nombre_s  = _limpiar(nombre)  or sku_norm
+                vertical_s = _limpiar(vertical)
+                pasillo_s  = re.sub(r"\s+", " ", _limpiar(pasillo) or "Sin pasillo").strip()
+
+                entrada = {
+                    "nombre":     nombre_s,
+                    "vertical":   vertical_s,
+                    "pasillo":    pasillo_s,
+                    "estanteria": vertical_s,
+                }
+
+                if sku_norm not in db:
+                    db[sku_norm] = entrada
+                    n_ok += 1
+
+                # Variante original por si hay espacios o formato diferente en ML
+                sku_orig = _limpiar(sku_raw).upper()
+                if sku_orig and sku_orig != sku_norm and sku_orig not in db:
+                    db[sku_orig] = entrada
+
+            print(f"[EXCEL] ✅ {n_ok} SKUs de hoja 'productos'")
+
+        else:
+            # ── 2. Fallback: leer hojas de pasillo (Excel viejo sin hoja productos) ──
+            print(f"[EXCEL] Hoja 'productos' no encontrada, "
+                  f"leyendo hojas de pasillo. Hojas: {wb.sheetnames}")
+
+            IGNORAR = {
+                "chequear yenfri", "scanner", "gmv 90 dias", "t gmv 90 dias",
+                "cl jun 26", "cl nov", "tabla cl nov", "cf marz 2026", "t cf marzo",
+                "cl jun", "t cl jun", "hoja 18", "t ítems", "t items",
+                "morango", "vpa", "campanas",
             }
+            for nombre_hoja in wb.sheetnames:
+                nl = nombre_hoja.strip().lower()
+                if nl in IGNORAR:
+                    continue
+                if re.match(r'^t\s+', nl) or nl.startswith("t_"):
+                    continue
 
-            # Guardar con SKU normalizado (sin espacios, sin .0, en mayúsculas)
-            db[sku_norm] = entrada
+                ws    = wb[nombre_hoja]
+                filas = list(ws.iter_rows(values_only=True))
+                if not filas:
+                    continue
 
-            # También guardar variantes del SKU por si ML lo manda diferente:
-            # - Con espacios si el original los tiene: "MOR 0018" → también "MOR0018"
-            # - El original sin normalizar (por si algún código tiene espacios intencionales)
-            sku_orig_upper = sku_raw.strip().upper()
-            if sku_orig_upper != sku_norm:
-                db[sku_orig_upper] = entrada
+                pasillo_hoja = nombre_hoja.strip()
+                hdr_idx = None
+                for i, fila in enumerate(filas[:5]):
+                    b = str(fila[1]).strip().upper() if len(fila)>1 and fila[1] else ""
+                    if b == "SKU":
+                        hdr_idx = i; break
 
-            n_ok += 1
+                inicio = (hdr_idx + 1) if hdr_idx is not None else 0
+                n_hoja = 0
+                for fila in filas[inicio:]:
+                    if not fila or all(v is None for v in fila): continue
+                    if len(fila) < 2: continue
+                    sku_raw  = fila[1]
+                    titulo   = fila[2] if len(fila) > 2 else None
+                    vert     = fila[3] if len(fila) > 3 else None
+                    pas      = fila[4] if len(fila) > 4 else None
+                    sku_norm = _normalizar_sku(sku_raw)
+                    if not sku_norm or sku_norm in ("-","·","SKU","COD"): continue
+                    if sku_norm.isdigit() and len(sku_norm) > 9: continue
+                    pasillo  = re.sub(r"\s+", " ", _limpiar(pas) or pasillo_hoja)
+                    vertical = _limpiar(vert)
+                    entrada  = {"nombre": _limpiar(titulo) or sku_norm,
+                                "vertical": vertical, "pasillo": pasillo,
+                                "estanteria": vertical}
+                    if sku_norm not in db:
+                        db[sku_norm] = entrada; n_hoja += 1
+                    sku_orig = _limpiar(sku_raw).upper()
+                    if sku_orig and sku_orig != sku_norm and sku_orig not in db:
+                        db[sku_orig] = entrada
+                if n_hoja > 0:
+                    print(f"[EXCEL] Hoja '{nombre_hoja}': {n_hoja} SKUs")
 
         wb.close()
-        print(f"[EXCEL] ✅ {n_ok} SKUs cargados de '{hoja_objetivo}' "
-              f"({n_sin_sku} filas sin SKU ignoradas)")
-
-        # Log de muestra para debug
-        sample = list(db.items())[:3]
-        for k, v in sample:
-            print(f"[EXCEL]   '{k}' → pasillo='{v['pasillo']}' "
+        print(f"[EXCEL] ✅ TOTAL: {len(db)} SKUs cargados")
+        for sku, v in list(db.items())[:3]:
+            print(f"[EXCEL]   '{sku}' → pasillo='{v['pasillo']}' "
                   f"vertical='{v['vertical']}'")
 
     except Exception as e:
-        print(f"[EXCEL] ❌ Error leyendo Excel: {e}")
+        print(f"[EXCEL] ❌ Error: {e}")
         import traceback; traceback.print_exc()
 
     return db
-
 
 def descargar_planilla_google(timeout=40):
     """
@@ -387,69 +399,6 @@ class VentanaConfiguracion(tk.Toplevel):
         lbl_sec("BASE DE PASILLOS")
         lbl_sub("La base de productos y pasillos se actualiza sola desde Google Sheets "
                 "al generar cada lote. Ya no hace falta cargar un Excel acá.")
-
-        # TAMAÑO DEL LOTE
-        sep()
-        lbl_sec("TAMAÑO DEL LOTE DE COLECTA")
-        lbl_sub("Cuántas etiquetas se incluyen en cada lote al hacer 'Generar Lote'.")
-        lbl_sub("Recomendado: mínimo 10, máximo 20 para facilitar la colecta.")
-
-        lote_row = tk.Frame(body, bg=C["bg_dark"])
-        lote_row.pack(fill="x", pady=(10,0))
-
-        # Mínimo
-        col_min = tk.Frame(lote_row, bg=C["bg_dark"])
-        col_min.pack(side="left", fill="x", expand=True, padx=(0,12))
-        tk.Label(col_min, text="Mínimo de etiquetas por lote",
-                 font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
-                 fg=C["text_lo"]).pack(anchor="w")
-        min_wrap = tk.Frame(col_min, bg=C["border"], padx=2, pady=2)
-        min_wrap.pack(fill="x", pady=(4,0))
-        min_in = tk.Frame(min_wrap, bg=C["card"]); min_in.pack(fill="x")
-        self.entry_lote_min = tk.Entry(min_in, font=("Consolas", 14, "bold"),
-            justify="center", bg=C["card"], fg=C["accent"],
-            insertbackground=C["accent"], relief="flat", bd=0)
-        self.entry_lote_min.insert(0, str(config_actual.get("lote_min", 10)))
-        self.entry_lote_min.pack(fill="x", ipady=8, padx=8)
-
-        # Máximo
-        col_max = tk.Frame(lote_row, bg=C["bg_dark"])
-        col_max.pack(side="left", fill="x", expand=True)
-        tk.Label(col_max, text="Máximo de etiquetas por lote",
-                 font=("Segoe UI", 8, "bold"), bg=C["bg_dark"],
-                 fg=C["text_lo"]).pack(anchor="w")
-        max_wrap = tk.Frame(col_max, bg=C["border"], padx=2, pady=2)
-        max_wrap.pack(fill="x", pady=(4,0))
-        max_in = tk.Frame(max_wrap, bg=C["card"]); max_in.pack(fill="x")
-        self.entry_lote_max = tk.Entry(max_in, font=("Consolas", 14, "bold"),
-            justify="center", bg=C["card"], fg=C["success"],
-            insertbackground=C["accent"], relief="flat", bd=0)
-        self.entry_lote_max.insert(0, str(config_actual.get("lote_max", 20)))
-        self.entry_lote_max.pack(fill="x", ipady=8, padx=8)
-
-        # Info visual
-        info_lote = tk.Frame(body, bg=C["bg_dark"])
-        info_lote.pack(fill="x", pady=(8,0))
-        tk.Label(info_lote, text="📦",
-                 font=("Segoe UI", 14), bg=C["bg_dark"]).pack(side="left")
-        self.lbl_lote_preview = tk.Label(info_lote,
-            text=f"Lote de {config_actual.get('lote_min',10)} a "
-                 f"{config_actual.get('lote_max',20)} etiquetas por vez",
-            font=("Segoe UI", 9), bg=C["bg_dark"], fg=C["text_mid"])
-        self.lbl_lote_preview.pack(side="left", padx=8)
-
-        # Actualizar preview al cambiar los valores
-        def _actualizar_preview_lote(*_):
-            try:
-                mn = max(1, int(self.entry_lote_min.get() or 10))
-                mx = max(mn, int(self.entry_lote_max.get() or 20))
-                self.lbl_lote_preview.config(
-                    text=f"Lote de {mn} a {mx} etiquetas por vez",
-                    fg=C["accent"])
-            except ValueError:
-                pass
-        self.entry_lote_min.bind("<KeyRelease>", _actualizar_preview_lote)
-        self.entry_lote_max.bind("<KeyRelease>", _actualizar_preview_lote)
 
         # SUPERVISOR
         sep()
@@ -1241,16 +1190,6 @@ class VentanaConfiguracion(tk.Toplevel):
         self._config["impresora"]     = imp
         self._config["servidor_nube"] = nube_url
         self._config["clave_nube"]    = self.entry_clave_nube.get().strip()
-
-        # Guardar tamaño de lote
-        try:
-            lote_min = max(1, int(self.entry_lote_min.get().strip() or "10"))
-            lote_max = max(lote_min, int(self.entry_lote_max.get().strip() or "20"))
-            self._config["lote_min"] = lote_min
-            self._config["lote_max"] = lote_max
-        except ValueError:
-            self._config["lote_min"] = 10
-            self._config["lote_max"] = 20
         
         # Guardar configuración de etiqueta personalizada
         self._config["etiqueta_logo_path"] = self._logo_path  # Ruta del archivo local
@@ -3417,31 +3356,6 @@ class AsistenteDepositoApp:
                 f"Verificá que haya pedidos en estado ready_to_ship.",
                 parent=self.root)
             return
-
-        # ── APLICAR LÍMITE DE TAMAÑO DE LOTE (configurado en Settings) ─────
-        lote_min = int(self.config.get("lote_min", 10))
-        lote_max = int(self.config.get("lote_max", 20))
-        total_disponibles = len(pendientes)
-
-        if total_disponibles < lote_min:
-            resp = messagebox.askyesno(
-                "Pocos pedidos para el lote",
-                f"Hay {total_disponibles} pedido(s) pendientes, "
-                f"pero el mínimo configurado es {lote_min}.\n\n"
-                f"¿Querés generar el lote igual con {total_disponibles} pedido(s)?",
-                parent=self.root)
-            if not resp:
-                return
-
-        if total_disponibles > lote_max:
-            pendientes = pendientes[:lote_max]
-            messagebox.showinfo(
-                "Lote limitado",
-                f"Hay {total_disponibles} pedidos disponibles.\n"
-                f"Se incluyeron solo los primeros {lote_max} (máximo configurado).\n\n"
-                f"Al terminar este lote, generá otro para los restantes "
-                f"{total_disponibles - lote_max} pedidos.",
-                parent=self.root)
 
         # Consolidar SKUs de los pedidos filtrados
         total_req  = {}
