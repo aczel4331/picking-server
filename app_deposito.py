@@ -245,23 +245,45 @@ def descargar_planilla_google(timeout=40):
     """
     Descarga la planilla de Google Sheets como .xlsx y devuelve la ruta temporal,
     o None si falla (sin conexion, no compartida, etc.). No lanza excepciones.
+
+    Para que funcione, la planilla DEBE estar compartida como
+    'Cualquiera con el enlace puede VER'.
     """
-    try:
-        import urllib.request, tempfile
-        req = urllib.request.Request(
-            GOOGLE_SHEET_URL,
-            headers={"User-Agent": "Mozilla/5.0 (PickingApp)"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-        # Un .xlsx es un ZIP: empieza con 'PK'. Si es HTML (no compartida) -> descartar.
-        if not data[:2] == b"PK":
-            return None
-        tmp = os.path.join(tempfile.gettempdir(), "base_pasillos_google.xlsx")
-        with open(tmp, "wb") as f:
-            f.write(data)
-        return tmp
-    except Exception:
-        return None
+    import urllib.request, tempfile
+
+    # Intentar primero hoja específica (productos), luego el libro completo
+    urls_a_probar = [
+        GOOGLE_SHEET_URL,  # con gid=productos
+        f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=xlsx",
+    ]
+
+    for url in urls_a_probar:
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+
+            # Un .xlsx es un ZIP: empieza con b'PK'
+            if data[:2] != b"PK":
+                print(f"[GOOGLE] ⚠ Respuesta no es XLSX ({len(data)} bytes): "
+                      f"{data[:100]}")
+                continue
+
+            tmp = os.path.join(tempfile.gettempdir(), "base_pasillos_google.xlsx")
+            with open(tmp, "wb") as f:
+                f.write(data)
+            print(f"[GOOGLE] ✅ Descargado {len(data)} bytes → {tmp}")
+            return tmp
+
+        except Exception as e:
+            print(f"[GOOGLE] ❌ Error descargando: {e}")
+            continue
+
+    print("[GOOGLE] ⚠ No se pudo descargar la planilla. "
+          "Verificá que esté compartida como 'Cualquiera con el enlace puede ver'.")
+    return None
 
 def guardar_config(config: dict):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -3155,6 +3177,35 @@ class AsistenteDepositoApp:
 
     # ── Generar lote de picking ───────────────────────────────────────────────
 
+    def _cargar_excel_local_manual(self):
+        """Permite seleccionar el Excel de pasillos desde el disco local."""
+        from tkinter import filedialog
+        ruta = filedialog.askopenfilename(
+            title="Seleccionar planilla de pasillos",
+            filetypes=[("Excel", "*.xlsx *.xls"), ("Todos", "*.*")],
+            parent=self.root)
+        if not ruta:
+            return
+        try:
+            nuevos = leer_planilla_pasillos_google(ruta)
+            if nuevos:
+                self.db_nombres.update(nuevos)
+                self.lbl_estado_excel.config(
+                    text=f"✅ Excel cargado: {len(nuevos)} SKUs desde archivo local",
+                    fg=C["success"])
+                # Redibujar para que se vean los pasillos
+                if self.fase_actual == "fase1":
+                    self._dibujar_fase1()
+                elif self.fase_actual == "fase2":
+                    self._dibujar_fase2()
+            else:
+                self.lbl_estado_excel.config(
+                    text="⚠ No se encontraron SKUs en el archivo",
+                    fg=C["warning"])
+        except Exception as e:
+            self.lbl_estado_excel.config(
+                text=f"❌ Error: {e}", fg=C["danger"])
+
     def _diagnostico_google_base(self):
         """Intenta descargar la planilla de Google paso a paso, mostrando
         exactamente dónde y por qué falla, para debugging."""
@@ -3843,6 +3894,12 @@ class AsistenteDepositoApp:
                   activebackground=C["accent2"], activeforeground="white",
                   relief="flat", cursor="hand2", padx=8, pady=3, bd=0,
                   command=self._diagnostico_google_base).pack(anchor="w", pady=(3, 0))
+
+        tk.Button(sec1, text="📂 Cargar Excel desde archivo local",
+                  font=("Segoe UI", 8), bg="#059669", fg="white",
+                  activebackground="#047857", activeforeground="white",
+                  relief="flat", cursor="hand2", padx=8, pady=3, bd=0,
+                  command=self._cargar_excel_local_manual).pack(anchor="w", pady=(3, 0))
         # Botón para recargar miniaturas/descripciones (cuando alguna no se cargó)
         tk.Button(sec1, text="🖼️ Recargar imágenes y nombres",
                   font=("Segoe UI", 8), bg="#7C3AED", fg="white",
@@ -5290,19 +5347,26 @@ class AsistenteDepositoApp:
 
         def _worker():
             try:
-                # Pedir la URL de imagen al SERVIDOR (Railway tiene el token de ML;
-                # ML ahora exige Authorization en /items, así que el desktop NO puede
-                # llamar a ML directamente).
                 imagen_url = self._img_url_cache.get(sku)
 
                 if not imagen_url:
                     url = f"{RAILWAY_URL}/api/imagen-sku/{sku}"
                     req = urllib.request.Request(
                         url, headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        data = json.loads(resp.read().decode())
+                    with urllib.request.urlopen(req, timeout=12) as resp:
+                        raw = resp.read()
+                    data = json.loads(raw.decode())
+
+                    print(f"[IMG] SKU={sku} → ok={data.get('ok')} "
+                          f"existe={data.get('existe')} "
+                          f"url={str(data.get('imagen_url',''))[:60]} "
+                          f"msg={data.get('msg','')}")
+
                     if data.get("existe") and data.get("imagen_url"):
-                        imagen_url = data.get("imagen_url")
+                        imagen_url = data["imagen_url"]
+                        # Forzar HTTPS
+                        if imagen_url.startswith("http://"):
+                            imagen_url = imagen_url.replace("http://", "https://", 1)
 
                 if not imagen_url:
                     self.root.after(0, lambda: self._on_miniatura_fallo(sku, lbl_destino))
@@ -5310,29 +5374,34 @@ class AsistenteDepositoApp:
 
                 self._img_url_cache[sku] = imagen_url
 
-                # Descargar bytes de la imagen (las URLs de imágenes ML son públicas)
+                # Descargar imagen
                 req_img = urllib.request.Request(
                     imagen_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req_img, timeout=10) as resp:
+                with urllib.request.urlopen(req_img, timeout=12) as resp:
                     img_bytes = resp.read()
 
-                # Abrir con PIL (en el thread, fuera de la UI)
-                img_full = Image.open(io.BytesIO(img_bytes))
-                img_full.load()
+                if not img_bytes or len(img_bytes) < 100:
+                    print(f"[IMG] Respuesta vacía para {sku}")
+                    self.root.after(0, lambda: self._on_miniatura_fallo(sku, lbl_destino))
+                    return
 
-                # Guardar el full para el zoom
+                # Procesar imagen con PIL
+                img_full = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+                img_full.load()
                 self._img_full_cache[sku] = img_full.copy()
 
-                # Crear miniatura
                 img_min = img_full.copy()
                 img_min.thumbnail((tam, tam), Image.Resampling.LANCZOS)
 
-                # Volver a la UI para crear el PhotoImage y asignarlo
-                self.root.after(0, lambda: self._on_miniatura_lista(
-                    sku, lbl_destino, img_min))
+                # Capturar variables para el callback (evitar closure bug)
+                _sku = sku
+                _lbl = lbl_destino
+                _img = img_min
+                self.root.after(0, lambda s=_sku, l=_lbl, i=_img:
+                                self._on_miniatura_lista(s, l, i))
 
             except Exception as e:
-                print(f"[MINIATURA] Error {sku}: {e}")
+                print(f"[IMG] ❌ Error {sku}: {type(e).__name__}: {e}")
                 self.root.after(0, lambda: self._on_miniatura_fallo(sku, lbl_destino))
             finally:
                 self._img_cargando.discard(sku)
@@ -5344,14 +5413,14 @@ class AsistenteDepositoApp:
         try:
             photo = ImageTk.PhotoImage(img_min)
             self._img_cache[sku] = photo
-            # El label puede haber sido destruido si se redibujó la lista
             if lbl_destino.winfo_exists():
                 lbl_destino.config(image=photo, text="", cursor="hand2")
-                lbl_destino.image = photo
+                lbl_destino.image = photo   # mantener referencia fuera del GC
                 lbl_destino.bind("<Button-1>",
                                  lambda e, s=sku: self._agrandar_imagen(s))
+                print(f"[IMG] ✅ {sku} mostrado correctamente")
         except Exception as e:
-            print(f"[MINIATURA] Error asignando {sku}: {e}")
+            print(f"[IMG] Error asignando {sku}: {e}")
 
     def _on_miniatura_fallo(self, sku, lbl_destino):
         """Callback en la UI cuando no se pudo cargar la miniatura."""
@@ -6785,31 +6854,41 @@ try {{
         self.root.after(1500, self._recargar_miniaturas_pendientes)
 
     def _forzar_recarga_imagenes(self):
-        """Limpia TODO el cache de imágenes y nombres, y vuelve a cargarlos.
-        Útil cuando la app lleva mucho rato abierta y algunas imágenes no
-        se descargaron por error de red o token caducado."""
+        """Limpia TODO el cache de imágenes y vuelve a cargarlas desde cero."""
         try:
-            # Limpiar TODOS los caches
+            # 1. Limpiar todos los caches
             self._img_cache.clear()
             self._img_full_cache.clear()
             self._img_url_cache.clear()
             self._img_cargando.clear()
             self._img_fallos.clear()
+            self._img_labels.clear()
 
             self.lbl_estado_excel.config(
-                text="🖼️ Recargando imágenes y nombres...", fg=C["accent"])
+                text="🖼️ Recargando imágenes...", fg=C["accent"])
             self.root.update_idletasks()
 
-            # Redibujar fase 1 / 2 desde cero — esto vuelve a llamar a
-            # _cargar_miniatura_async para cada SKU, que ahora descargará
-            # de nuevo porque el cache está limpio.
+            # 2. Redibujar — esto crea nuevos labels y llama _cargar_miniatura_async
             if self.fase_actual == "fase1":
                 self._dibujar_fase1()
             elif self.fase_actual == "fase2":
                 self._dibujar_fase2()
 
-            self.root.after(800, lambda: self.lbl_estado_excel.config(
-                text="✅ Imágenes y nombres recargados", fg=C["success"]))
+            # 3. Después de 2s, reintentar las que fallaron (red lenta)
+            def _reintentar():
+                self._img_fallos.clear()
+                for sku, lbl in list(getattr(self, "_img_labels", {}).items()):
+                    if sku not in self._img_cache:
+                        try:
+                            if lbl.winfo_exists():
+                                self._cargar_miniatura_async(sku, lbl)
+                        except Exception:
+                            pass
+                self.lbl_estado_excel.config(
+                    text="✅ Imágenes recargadas", fg=C["success"])
+
+            self.root.after(2000, _reintentar)
+
         except Exception as e:
             self.lbl_estado_excel.config(
                 text=f"❌ Error al recargar: {e}", fg=C["danger"])

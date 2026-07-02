@@ -2914,33 +2914,51 @@ def api_imagen_sku(sku):
         item_id = None
         nombre_local = None
         cuenta_id = "cuenta_0"
-        
+
         with _lock:
-            # 1. Buscar primero en pedidos (tiene item_id directamente)
-            pedidos = _estado.get("pedidos", {})
-            for oid, ped in pedidos.items():
-                items = ped.get("items", [])
-                for item in items:
-                    if str(item.get("sku", "")).strip().upper() == sku:
-                        item_id = item.get("item_id", "")
-                        nombre_local = item.get("nombre", "")
-                        cuenta_id = ped.get("_cuenta", "cuenta_0")
-                        if item_id:
-                            break
-                if item_id:
-                    break
-            
-            # 2. Si no encontré en pedidos, buscar en grupos
-            if not item_id:
-                grupos = _estado.get("grupos", [])
-                for grupo in grupos:
-                    for item in grupo.get("items", []):
-                        if item.get("sku", "").upper() == sku:
+            # 1. Buscar en TODOS los canales activos (flex, colecta, default)
+            for canal_name, canal_est in _estados_canal.items():
+                # Buscar en pedidos del canal
+                for oid, ped in canal_est.get("pedidos", {}).items():
+                    for item in ped.get("items", []):
+                        if str(item.get("sku", "")).strip().upper() == sku:
                             item_id = item.get("item_id", "")
                             nombre_local = item.get("nombre", "")
+                            cuenta_id = ped.get("_cuenta", "cuenta_0")
+                            if item_id:
+                                break
+                    if item_id:
+                        break
+                if item_id:
+                    break
+
+            # 2. Si no encontré en pedidos, buscar en grupos del canal
+            if not item_id:
+                for canal_name, canal_est in _estados_canal.items():
+                    for grupo in canal_est.get("grupos", []):
+                        for item in grupo.get("items", []):
+                            if item.get("sku", "").upper() == sku:
+                                item_id = item.get("item_id", "")
+                                nombre_local = item.get("nombre", "")
+                                if item_id:
+                                    break
+                        if item_id:
                             break
                     if item_id:
                         break
+
+            # 3. Fallback: buscar en _pedidos_ml por SKU
+            if not item_id:
+                for oid, ped in _pedidos_ml.items():
+                    for it in ped.get("items", []):
+                        if str(it.get("sku","")).upper() == sku and it.get("item_id"):
+                            item_id = it["item_id"]
+                            cuenta_id = ped.get("_cuenta", "cuenta_0")
+                            break
+                    if item_id:
+                        break
+
+        print(f"[IMG-SKU] {sku} → item_id={item_id or '(no encontrado)'}")
         
         if not item_id:
             return jsonify({
