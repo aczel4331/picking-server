@@ -1341,30 +1341,84 @@ def api_diag_colecta():
 @app.route("/api/diag-sku/<sku>")
 def api_diag_sku(sku):
     """
-    Diagnóstico: verifica si un SKU de ML está en el lote activo con pasillo/vertical.
-    Útil para confirmar que el Excel está siendo leído correctamente.
-    Ejemplo: /api/diag-sku/MOR00018GRIS
+    Diagnóstico completo de un SKU:
+    - Muestra si está en el lote activo con pasillo/vertical
+    - Muestra los datos raw de ML para diagnósticar si seller_sku está vacío
+    Ejemplo: /api/diag-sku/10050CELE
     """
     sku = sku.strip().upper()
-    result = {"sku_consultado": sku, "canales": {}}
+    result = {
+        "sku_consultado": sku,
+        "en_lote": {},
+        "en_pedidos_ml": [],
+        "pedidos_sin_sku": [],  # pedidos donde el sku quedó vacío
+    }
 
+    # 1. Buscar en canales del lote
     for canal, est in _estados_canal.items():
-        grupos = est.get("grupos", [])
         encontrado = None
-        for g in grupos:
+        for g in est.get("grupos", []):
             for it in g.get("items", []):
                 if str(it.get("sku","")).upper() == sku:
                     encontrado = {
-                        "pasillo":    it.get("pasillo","(vacío)"),
-                        "vertical":   it.get("vertical","(vacío)"),
-                        "estanteria": it.get("estanteria","(vacío)"),
-                        "nombre":     it.get("nombre","(vacío)"),
-                        "req":        it.get("req", 0),
+                        "pasillo":  it.get("pasillo","(vacío)"),
+                        "vertical": it.get("vertical","(vacío)"),
+                        "nombre":   it.get("nombre","(vacío)"),
+                        "req":      it.get("req", 0),
                     }
                     break
             if encontrado:
                 break
-        result["canales"][canal] = encontrado or "no encontrado en este canal"
+        result["en_lote"][canal] = encontrado or "no encontrado"
+
+    # 2. Buscar en pedidos ML — muestra campos raw para diagnóstico
+    with _lock:
+        pedidos_snap = list(_pedidos_ml.values())
+
+    for ped in pedidos_snap[:300]:
+        for it in ped.get("items", []):
+            it_sku = str(it.get("sku","")).upper()
+            titulo = str(it.get("titulo","")).upper()
+            # Buscar por SKU exacto O por fragmento del título
+            if it_sku == sku:
+                result["en_pedidos_ml"].append({
+                    "order_id":     str(ped.get("order_id","")),
+                    "sku_en_ml":    it.get("sku","(VACÍO)"),
+                    "item_id":      it.get("item_id",""),
+                    "titulo":       it.get("titulo","")[:60],
+                    "cantidad":     it.get("cantidad",1),
+                })
+            # También mostrar items SIN sku para ayudar al diagnóstico
+            if not it.get("sku","") and it.get("item_id",""):
+                result["pedidos_sin_sku"].append({
+                    "order_id": str(ped.get("order_id","")),
+                    "item_id":  it.get("item_id",""),
+                    "titulo":   it.get("titulo","")[:60],
+                })
+        if len(result["en_pedidos_ml"]) >= 5:
+            break
+
+    # Limitar pedidos_sin_sku a 10
+    result["pedidos_sin_sku"] = result["pedidos_sin_sku"][:10]
+
+    # 3. Diagnóstico y sugerencia
+    en_lote_ok = any(v != "no encontrado" for v in result["en_lote"].values())
+    if not en_lote_ok:
+        if result["pedidos_sin_sku"]:
+            result["diagnostico"] = (
+                f"⚠ Hay {len(result['pedidos_sin_sku'])} items SIN SKU en los pedidos. "
+                "Esto ocurre cuando en MercadoLibre la publicación no tiene "
+                "'Código de vendedor' (seller_sku) configurado. "
+                "Para solucionarlo: editá la publicación en ML y completá el campo "
+                "'SKU del vendedor' con el código que usas en el Excel."
+            )
+        else:
+            result["diagnostico"] = (
+                "SKU no encontrado en ningún lote activo. "
+                "Generá el lote primero desde Pedidos ML."
+            )
+    else:
+        result["diagnostico"] = "✅ SKU encontrado correctamente en el lote"
 
     return jsonify(result)
 

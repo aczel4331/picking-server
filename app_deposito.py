@@ -3445,21 +3445,45 @@ class AsistenteDepositoApp:
 
         # Consolidar SKUs de los pedidos filtrados
         total_req  = {}
-        sku_nombre = {}
-        sku_item_id = {}  # Mapeo SKU -> item_id de MercadoLibre
+        sku_nombre  = {}
+        sku_item_id = {}  # SKU real → item_id de ML (para imágenes)
+        items_sin_sku = []  # items sin SKU para intentar resolver luego
+
         for ped in pendientes:
             for it in ped.get("items", []):
-                sku = (it.get("sku") or it.get("item_id","")).upper().strip()
+                # El SKU real viene de seller_sku / seller_custom_field en ML.
+                # NUNCA usar item_id como SKU — es el ID de publicación (MLUxxxxx),
+                # no el código de producto del depósito.
+                sku = (it.get("sku") or "").upper().strip()
+
+                # Limpiar SKUs que en realidad son el item_id de ML
+                # (son numéricos largos > 8 dígitos o empiezan con MLU)
+                if sku and (sku.startswith("MLU") or
+                            (sku.isdigit() and len(sku) > 8)):
+                    print(f"[LOTE] ⚠ SKU '{sku}' parece ser un item_id de ML — ignorando")
+                    sku = ""
+
                 if not sku:
+                    # Sin SKU real: guardar para intentar resolver via servidor
+                    items_sin_sku.append(it)
                     continue
+
                 total_req[sku]  = total_req.get(sku, 0) + it.get("cantidad", 1)
                 if sku not in sku_nombre:
                     sku_nombre[sku] = it.get("titulo", sku)
-                # Guardar item_id de MercadoLibre para obtener imagen luego
                 if sku not in sku_item_id and it.get("item_id"):
                     sku_item_id[sku] = str(it.get("item_id"))
 
-        # DIAGNÓSTICO: mostrar qué item_ids se capturaron
+        # Si quedaron items sin SKU, intentar buscar seller_sku en el servidor
+        if items_sin_sku:
+            print(f"[LOTE] {len(items_sin_sku)} items sin SKU — "
+                  f"verificar seller_sku en MercadoLibre")
+            for it in items_sin_sku:
+                titulo = it.get("titulo", "")
+                iid    = it.get("item_id", "")
+                print(f"  ⚠ Sin SKU: '{titulo[:50]}' | item_id={iid}")
+
+        # DIAGNÓSTICO: mostrar qué SKUs se capturaron
         print("=" * 60)
         print(f"[LOTE] SKUs capturados: {len(total_req)}")
         for sku in total_req:
@@ -3560,7 +3584,11 @@ class AsistenteDepositoApp:
         for idx, ped in enumerate(pendientes, start=1):
             skus_req = {}
             for it in ped.get("items", []):
-                sku = (it.get("sku") or it.get("item_id","")).upper().strip()
+                sku = (it.get("sku") or "").upper().strip()
+                # NUNCA usar item_id como SKU
+                if sku and (sku.startswith("MLU") or
+                            (sku.isdigit() and len(sku) > 8)):
+                    sku = ""
                 if sku:
                     skus_req[sku] = skus_req.get(sku, 0) + it.get("cantidad", 1)
             if skus_req:
