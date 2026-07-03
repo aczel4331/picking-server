@@ -1584,41 +1584,49 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
             print(f"[ETIQUETA-PERS] Transformation no disponible ({e}) — pegando sin escalar")
             bg_page.merge_page(orig_page)
 
-        # ── Overlay: logo arriba + texto a la derecha, sobre la misma página ───
+        # ── Overlay: logo en esquina + texto lateral ─────────────────────────
         ov_buf = io.BytesIO()
         c2 = rl_canvas.Canvas(ov_buf, pagesize=(pw, ph))
 
-        # LOGO en la franja superior liberada
+        # LOGO — esquina superior izquierda o derecha
         if tiene_logo:
             try:
                 logo_bytes = base64.b64decode(config["etiqueta_logo_b64"])
                 img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
 
-                ratio = img.height / img.width
-                h_pt  = FRANJA_LOGO - 8
-                w_pt  = h_pt / ratio
-                ancho_disponible = pw - FRANJA_TEXTO
-                if w_pt > ancho_disponible * 0.7:
-                    w_pt = ancho_disponible * 0.7
-                    h_pt = w_pt * ratio
+                # Tamaño: 20% del ancho (ajustable con etiqueta_logo_size)
+                pct  = max(5, min(40, int(config.get("etiqueta_logo_size", 20))))
+                w_pt = (pw * pct) / 100
+                h_pt = w_pt * (img.height / img.width)
 
-                x = (ancho_disponible - w_pt) / 2
-                y = ph - FRANJA_LOGO + (FRANJA_LOGO - h_pt) / 2
+                # Limitar alto a 25% de la página
+                if h_pt > ph * 0.25:
+                    h_pt = ph * 0.25
+                    w_pt = h_pt * (img.width / img.height)
 
                 img_r = img.resize((max(1, int(w_pt)), max(1, int(h_pt))),
                                    Image.Resampling.LANCZOS)
+
+                MARGEN = 6   # pts desde el borde
+                pos = config.get("etiqueta_logo_pos", "superior_der")
+                if pos == "superior_izq":
+                    x = MARGEN
+                else:  # superior_der
+                    x = pw - w_pt - MARGEN
+                y = ph - h_pt - MARGEN  # siempre arriba
+
                 tmp = io.BytesIO()
                 img_r.save(tmp, format="PNG")
                 tmp.seek(0)
                 c2.drawImage(ImageReader(tmp), x, y,
                              width=w_pt, height=h_pt, mask="auto")
-                print(f"[ETIQUETA-PERS] Logo: x={x:.0f}, y={y:.0f}, "
-                      f"w={w_pt:.0f}, h={h_pt:.0f}")
+                print(f"[ETIQUETA-PERS] Logo: pos={pos}, "
+                      f"x={x:.0f}, y={y:.0f}, w={w_pt:.0f}, h={h_pt:.0f}")
             except Exception as e:
                 print(f"[ETIQUETA-PERS] Error logo: {e}")
                 import traceback; traceback.print_exc()
 
-        # TEXTO en la franja derecha liberada, rotado 90°, negro sobre blanco
+        # TEXTO lateral — rotado 90°, negro sobre blanco
         if tiene_texto:
             try:
                 texto = config["etiqueta_texto"].strip()

@@ -24,7 +24,9 @@ try:
 except ImportError:
     _OPENPYXL_OK = False
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+CONFIG_PATH      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+EXCEL_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "excel_cache.json")
+LOGO_CACHE_PATH  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_cache.png")
 RAILWAY_URL = "https://picking-server-production.up.railway.app"
 
 # Planilla de pasillos en Google Sheets (se baja automaticamente al generar el lote)
@@ -53,7 +55,33 @@ def cargar_config():
                 return json.load(f)
         except Exception:
             pass
-    return {"impresora": "", "excel_path": "", "codigo_supervisor": "1234", "servidor_nube": "https://picking-server-production.up.railway.app", "clave_nube": "everest2024"}
+    return {"impresora": "", "excel_path": "", "codigo_supervisor": "1234",
+            "servidor_nube": "https://picking-server-production.up.railway.app",
+            "clave_nube": "everest2024"}
+
+
+def guardar_excel_cache(db: dict):
+    """Guarda el Excel de pasillos en disco para no tener que recargarlo."""
+    try:
+        with open(EXCEL_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False)
+        print(f"[EXCEL-CACHE] Guardado: {len(db)} SKUs → {EXCEL_CACHE_PATH}")
+    except Exception as e:
+        print(f"[EXCEL-CACHE] Error guardando: {e}")
+
+
+def cargar_excel_cache() -> dict:
+    """Carga el Excel de pasillos desde el cache en disco."""
+    if not os.path.exists(EXCEL_CACHE_PATH):
+        return {}
+    try:
+        with open(EXCEL_CACHE_PATH, "r", encoding="utf-8") as f:
+            db = json.load(f)
+        print(f"[EXCEL-CACHE] Cargado: {len(db)} SKUs desde cache")
+        return db
+    except Exception as e:
+        print(f"[EXCEL-CACHE] Error cargando: {e}")
+        return {}
 
 
 def _limpiar_nombre_pasillo(sheet_name):
@@ -509,9 +537,8 @@ class VentanaConfiguracion(tk.Toplevel):
         # Usar botones tipo toggle para posición (más confiables que Radiobutton en scroll canvas)
         self._btns_logo_pos = {}
         pos_opciones = [
-            ("superior_izq", "↖ Superior Izquierda (sobre etiqueta)"),
-            ("superior_der", "⬆ Zona superior — SOLO logo (tapa contenido)"),
-            ("borde",        "→ Lateral derecho"),
+            ("superior_izq", "↖ Esquina superior izquierda"),
+            ("superior_der", "↗ Esquina superior derecha"),
         ]
         fila_pos = tk.Frame(body, bg=C["bg_dark"])
         fila_pos.pack(fill="x", pady=(0,4))
@@ -1709,7 +1736,10 @@ class AsistenteDepositoApp:
         self.colecta_global    = {}  # {sku: qty} acumulado en Fase 1
         self.fase1_items       = {}  # widgets de la lista consolidada Fase 1
         self.sku_descripciones = {}  # {sku: descripcion} extraído del PDF
-        self.db_nombres        = {}  # {sku: nombre} cargado desde Excel
+        # Cargar Excel desde cache en disco (no hay que cargarlo manualmente cada vez)
+        self.db_nombres        = cargar_excel_cache()
+        if self.db_nombres:
+            print(f"[STARTUP] Excel cargado desde cache: {len(self.db_nombres)} SKUs")
         self.sku_item_id       = {}  # {sku: item_id} de MercadoLibre (para imagen)
         self.sku_nombre_ml     = {}  # {sku: nombre} de MercadoLibre (para mostrar)
         self._img_cache        = {}  # {sku: PhotoImage miniatura} cache de imágenes
@@ -3190,6 +3220,7 @@ class AsistenteDepositoApp:
             nuevos = leer_planilla_pasillos_google(ruta)
             if nuevos:
                 self.db_nombres.update(nuevos)
+                guardar_excel_cache(self.db_nombres)
                 self.lbl_estado_excel.config(
                     text=f"✅ Excel cargado: {len(nuevos)} SKUs desde archivo local",
                     fg=C["success"])
@@ -3330,6 +3361,8 @@ class AsistenteDepositoApp:
         # Fusionar: la planilla de Google manda para sus SKUs; el resto se conserva.
         self.db_nombres.update(nuevos)
         self._google_base_ts = _t.time()
+        # Guardar cache actualizado
+        guardar_excel_cache(self.db_nombres)
         try:
             self.lbl_estado_excel.config(
                 text=f"✅  Base actualizada desde Google — {len(nuevos)} entradas",
@@ -4115,6 +4148,8 @@ class AsistenteDepositoApp:
             self.lbl_estado_excel.config(
                 text=f"✅  {len(db)} productos cargados — {os.path.basename(ruta)}",
                 fg=C["success"])
+            # Guardar en cache para que la próxima vez no haya que cargar
+            guardar_excel_cache(db)
         else:
             self.lbl_estado_excel.config(
                 text=f"⚠  No se encontraron SKUs en {os.path.basename(ruta)}",
