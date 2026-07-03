@@ -1,0 +1,27 @@
+# ── Archivos del escritorio (NO subir a GitHub) ───────────────────────────────
+app_deposito.py
+logibot_updater.py
+logibot_dashboard.py
+logibot_preview_etiqueta.py
+build_exe.bat
+logibot_icon.ico
+logo.ico
+
+# ── Datos privados del usuario ────────────────────────────────────────────────
+config.json
+excel_cache.json
+metrics.json
+logo_cache.png
+
+# ── Archivos generados por PyInstaller ────────────────────────────────────────
+*.spec
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Archivos de desarrollo ────────────────────────────────────────────────────
+.env
+*.log
+*.tmp
