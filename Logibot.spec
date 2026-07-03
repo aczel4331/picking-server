@@ -1,12 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('templates/movil.html', 'templates'), ('logibot_updater.py', '.')]
+datas = [('templates/movil.html', 'templates'), ('logibot_updater.py', '.'), ('logibot_dashboard.py', '.'), ('logibot_preview_etiqueta.py', '.')]
 binaries = []
-hiddenimports = ['PIL._tkinter_finder', 'fitz', 'reportlab.pdfgen', 'reportlab.lib', 'pypdf', 'openpyxl', 'tkinter', 'tkinter.ttk', 'tkinter.filedialog', 'tkinter.messagebox']
+hiddenimports = ['PIL._tkinter_finder', 'fitz', 'reportlab.pdfgen.canvas', 'reportlab.lib.colors', 'reportlab.lib.utils', 'pypdf', 'openpyxl']
 tmp_ret = collect_all('reportlab')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('fitz')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('PIL')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
