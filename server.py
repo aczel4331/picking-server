@@ -971,10 +971,11 @@ def _refresh_pedidos_worker():
 
 
 def _auto_refresh_loop():
-    """Refresca pedidos de todas las cuentas cada 2 minutos."""
+    """Refresca pedidos de todas las cuentas cada 2 minutos.
+    Respeta el horario laboral — pausa de 7PM a 6:45AM Uruguay."""
     while True:
         time.sleep(120)
-        if _cuentas:
+        if _cuentas and not _sync_pausado():
             _refresh_pedidos_worker()
 
 
