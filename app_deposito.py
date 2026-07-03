@@ -5,7 +5,7 @@ from PIL import Image, ImageTk
 import os
 
 # ── Versión de la aplicación ──────────────────────────────────────────────────
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 APP_NAME    = "Logibot Picking Pro"
 
 # ── Auto-updater (importación segura — no falla si no está el módulo) ─────────
