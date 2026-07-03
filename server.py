@@ -176,37 +176,36 @@ def _actualizar_sync_estado(canal: str):
         _sync_estado_canal[canal] = "en_lote"
 
 
+def _hora_uruguay():
+    """Devuelve la hora actual en Uruguay (UTC-3)."""
+    from datetime import datetime, timezone, timedelta
+    uy = timezone(timedelta(hours=-3))
+    return datetime.now(uy)
+
+
 def _sync_pausado() -> bool:
     """
     Devuelve True si hay que pausar las consultas activas a ML.
 
-    Lógica combinada:
-      1. Horario nocturno (7PM → 6:45AM) → siempre pausado
-         Los webhooks de ML siguen activos y reciben pedidos nuevos.
-      2. Horario laboral (7AM → 7PM):
-         → Pausado si TODOS los canales están en "en_lote"
-         → Activo si hay algún canal "idle" o "casi_listo"
+    Horario Uruguay (UTC-3):
+      7PM → 6:44AM  → PAUSADO (noche)
+      6:45AM → 7AM  → ACTIVO  (pre-calentamiento)
+      7AM → 7PM     → según lote activo
     """
-    from datetime import datetime
-    ahora = datetime.now()
+    ahora = _hora_uruguay()
     hora  = ahora.hour
     mins  = ahora.minute
 
-    # ── Horario nocturno: 19:00 → 06:44 ─────────────────────────────────────
-    # Pausa total. Solo webhooks activos (pedidos nuevos igual entran).
+    # Noche: 19:00 → 06:44 Uruguay
     es_noche = hora >= 19 or (hora < 6) or (hora == 6 and mins < 45)
     if es_noche:
         return True
 
-    # ── Pre-calentamiento: 06:45 → 06:59 ────────────────────────────────────
-    # Durante este período el sistema descarga pedidos gradualmente.
-    # No se pausa aunque haya lotes activos.
-    es_precalentamiento = (hora == 6 and mins >= 45)
-    if es_precalentamiento:
+    # Pre-calentamiento: 6:45 → 6:59 → nunca pausar
+    if hora == 6 and mins >= 45:
         return False
 
-    # ── Horario laboral: 07:00 → 18:59 ──────────────────────────────────────
-    # Pausar solo si el equipo está trabajando en lotes activos.
+    # Horario laboral: pausar solo si todos los canales trabajan
     activos = [c for c, e in _estados_canal.items() if e.get("cargado")]
     if not activos:
         return False
@@ -214,57 +213,31 @@ def _sync_pausado() -> bool:
 
 
 def _warmup_matutino():
-    """
-    Pre-calentamiento gradual entre 6:45 y 7:00 AM.
-    Descarga los pedidos acumulados durante la noche en tandas pequeñas
-    para que la app esté lista cuando el equipo llegue a las 7AM.
-    Sin saturar el servidor ni la API de ML.
-    """
+    """Pre-calentamiento 6:45AM Uruguay — carga pedidos nocturnos gradualmente."""
     import time
-    from datetime import datetime
-
     while True:
-        ahora = datetime.now()
+        ahora = _hora_uruguay()
         hora  = ahora.hour
         mins  = ahora.minute
 
-        # Solo actuar en la ventana 6:45-6:59
         if hora == 6 and mins >= 45:
-            print("[WARMUP] Iniciando pre-calentamiento matutino...")
-
-            # Paso 1 (6:45): Descargar pedidos de las últimas 10 horas
+            print("[WARMUP] 6:45 AM Uruguay — pre-calentamiento...")
             try:
-                print("[WARMUP] Paso 1: Descargando pedidos nocturnos...")
-                from datetime import timedelta
-                desde = (datetime.now() - timedelta(hours=10)).strftime("%Y-%m-%d")
-                threading.Thread(
-                    target=_refresh_pedidos_worker,
-                    daemon=True).start()
-                time.sleep(60)   # esperar 1 minuto
-            except Exception as e:
-                print(f"[WARMUP] Error paso 1: {e}")
-
-            # Paso 2 (6:46): Actualizar estados de pedidos existentes
-            try:
-                print("[WARMUP] Paso 2: Actualizando estados...")
+                threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
+                time.sleep(60)
                 with _lock:
                     pendientes = [p for p in _pedidos_ml.values()
                                   if p.get("shipping_id","")
                                   and not p.get("impreso", False)]
-                # Procesar en tandas de 15 para no saturar
                 for i in range(0, min(len(pendientes), 60), 15):
                     tanda = pendientes[i:i+15]
                     _refrescar_estado_pedidos_bg(tanda, limite=15)
-                    time.sleep(20)   # 20 segundos entre tandas
+                    time.sleep(20)
+                print("[WARMUP] ✅ Listo para las 7:00 AM")
             except Exception as e:
-                print(f"[WARMUP] Error paso 2: {e}")
-
-            print("[WARMUP] ✅ Sistema listo para las 7:00 AM")
-
-            # Dormir hasta el próximo día (23 horas)
+                print(f"[WARMUP] Error: {e}")
             time.sleep(23 * 3600)
         else:
-            # Revisar cada 5 minutos si ya es hora
             time.sleep(300)
 
 
