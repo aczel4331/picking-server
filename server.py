@@ -1142,7 +1142,6 @@ def api_pedidos():
                          and not p.get("impreso", False)]
 
     if necesitan_refresh:
-        print(f"[PEDIDOS] Refrescando {len(necesitan_refresh)} pedidos pendientes contra ML")
         def _refresh_bg():
             _refrescar_estado_pedidos_bg(necesitan_refresh, limite=40)
         import threading as _th
@@ -1158,28 +1157,14 @@ def api_pedidos():
 
 
 def _refrescar_estado_pedidos_bg(pedidos_lista, limite=40):
-    """
-    Consulta el shipment de cada pedido en ML y actualiza logistica,
-    estado_envio, substatus, tipo e impreso con los datos frescos.
-
-    Se llama:
-    - desde api_pedidos() cada vez que la app pide la lista
-    - desde el thread periódico _sync_pedidos_ml_periodico()
-    """
-    # Todos los substatus de ML que indican que la etiqueta YA FUE IMPRESA
-    # y el paquete ya está en proceso de colecta/envío.
-    # Fuente: diagnóstico real del servidor (api/diag-colecta).
+    """Consulta el shipment de cada pedido en ML y actualiza logistica,
+    estado_envio, substatus, tipo e impreso con los datos frescos."""
     SUBSTATUS_IMPRESOS = (
-        "printed",               # etiqueta impresa (oficial)
-        "ready_for_pickup",      # impresa, esperando que pase colecta
-        "in_packing_list",       # en lista de empaque del HUB (ya colectado)
-        "in_hub",                # llegó al HUB (ya colectado)
-        "shipped",               # enviado al comprador
-        "delivered",             # entregado al comprador
-        "ready_to_ship_wt_route", # listo para enviar con ruta asignada
-        "to_be_agreed",          # a acordar (ya procesado)
+        "printed", "ready_for_pickup", "in_packing_list",
+        "in_hub", "shipped", "delivered", "ready_to_ship_wt_route",
+        "to_be_agreed",
     )
-    procesados = 0
+    procesados       = 0
     marcados_impresos = 0
     for p in pedidos_lista[:limite]:
         try:
@@ -1228,32 +1213,21 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=40):
 
                 if not antes and pp.get("impreso"):
                     marcados_impresos += 1
-                    print(f"[PEDIDOS] ✅ #{oid} IMPRESO "
-                          f"(status={status}, sub={substatus})")
+                    print(f"[PEDIDOS] ✅ #{oid} → impreso (sub={substatus})")
             procesados += 1
         except Exception as e:
-            print(f"[PEDIDOS] Error refrescando #{p.get('order_id','')}: {e}")
+            pass  # silenciar errores individuales para no saturar logs
 
     if marcados_impresos:
-        print(f"[PEDIDOS] Refresh completo: {procesados} consultados, "
-              f"{marcados_impresos} pasaron a impresos")
+        print(f"[PEDIDOS] {marcados_impresos} nuevos impresos de {procesados} consultados")
 
 
 def _sync_pedidos_ml_periodico():
-    """
-    Thread que corre en background y cada 90 segundos consulta el estado real
-    de los pedidos pendientes contra ML. Esto es lo que garantiza que si
-    el vendedor imprime una etiqueta directamente en ML (fuera de la app),
-    la app lo detecta automáticamente sin necesidad de tocar ningún botón.
-
-    - Primer sync: 30 segundos después del startup (para dejar arrancar tokens)
-    - Sync recurrente: cada 90 segundos
-    - Cada sync procesa hasta 60 pedidos por vez
-    """
+    """Thread que cada 90s sincroniza estado de pedidos con ML."""
     import time
-    print("[SYNC-ML] Thread de sincronización iniciado (primer sync en 30s)")
-    time.sleep(30)   # esperar a que carguen tokens
+    time.sleep(30)  # esperar tokens al arrancar
 
+    ciclo = 0
     while True:
         try:
             with _lock:
@@ -1261,16 +1235,14 @@ def _sync_pedidos_ml_periodico():
                               if p.get("shipping_id","")
                               and not p.get("impreso", False)]
             if pendientes:
-                print(f"[SYNC-ML] Sincronizando {len(pendientes)} pedidos "
-                      f"pendientes con ML...")
+                # Solo loguear cada 10 ciclos (~15 minutos) para no saturar
+                if ciclo % 10 == 0:
+                    print(f"[SYNC-ML] Ciclo #{ciclo}: {len(pendientes)} pendientes")
                 _refrescar_estado_pedidos_bg(pendientes, limite=60)
-            else:
-                print("[SYNC-ML] Sin pedidos pendientes para sincronizar")
         except Exception as e:
             print(f"[SYNC-ML] Error: {e}")
-            import traceback; traceback.print_exc()
-
-        time.sleep(90)   # esperar 90s antes del próximo sync
+        ciclo += 1
+        time.sleep(90)
 
 
 @app.route("/api/diag-colecta")
@@ -3279,8 +3251,14 @@ if __name__ == "__main__":
     else:
         try:
             from waitress import serve
-            print(f"✅ Servidor iniciado (waitress) en http://0.0.0.0:{port}")
-            serve(app, host="0.0.0.0", port=port, threads=8)
+            print(f"✅ Servidor iniciado (waitress) en http://0.0.0.0:{port} — threads=16")
+            serve(app,
+                  host="0.0.0.0",
+                  port=port,
+                  threads=16,              # más workers → menos cola
+                  channel_timeout=120,     # timeout por conexión
+                  connection_limit=200,    # máx conexiones simultáneas
+                  cleanup_interval=10)     # limpiar conexiones muertas
         except ImportError:
             print(f"✅ Servidor iniciado (flask dev) en http://0.0.0.0:{port}")
             app.run(host="0.0.0.0", port=port, debug=False)
