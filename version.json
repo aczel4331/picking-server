@@ -1,5 +1,5 @@
 {
-  "version": "2.1.0",
-  "url_exe": "https://github.com/aczel4331/picking-server/releases/download/v2.1.0/Logibot.zip",
-  "notas": "Dashboard de metricas, vista previa etiquetas, Excel persistido, canales Flex y Colecta"
+  "version": "2.2.0",
+  "url_exe": "https://github.com/aczel4331/picking-server/releases/download/v2.2.0/Logibot_v2.2.0.zip",
+  "notas": "Métricas completas en Inicio, Top 5 productos, Flex vs Colecta"
 }
