@@ -130,6 +130,64 @@ _estados_canal = {
 # _estado legacy = alias al primer canal que se use (retrocompatibilidad)
 _estado = _estados_canal["colecta"]
 
+# ── Control inteligente de sincronización con ML ──────────────────────────────
+# Pausa las consultas a ML mientras el equipo está trabajando en el lote,
+# evitando requests innecesarios. Reactiva cuando quedan pocas etiquetas.
+#
+# Estados posibles por canal:
+#   "idle"       → sin lote activo, consultar ML normal
+#   "en_lote"    → lote activo en Fase 1 o Fase 2, PAUSAR consultas
+#   "casi_listo" → quedan ≤ UMBRAL_REACTIVAR etiquetas, REACTIVAR consultas
+#
+UMBRAL_REACTIVAR = 2   # reactivar cuando quedan ≤ N etiquetas por imprimir
+_sync_estado_canal = {
+    "flex":    "idle",
+    "colecta": "idle",
+}
+
+
+def _actualizar_sync_estado(canal: str):
+    """
+    Recalcula el estado de sync del canal según el lote activo.
+    Llamar cada vez que cambia la fase o se imprime una etiqueta.
+    """
+    est = _get_estado(canal)
+    if not est.get("cargado"):
+        _sync_estado_canal[canal] = "idle"
+        return
+
+    fase = est.get("fase", 1)
+    pedidos = est.get("pedidos", {})
+
+    if not pedidos:
+        # Sin pedidos en el lote → idle
+        _sync_estado_canal[canal] = "idle"
+        return
+
+    # Contar etiquetas pendientes de imprimir
+    impresas_set = set(est.get("etiquetas_impresas", []))
+    pendientes   = sum(1 for oid in pedidos if oid not in impresas_set)
+
+    if pendientes <= UMBRAL_REACTIVAR:
+        # Quedan pocas → reactivar para cargar nuevos pedidos
+        _sync_estado_canal[canal] = "casi_listo"
+    else:
+        # Trabajando en el lote → pausar
+        _sync_estado_canal[canal] = "en_lote"
+
+
+def _sync_pausado() -> bool:
+    """
+    Devuelve True si TODOS los canales activos están en "en_lote"
+    (es decir, el equipo está trabajando y no hay que molestar a ML).
+    Si al menos un canal está "idle" o "casi_listo" → permitir sync.
+    """
+    activos = [c for c, e in _estados_canal.items() if e.get("cargado")]
+    if not activos:
+        return False   # sin lotes → sync normal
+    # Pausar solo si TODOS están trabajando
+    return all(_sync_estado_canal.get(c, "idle") == "en_lote" for c in activos)
+
 
 def _get_estado(canal=None):
     """Devuelve el dict de estado para un canal dado.
@@ -1133,26 +1191,28 @@ def api_pedidos():
         if log and (not p.get("tipo") or p.get("tipo") == "desconocido"):
             p["tipo"] = _calcular_tipo(log, p.get("tags",[]), p.get("shipping_id",""))
 
-    # ── AUTO-REFRESH agresivo: TODOS los pedidos no-impresos con shipping_id ──
-    # Cada vez que la app pide pedidos, actualizamos el estado real de ML
-    # para los que están marcados como pendientes. Así los que ya se
-    # imprimieron en ML pasan a estar marcados como impresos automáticamente.
-    necesitan_refresh = [p for p in pedidos
-                         if p.get("shipping_id","")
-                         and not p.get("impreso", False)]
 
-    if necesitan_refresh:
-        def _refresh_bg():
-            _refrescar_estado_pedidos_bg(necesitan_refresh, limite=40)
-        import threading as _th
-        _th.Thread(target=_refresh_bg, daemon=True).start()
+    # ── Refresh de estados contra ML ─────────────────────────────────────────
+    # PAUSADO si el equipo está trabajando en un lote activo.
+    # Se REACTIVA automáticamente cuando quedan ≤ 2 etiquetas por imprimir.
+    if not _sync_pausado():
+        necesitan_refresh = [p for p in pedidos
+                             if p.get("shipping_id","")
+                             and not p.get("impreso", False)]
+        if necesitan_refresh:
+            def _refresh_bg():
+                _refrescar_estado_pedidos_bg(necesitan_refresh, limite=40)
+            import threading as _th
+            _th.Thread(target=_refresh_bg, daemon=True).start()
 
     return jsonify({
-        "ok":      True,
-        "pedidos": pedidos,
-        "total":   len(pedidos),
-        "ts":      _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S")
-                   if _ultimo_refresh_pedidos else "—",
+        "ok":           True,
+        "pedidos":      pedidos,
+        "total":        len(pedidos),
+        "sync_pausado": _sync_pausado(),
+        "sync_estados": dict(_sync_estado_canal),
+        "ts":           _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S")
+                        if _ultimo_refresh_pedidos else "—",
     })
 
 
@@ -1223,24 +1283,36 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=40):
 
 
 def _sync_pedidos_ml_periodico():
-    """Thread que cada 90s sincroniza estado de pedidos con ML."""
+    """Thread que cada 90s sincroniza estado de pedidos con ML.
+    Se PAUSA automáticamente mientras el equipo trabaja en un lote activo
+    y se REACTIVA cuando quedan ≤ UMBRAL_REACTIVAR etiquetas por imprimir."""
     import time
     time.sleep(30)  # esperar tokens al arrancar
 
     ciclo = 0
     while True:
         try:
-            with _lock:
-                pendientes = [p for p in _pedidos_ml.values()
-                              if p.get("shipping_id","")
-                              and not p.get("impreso", False)]
-            if pendientes:
-                # Solo loguear cada 10 ciclos (~15 minutos) para no saturar
-                if ciclo % 10 == 0:
-                    print(f"[SYNC-ML] Ciclo #{ciclo}: {len(pendientes)} pendientes")
-                _refrescar_estado_pedidos_bg(pendientes, limite=60)
+            # ── Verificar si hay que pausar ───────────────────────────────────
+            if _sync_pausado():
+                # Todos los canales en "en_lote" → no consultar ML
+                # Solo loguear cada 20 ciclos para no saturar logs
+                if ciclo % 20 == 0:
+                    estados = {c: _sync_estado_canal.get(c,"?")
+                               for c in _estados_canal}
+                    print(f"[SYNC] Pausado — equipo trabajando. "
+                          f"Estados: {estados}")
+            else:
+                with _lock:
+                    pendientes = [p for p in _pedidos_ml.values()
+                                  if p.get("shipping_id","")
+                                  and not p.get("impreso", False)]
+                if pendientes:
+                    if ciclo % 10 == 0:
+                        print(f"[SYNC] Ciclo #{ciclo}: "
+                              f"{len(pendientes)} pedidos a verificar")
+                    _refrescar_estado_pedidos_bg(pendientes, limite=60)
         except Exception as e:
-            print(f"[SYNC-ML] Error: {e}")
+            print(f"[SYNC] Error: {e}")
         ciclo += 1
         time.sleep(90)
 
@@ -2564,6 +2636,8 @@ def subir_estado():
             est["pedidos"] = data["pedidos"]
         if nueva_fase == 1 and not data.get("colecta"):
             est["etiquetas_impresas"] = []
+        # Actualizar estado de sync al cargar nuevo lote
+        _actualizar_sync_estado(canal)
     # Persistir
     try:
         import json as _j
@@ -2571,7 +2645,9 @@ def subir_estado():
             _j.dump({"canales": _estados_canal}, f, default=str)
     except Exception as e:
         print(f"[LOTE] Error persistiendo: {e}")
-    print(f"[LOTE] Canal '{canal}' cargado: {est['total_skus']} SKUs, fase {nueva_fase}")
+    estado_sync = _sync_estado_canal.get(canal, "idle")
+    print(f"[LOTE] Canal '{canal}' cargado: {est['total_skus']} SKUs, "
+          f"fase {nueva_fase}, sync={estado_sync}")
     return jsonify({"ok": True, "canal": canal,
                     "msg": f"Canal '{canal}': {est['total_skus']} SKUs"})
 
@@ -2674,16 +2750,23 @@ def fase2_marcar_impresa(order_id):
     with _lock:
         if order_id not in est.get("etiquetas_impresas", []):
             est.setdefault("etiquetas_impresas", []).append(order_id)
-        # Tambien marcar el pedido ML como impreso si existe
         if order_id in _pedidos_ml:
             _pedidos_ml[order_id]["impreso"] = True
+        # Recalcular estado de sync — puede activar consultas a ML
+        # si quedan ≤ UMBRAL_REACTIVAR etiquetas pendientes
+        _actualizar_sync_estado(canal)
+        nuevo_estado = _sync_estado_canal.get(canal, "idle")
+        if nuevo_estado == "casi_listo":
+            print(f"[SYNC] Canal '{canal}' → casi_listo, "
+                  f"reactivando consultas a ML")
         try:
             import json as _j
             with open(LOTE_PATH, "w") as f:
-                _j.dump(dict(_estado), f)
+                _j.dump({"canales": _estados_canal}, f, default=str)
         except Exception:
             pass
-    return jsonify({"ok": True, "order_id": order_id})
+    return jsonify({"ok": True, "order_id": order_id,
+                    "sync_estado": nuevo_estado})
 
 
 @app.route("/api/escanear", methods=["POST"])
