@@ -1879,13 +1879,6 @@ class AsistenteDepositoApp:
                   command=self._mostrar_info_movil)
         self.btn_servidor.pack(side="left", padx=(0, 6))
 
-        tk.Button(btns_row, text="📊  Dashboard",
-                  font=("Segoe UI Semibold", 9), bg="#7C3AED", fg="white",
-                  activebackground="#6D28D9", activeforeground="white",
-                  relief="flat", cursor="hand2", padx=12, pady=5, bd=0,
-                  command=lambda: abrir_dashboard(self.root)
-                  ).pack(side="left", padx=(0, 6))
-
         tk.Button(btns_row, text="⚙  Config",
                   font=("Segoe UI Semibold", 9), bg=C["card"], fg=C["accent"],
                   activebackground=C["border"], activeforeground=C["accent"],
@@ -3883,6 +3876,156 @@ class AsistenteDepositoApp:
                       activebackground=hover, activeforeground="white",
                       relief="flat", cursor="hand2", padx=20, pady=11, bd=0,
                       command=_cmd).pack(side="left", padx=(0,10))
+
+        # ── Métricas históricas (del dashboard) ───────────────────────────────
+        try:
+            from logibot_dashboard import _cargar_metricas, _fmt_duracion
+            data = _cargar_metricas()
+            if data:
+                tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(4,14))
+                tk.Label(f, text="MÉTRICAS HISTÓRICAS", font=("Segoe UI", 9, "bold"),
+                         bg=C["bg_dark"], fg=C["text_lo"]).pack(anchor="w", padx=pad, pady=(0,10))
+
+                # ── KPIs históricos en cards ───────────────────────────────────
+                total_lotes   = len(data)
+                total_pedidos = sum(d.get("n_pedidos", 0) for d in data)
+                total_uds     = sum(d.get("total_uds",  0) for d in data)
+                durs          = [d["duracion_seg"] for d in data if d.get("duracion_seg",0)>0]
+                prom_dur      = int(sum(durs)/len(durs)) if durs else 0
+                flex_lotes    = len([d for d in data if d.get("canal")=="flex"])
+                col_lotes     = len([d for d in data if d.get("canal")=="colecta"])
+
+                import datetime as _datetime
+                hoy       = _datetime.date.today().strftime("%Y-%m-%d")
+                data_hoy  = [d for d in data if d.get("ts","").startswith(hoy)]
+                lotes_hoy = len(data_hoy)
+                peds_hoy  = sum(d.get("n_pedidos",0) for d in data_hoy)
+
+                hist_kpis = [
+                    ("Total lotes",           str(total_lotes),           "procesados",         "#7C3AED"),
+                    ("Total pedidos",          f"{total_pedidos:,}",       "todos los tiempos",  "#0891B2"),
+                    ("Unidades procesadas",    f"{total_uds:,}",           "todos los tiempos",  "#059669"),
+                    ("Tiempo prom. colecta",   _fmt_duracion(prom_dur),    "por lote",           "#F59E0B"),
+                    ("Lotes Flex",             str(flex_lotes),            "canal flex",         "#8B5CF6"),
+                    ("Lotes Colecta",          str(col_lotes),             "canal colecta",      "#2563EB"),
+                    ("Lotes hoy",              str(lotes_hoy),             f"{peds_hoy} pedidos","#EC4899"),
+                ]
+
+                hist_f = tk.Frame(f, bg=C["bg_dark"])
+                hist_f.pack(fill="x", padx=pad, pady=(0,14))
+                COLS_H = 3
+                for i, (tit, val, sub, color) in enumerate(hist_kpis):
+                    r, c = divmod(i, COLS_H)
+                    outer = tk.Frame(hist_f, bg=color)
+                    outer.grid(row=r, column=c, sticky="nsew", padx=7, pady=7)
+                    tk.Frame(outer, bg=color, height=3).pack(fill="x")
+                    card = tk.Frame(outer, bg=C["card"])
+                    card.pack(fill="both", expand=True, padx=1, pady=(0,1))
+                    inn = tk.Frame(card, bg=C["card"], padx=14, pady=12)
+                    inn.pack(fill="both", expand=True)
+                    tk.Label(inn, text=tit.upper(), font=("Segoe UI", 7, "bold"),
+                             bg=C["card"], fg=C["text_lo"]).pack(anchor="w")
+                    tk.Label(inn, text=val, font=("Segoe UI Black", 24),
+                             bg=C["card"], fg=color).pack(anchor="w", pady=(2,1))
+                    tk.Label(inn, text=sub, font=("Segoe UI", 8),
+                             bg=C["card"], fg=C["text_mid"]).pack(anchor="w")
+                for c in range(COLS_H):
+                    hist_f.columnconfigure(c, weight=1)
+
+                # ── Top 5 productos más vendidos ───────────────────────────────
+                conteo = {}
+                for lote in data:
+                    for sku, qty in lote.get("skus", {}).items():
+                        conteo[sku] = conteo.get(sku, 0) + qty
+                top5 = sorted(conteo.items(), key=lambda x: x[1], reverse=True)[:5]
+
+                if top5:
+                    tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(0,12))
+                    tk.Label(f, text="🏆  TOP 5 PRODUCTOS MÁS PROCESADOS",
+                             font=("Segoe UI", 9, "bold"),
+                             bg=C["bg_dark"], fg=C["text_lo"]).pack(anchor="w", padx=pad, pady=(0,8))
+
+                    top_f = tk.Frame(f, bg=C["bg_dark"])
+                    top_f.pack(fill="x", padx=pad, pady=(0,14))
+                    total_all = sum(conteo.values()) or 1
+                    RANG_COLORS = ["#F59E0B","#94A3B8","#CD7F32","#3B82F6","#8B5CF6"]
+
+                    for i, (sku, qty) in enumerate(top5):
+                        pct_sku = qty / total_all * 100
+                        row = tk.Frame(top_f, bg=C["panel"], pady=8)
+                        row.pack(fill="x", pady=3)
+                        # Nro
+                        tk.Label(row, text=f"#{i+1}",
+                                 font=("Segoe UI Black", 13),
+                                 bg=C["panel"], fg=RANG_COLORS[i],
+                                 width=4).pack(side="left", padx=(12,8))
+                        # SKU
+                        tk.Label(row, text=sku,
+                                 font=("Consolas", 11, "bold"),
+                                 bg=C["panel"], fg=C["text_hi"],
+                                 width=16, anchor="w").pack(side="left")
+                        # Barra de progreso
+                        bar_outer = tk.Frame(row, bg=C["border"], height=8)
+                        bar_outer.pack(side="left", fill="x", expand=True, padx=(8,8))
+                        bar_outer.pack_propagate(False)
+                        def _draw_bar(e, q=qty, t=total_all, col=RANG_COLORS[i]):
+                            for w in e.widget.winfo_children():
+                                w.destroy()
+                            fill = max(4, int(e.widget.winfo_width() * q / t))
+                            tk.Frame(e.widget, bg=col,
+                                     width=fill, height=8).pack(side="left")
+                        bar_outer.bind("<Configure>", _draw_bar)
+                        # Cantidad
+                        tk.Label(row, text=f"{qty:,} uds  ({pct_sku:.1f}%)",
+                                 font=("Segoe UI Semibold", 9),
+                                 bg=C["panel"], fg=RANG_COLORS[i],
+                                 width=18, anchor="e").pack(side="right", padx=12)
+
+                # ── Flex vs Colecta ────────────────────────────────────────────
+                if flex_lotes > 0 or col_lotes > 0:
+                    tk.Frame(f, bg=C["border"], height=1).pack(fill="x", padx=pad, pady=(0,12))
+                    tk.Label(f, text="⚡ FLEX vs 🚚 COLECTA",
+                             font=("Segoe UI", 9, "bold"),
+                             bg=C["bg_dark"], fg=C["text_lo"]).pack(anchor="w", padx=pad, pady=(0,8))
+
+                    comp_f = tk.Frame(f, bg=C["bg_dark"])
+                    comp_f.pack(fill="x", padx=pad, pady=(0,18))
+
+                    for canal, color_c, bg_c, emoji in [
+                        ("flex",    "#8B5CF6", "#2D1B69", "⚡"),
+                        ("colecta", "#2563EB", "#1E3A5F", "🚚"),
+                    ]:
+                        data_c  = [d for d in data if d.get("canal") == canal]
+                        if not data_c:
+                            continue
+                        n_lotes = len(data_c)
+                        n_peds  = sum(d.get("n_pedidos",0)  for d in data_c)
+                        n_uds   = sum(d.get("total_uds",0)  for d in data_c)
+                        durs_c  = [d["duracion_seg"] for d in data_c if d.get("duracion_seg",0)>0]
+                        prom_c  = int(sum(durs_c)/len(durs_c)) if durs_c else 0
+
+                        card = tk.Frame(comp_f, bg=bg_c, padx=18, pady=14)
+                        card.pack(side="left", expand=True, fill="both", padx=(0,10))
+
+                        tk.Label(card, text=f"{emoji}  {canal.upper()}",
+                                 bg=bg_c, fg=color_c,
+                                 font=("Segoe UI Black", 13)).pack(anchor="w")
+                        for lbl, val in [
+                            ("Lotes",          str(n_lotes)),
+                            ("Pedidos totales", f"{n_peds:,}"),
+                            ("Unidades",        f"{n_uds:,}"),
+                            ("Tiempo prom.",    _fmt_duracion(prom_c)),
+                        ]:
+                            r2 = tk.Frame(card, bg=bg_c)
+                            r2.pack(fill="x", pady=2)
+                            tk.Label(r2, text=lbl, bg=bg_c, fg="#94A3B8",
+                                     font=("Segoe UI", 8), width=16,
+                                     anchor="w").pack(side="left")
+                            tk.Label(r2, text=val, bg=bg_c, fg="white",
+                                     font=("Segoe UI Semibold", 10)).pack(side="left")
+        except Exception as e:
+            # Si logibot_dashboard no está disponible, no mostrar sección
+            print(f"[INICIO] Métricas históricas no disponibles: {e}")
 
         # ── Timestamp ──────────────────────────────────────────────────────
         tk.Label(f, text=f"↻  Actualizado a las {_dt.now().strftime('%H:%M:%S')}",
