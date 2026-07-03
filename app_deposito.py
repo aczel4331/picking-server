@@ -3,6 +3,39 @@ from tkinter import filedialog, messagebox, ttk
 import fitz
 from PIL import Image, ImageTk
 import os
+
+# ── Versión de la aplicación ──────────────────────────────────────────────────
+APP_VERSION = "2.1.0"
+APP_NAME    = "Logibot Picking Pro"
+
+# ── Auto-updater (importación segura — no falla si no está el módulo) ─────────
+try:
+    from logibot_updater import (verificar_actualizacion,
+                                 descargar_e_instalar,
+                                 reiniciar_con_nueva_version,
+                                 BannerActualizacion)
+    _UPDATER_OK = True
+except ImportError:
+    _UPDATER_OK = False
+
+# ── Dashboard de métricas (importación segura) ────────────────────────────────
+try:
+    from logibot_dashboard import (registrar_inicio_lote, registrar_fin_lote,
+                                   abrir_dashboard)
+    _DASHBOARD_OK = True
+except ImportError:
+    _DASHBOARD_OK = False
+    def registrar_inicio_lote(*a, **k): pass
+    def registrar_fin_lote(*a, **k):    pass
+    def abrir_dashboard(*a, **k):       pass
+
+# ── Vista previa de etiqueta (importación segura) ─────────────────────────────
+try:
+    from logibot_preview_etiqueta import mostrar_preview_etiqueta
+    _PREVIEW_OK = True
+except ImportError:
+    _PREVIEW_OK = False
+    def mostrar_preview_etiqueta(*a, **k): pass
 import tempfile
 import re
 import json
@@ -1846,6 +1879,13 @@ class AsistenteDepositoApp:
                   command=self._mostrar_info_movil)
         self.btn_servidor.pack(side="left", padx=(0, 6))
 
+        tk.Button(btns_row, text="📊  Dashboard",
+                  font=("Segoe UI Semibold", 9), bg="#7C3AED", fg="white",
+                  activebackground="#6D28D9", activeforeground="white",
+                  relief="flat", cursor="hand2", padx=12, pady=5, bd=0,
+                  command=lambda: abrir_dashboard(self.root)
+                  ).pack(side="left", padx=(0, 6))
+
         tk.Button(btns_row, text="⚙  Config",
                   font=("Segoe UI Semibold", 9), bg=C["card"], fg=C["accent"],
                   activebackground=C["border"], activeforeground=C["accent"],
@@ -2507,7 +2547,6 @@ class AsistenteDepositoApp:
                 col_data.append(("🏷 Etiqueta", "accion_btn", borde_color))
             else:
                 col_data.append(("—", "accion", C["text_lo"]))
-
             # Renderizar columnas con pesos proporcionales
             for (txt, col_type, col_color), peso in zip(col_data, col_weights):
                 col_frame = tk.Frame(inner, bg=bg)
@@ -2519,12 +2558,30 @@ class AsistenteDepositoApp:
                              bg=col_color, fg="white", anchor="center",
                              padx=6, pady=3).pack(fill="both", expand=True, padx=3, pady=2)
                 elif col_type == "accion_btn":
-                    # Botón etiqueta
-                    tk.Button(col_frame, text=txt, font=("Segoe UI Semibold", 9),
-                              bg=col_color, fg="white", relief="flat", cursor="hand2",
+                    # Botones: 👁 Ver preview + 🏷 Imprimir
+                    btn_row = tk.Frame(col_frame, bg=bg)
+                    btn_row.pack(fill="both", expand=True, padx=3, pady=2)
+                    # Botón vista previa
+                    if _PREVIEW_OK:
+                        tk.Button(btn_row, text="👁",
+                                  font=("Segoe UI", 10),
+                                  bg=C["panel"], fg=C["text_mid"],
+                                  relief="flat", cursor="hand2",
+                                  highlightthickness=0, padx=5, pady=3, bd=0,
+                                  command=lambda oid=ped["order_id"]: mostrar_preview_etiqueta(
+                                      self.root, str(oid),
+                                      self.config,
+                                      self.config.get("servidor_nube", RAILWAY_URL),
+                                      self.config.get("clave_nube", "everest2024"))
+                                  ).pack(side="left", fill="y")
+                    # Botón imprimir etiqueta
+                    tk.Button(btn_row, text="🏷 Imprimir",
+                              font=("Segoe UI Semibold", 9),
+                              bg=col_color, fg="white", relief="flat",
+                              cursor="hand2",
                               highlightthickness=0, padx=6, pady=3, bd=0,
                               command=lambda oid=ped["order_id"]: self._ml_ver_etiqueta(oid)
-                              ).pack(fill="both", expand=True, padx=3, pady=2)
+                              ).pack(side="left", fill="both", expand=True)
                 else:
                     # Label normal
                     font = ("Consolas", 10) if col_type == "sku" else \
@@ -3576,6 +3633,13 @@ class AsistenteDepositoApp:
         # "todos" se mapea a "default" porque puede tener mezcla
         self._canal_lote_activo = tipo_activo if tipo_activo in ("flex","colecta") else "default"
         print(f"[LOTE] Canal activo: {self._canal_lote_activo} (tab: {tipo_activo})")
+
+        # Registrar inicio del lote en métricas
+        registrar_inicio_lote(
+            canal     = self._canal_lote_activo,
+            n_pedidos = len(pendientes),
+            skus      = total_req,
+        )
 
         # Construir pedidos internos para Fase 1 y Fase 2
         self.pedidos.clear()
@@ -5606,6 +5670,10 @@ class AsistenteDepositoApp:
 
     def _ejecutar_transicion_fase2(self):
         """Transición automática a Fase 2 cuando se completa la colecta."""
+        # Registrar fin de colecta en métricas
+        canal = getattr(self, "_canal_lote_activo", "default")
+        registrar_fin_lote(canal)
+
         self.fase_actual = 2
 
         for d in self.pedidos.values():
@@ -7334,4 +7402,94 @@ function vibrar(p){if(navigator.vibrate)navigator.vibrate(p);}
 if __name__ == "__main__":
     ventana_principal = tk.Tk()
     app = AsistenteDepositoApp(ventana_principal)
+
+    # ── Verificar actualizaciones en background (30s después de arrancar) ─────
+    if _UPDATER_OK:
+        def _on_update_disponible(info):
+            """Callback cuando hay nueva versión — mostrar banner en UI."""
+            def _ui():
+                try:
+                    # Buscar el frame principal de la app para insertar el banner
+                    parent = ventana_principal
+                    banner = BannerActualizacion(
+                        parent, info,
+                        on_instalar=lambda: _iniciar_descarga(info))
+                    # Insertar banner encima de todo usando place sobre el root
+                    _mostrar_banner_update(info)
+                except Exception as e:
+                    print(f"[UPDATER] Error mostrando banner: {e}")
+            ventana_principal.after(0, _ui)
+
+        def _mostrar_banner_update(info):
+            """Crea un banner de actualización en el root."""
+            v     = info.get("version", "?")
+            notas = info.get("notas", "")
+            # Frame pegado arriba de la ventana principal
+            f = tk.Frame(ventana_principal, bg="#854D0E")
+            f.place(relx=0, rely=0, relwidth=1, height=36)
+            tk.Label(f, text=f"🔄  Nueva versión {v} disponible — {notas[:60]}",
+                     bg="#854D0E", fg="#FEF3C7",
+                     font=("Segoe UI", 9)).pack(side="left", padx=12)
+            tk.Button(f, text="⬇ Actualizar ahora",
+                      bg="#F59E0B", fg="white", relief="flat",
+                      font=("Segoe UI Semibold", 9), cursor="hand2",
+                      padx=8, pady=2, bd=0,
+                      command=lambda: _iniciar_descarga(info)
+                      ).pack(side="right", padx=8)
+            tk.Button(f, text="✕", bg="#854D0E", fg="#FEF3C7",
+                      relief="flat", font=("Segoe UI", 9),
+                      cursor="hand2", padx=6, pady=2, bd=0,
+                      command=f.destroy).pack(side="right")
+
+        def _iniciar_descarga(info):
+            """Muestra progreso y descarga el nuevo exe."""
+            v   = info.get("version","?")
+            url = info.get("url_exe","")
+            if not url:
+                messagebox.showwarning("Sin URL",
+                    "No hay URL de descarga configurada en version.json")
+                return
+            # Ventana de progreso
+            win = tk.Toplevel(ventana_principal)
+            win.title(f"Descargando Logibot v{v}...")
+            win.geometry("420x130")
+            win.resizable(False, False)
+            win.configure(bg="#0F172A")
+            win.grab_set()
+            tk.Label(win, text=f"⬇  Descargando Logibot v{v}...",
+                     bg="#0F172A", fg="white",
+                     font=("Segoe UI Semibold", 11)).pack(pady=(18,6))
+            bar = ttk.Progressbar(win, length=360, mode="determinate")
+            bar.pack(pady=6)
+            lbl_pct = tk.Label(win, text="0%", bg="#0F172A", fg="#94A3B8",
+                               font=("Segoe UI", 9))
+            lbl_pct.pack()
+
+            def _progreso(pct):
+                ventana_principal.after(0, lambda p=pct: (
+                    bar.config(value=p),
+                    lbl_pct.config(text=f"{p}%")))
+
+            def _listo():
+                ventana_principal.after(0, lambda: (
+                    win.destroy(),
+                    messagebox.showinfo(
+                        "¡Listo!",
+                        f"Logibot v{v} descargado.\n\n"
+                        "La app se cerrará y se actualizará automáticamente.\n"
+                        "Tus datos no se borran."),
+                    reiniciar_con_nueva_version()))
+
+            def _error(msg):
+                ventana_principal.after(0, lambda: (
+                    win.destroy(),
+                    messagebox.showerror("Error de descarga", msg)))
+
+            descargar_e_instalar(url, v, _progreso, _listo, _error)
+
+        # Verificar 30 segundos después del arranque (no bloquea el inicio)
+        ventana_principal.after(
+            30_000,
+            lambda: verificar_actualizacion(APP_VERSION, _on_update_disponible))
+
     ventana_principal.mainloop()
