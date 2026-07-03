@@ -40,9 +40,9 @@ import sys
 import subprocess
 import tempfile
 
-# ── URL del archivo de versión (editar con tu repo de GitHub) ─────────────────
+# ── URL del archivo de versión (tu repo de GitHub) ────────────────────────────
 VERSION_URL = (
-    "https://raw.githubusercontent.com/EVEREST-GROUP-UY/logibot/main/version.json"
+    "https://raw.githubusercontent.com/aczel4331/picking-server/main/version.json"
 )
 
 # Tiempo de espera entre verificaciones (segundos)
