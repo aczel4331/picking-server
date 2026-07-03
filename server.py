@@ -178,15 +178,94 @@ def _actualizar_sync_estado(canal: str):
 
 def _sync_pausado() -> bool:
     """
-    Devuelve True si TODOS los canales activos están en "en_lote"
-    (es decir, el equipo está trabajando y no hay que molestar a ML).
-    Si al menos un canal está "idle" o "casi_listo" → permitir sync.
+    Devuelve True si hay que pausar las consultas activas a ML.
+
+    Lógica combinada:
+      1. Horario nocturno (7PM → 6:45AM) → siempre pausado
+         Los webhooks de ML siguen activos y reciben pedidos nuevos.
+      2. Horario laboral (7AM → 7PM):
+         → Pausado si TODOS los canales están en "en_lote"
+         → Activo si hay algún canal "idle" o "casi_listo"
     """
+    from datetime import datetime
+    ahora = datetime.now()
+    hora  = ahora.hour
+    mins  = ahora.minute
+
+    # ── Horario nocturno: 19:00 → 06:44 ─────────────────────────────────────
+    # Pausa total. Solo webhooks activos (pedidos nuevos igual entran).
+    es_noche = hora >= 19 or (hora < 6) or (hora == 6 and mins < 45)
+    if es_noche:
+        return True
+
+    # ── Pre-calentamiento: 06:45 → 06:59 ────────────────────────────────────
+    # Durante este período el sistema descarga pedidos gradualmente.
+    # No se pausa aunque haya lotes activos.
+    es_precalentamiento = (hora == 6 and mins >= 45)
+    if es_precalentamiento:
+        return False
+
+    # ── Horario laboral: 07:00 → 18:59 ──────────────────────────────────────
+    # Pausar solo si el equipo está trabajando en lotes activos.
     activos = [c for c, e in _estados_canal.items() if e.get("cargado")]
     if not activos:
-        return False   # sin lotes → sync normal
-    # Pausar solo si TODOS están trabajando
+        return False
     return all(_sync_estado_canal.get(c, "idle") == "en_lote" for c in activos)
+
+
+def _warmup_matutino():
+    """
+    Pre-calentamiento gradual entre 6:45 y 7:00 AM.
+    Descarga los pedidos acumulados durante la noche en tandas pequeñas
+    para que la app esté lista cuando el equipo llegue a las 7AM.
+    Sin saturar el servidor ni la API de ML.
+    """
+    import time
+    from datetime import datetime
+
+    while True:
+        ahora = datetime.now()
+        hora  = ahora.hour
+        mins  = ahora.minute
+
+        # Solo actuar en la ventana 6:45-6:59
+        if hora == 6 and mins >= 45:
+            print("[WARMUP] Iniciando pre-calentamiento matutino...")
+
+            # Paso 1 (6:45): Descargar pedidos de las últimas 10 horas
+            try:
+                print("[WARMUP] Paso 1: Descargando pedidos nocturnos...")
+                from datetime import timedelta
+                desde = (datetime.now() - timedelta(hours=10)).strftime("%Y-%m-%d")
+                threading.Thread(
+                    target=_refresh_pedidos_worker,
+                    daemon=True).start()
+                time.sleep(60)   # esperar 1 minuto
+            except Exception as e:
+                print(f"[WARMUP] Error paso 1: {e}")
+
+            # Paso 2 (6:46): Actualizar estados de pedidos existentes
+            try:
+                print("[WARMUP] Paso 2: Actualizando estados...")
+                with _lock:
+                    pendientes = [p for p in _pedidos_ml.values()
+                                  if p.get("shipping_id","")
+                                  and not p.get("impreso", False)]
+                # Procesar en tandas de 15 para no saturar
+                for i in range(0, min(len(pendientes), 60), 15):
+                    tanda = pendientes[i:i+15]
+                    _refrescar_estado_pedidos_bg(tanda, limite=15)
+                    time.sleep(20)   # 20 segundos entre tandas
+            except Exception as e:
+                print(f"[WARMUP] Error paso 2: {e}")
+
+            print("[WARMUP] ✅ Sistema listo para las 7:00 AM")
+
+            # Dormir hasta el próximo día (23 horas)
+            time.sleep(23 * 3600)
+        else:
+            # Revisar cada 5 minutos si ya es hora
+            time.sleep(300)
 
 
 def _get_estado(canal=None):
@@ -3263,9 +3342,10 @@ def _startup():
                     tok["expires_at"] = datetime.now() + timedelta(hours=1)
                     _cuentas[cid] = tok
         threading.Thread(target=_refresh_pedidos_worker, daemon=True).start()
-        # Thread que cada 2 minutos sincroniza el estado real de los pedidos
-        # pendientes con ML — sin necesidad de que el usuario apriete nada.
         threading.Thread(target=_sync_pedidos_ml_periodico, daemon=True).start()
+        # Pre-calentamiento matutino 6:45 AM — carga pedidos nocturnos gradualmente
+        threading.Thread(target=_warmup_matutino, daemon=True).start()
+        print("[STARTUP] ✅ Threads: sync ML + warmup matutino 6:45AM")
     else:
         print("[STARTUP] ⚠ Sin tokens. Conectar ML desde la app.")
 
