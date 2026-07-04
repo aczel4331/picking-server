@@ -16,8 +16,6 @@
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;
   min-height:100vh;display:flex;flex-direction:column}
-
-/* TOPBAR */
 .topbar{background:var(--panel);padding:10px 14px;display:flex;align-items:center;
   justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0}
 .t-left{display:flex;align-items:center;gap:8px}
@@ -28,13 +26,9 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   padding:5px 12px;border-radius:20px}
 .badge.done{background:var(--success)}
 .badge.warn{background:var(--warning);color:#000}
-
-/* BANNER COMPLETADO */
 #ban{display:none;background:var(--success);color:#fff;text-align:center;
   padding:14px;font-size:16px;font-weight:800;letter-spacing:.04em;flex-shrink:0}
 #ban.show{display:block}
-
-/* CAJA DE ESCANEO */
 .scan-box{padding:10px 12px;background:var(--panel);border-bottom:1px solid var(--border);
   flex-shrink:0}
 #sku{width:100%;background:var(--card);border:2px solid var(--accent);color:var(--hi);
@@ -42,8 +36,6 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   border-radius:10px;outline:none;text-align:center;text-transform:uppercase;
   caret-color:var(--accent)}
 #sku:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.25)}
-
-/* FEEDBACK — grande y claro para el depósito */
 #fb{margin-top:8px;min-height:48px;border-radius:10px;padding:10px 14px;
   font-size:15px;font-weight:700;display:flex;align-items:center;gap:10px;
   transition:background .15s}
@@ -51,8 +43,6 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 #fb.warn{background:rgba(245,158,11,.18);color:var(--warning)}
 #fb.err{background:rgba(239,68,68,.18);color:var(--danger)}
 #fb.neu{color:var(--mid)}
-
-/* LISTA POR PASILLO */
 .content{flex:1;overflow-y:auto;padding:8px 8px 80px}
 .grupo{margin-bottom:10px;border-radius:10px;overflow:hidden;border:1px solid var(--border)}
 .g-hdr{background:var(--bar);padding:10px 14px;display:flex;align-items:center;
@@ -65,15 +55,12 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .g-prog.pend{color:var(--accent)}
 .g-items{background:var(--card)}
 .g-items.col{display:none}
-
-/* ITEM DE SKU */
 .item{display:flex;align-items:center;gap:10px;padding:12px 14px;
   border-bottom:1px solid var(--border)}
 .item:last-child{border-bottom:none}
 .item.done{opacity:.45}
 .item.recien{animation:flash_ok .6s ease}
 @keyframes flash_ok{0%,100%{background:transparent}50%{background:rgba(16,185,129,.25)}}
-
 .chk{font-size:22px;flex-shrink:0;width:28px;text-align:center}
 .chk.ok{color:var(--success)}
 .chk.pend{color:var(--lo)}
@@ -91,13 +78,9 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .icnt.ok{color:var(--success)}
 .icnt.pend{color:var(--accent)}
 .iest{font-size:11px;color:var(--accent2);margin-top:2px}
-
-/* FLASH OVERLAY */
 #flash{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .12s;z-index:200}
 #flash.ok{background:rgba(16,185,129,.25)}
 #flash.err{background:rgba(239,68,68,.25)}
-
-/* CAMARA SCANNER */
 #cam-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:300;
   display:none;flex-direction:column;align-items:center;justify-content:center}
 #cam-overlay.open{display:flex}
@@ -119,8 +102,6 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 #btn-cam:active{transform:scale(.9)}
 #cam-torch{margin-top:10px;padding:8px 20px;border-radius:20px;border:1px solid rgba(255,255,255,.3);
   background:transparent;color:#fff;font-size:13px;cursor:pointer;display:none}
-
-/* FAB */
 .fab{position:fixed;bottom:20px;right:16px;background:var(--accent);color:#fff;border:none;
   border-radius:50%;width:56px;height:56px;font-size:24px;cursor:pointer;
   box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
@@ -128,8 +109,6 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .fab:active{transform:scale(.9)}
 .spin{animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-
-/* TOAST */
 #toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(60px);
   background:var(--panel);border:1px solid var(--border);color:var(--hi);
   padding:12px 24px;border-radius:30px;font-size:14px;font-weight:700;z-index:999;
@@ -138,68 +117,60 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 #toast.show{transform:translateX(-50%) translateY(0);opacity:1}
 #toast.ok{border-color:var(--success);color:var(--success)}
 #toast.err{border-color:var(--danger);color:var(--danger)}
-
-/* EMPTY */
 .empty{text-align:center;padding:60px 20px;color:var(--lo)}
 .empty-i{font-size:52px;margin-bottom:12px}
 .empty-t{font-size:15px;line-height:1.5}
-/* LIGHTBOX (imagen grande) */
 .lightbox{display:none;position:fixed;inset:0;z-index:9999;
   background:rgba(0,0,0,.92);align-items:center;justify-content:center;
   flex-direction:column;padding:20px}
 .lightbox img{max-width:92vw;max-height:78vh;border-radius:12px;
   object-fit:contain;box-shadow:0 8px 40px rgba(0,0,0,.6)}
-.lb-name{color:#fff;font-family:monospace;font-size:15px;font-weight:700;
-  margin-top:14px}
+.lb-name{color:#fff;font-family:monospace;font-size:15px;font-weight:700;margin-top:14px}
 .lb-close{color:#9CA3AF;font-size:13px;margin-top:6px}
 </style>
 </head>
 <body>
 <div id="flash"></div>
 
-<!-- TOPBAR -->
 <div class="topbar">
   <div class="t-left">
-    <span class="t-icon">⬡</span>
+    <span class="t-icon">&#x2B21;</span>
     <div>
       <div class="t-title">PICKING · FASE 1</div>
-      <div class="t-sub" id="t-sub">Colecta en depósito</div>
+      <div class="t-sub" id="t-sub">Colecta en dep&#xF3;sito</div>
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:8px">
     <button id="btn-voz" onclick="toggleVoz()"
             style="background:var(--panel);border:1px solid var(--border);color:var(--accent);
             border-radius:8px;padding:6px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
-            title="Activar/desactivar voz">🔊</button>
-    <div id="badge" class="badge">— / —</div>
+            title="Activar/desactivar voz">&#x1F50A;</button>
+    <div id="badge" class="badge">&#x2014; / &#x2014;</div>
   </div>
 </div>
 
-<!-- SELECTOR DE CANAL — Flex o Colecta -->
 <div id="canal-selector" style="display:flex;gap:0;background:var(--bg);
      padding:8px 12px;border-bottom:2px solid var(--border)">
-  <button class="canal-btn canal-active" id="btn-canal-flex"
+  <button class="canal-btn" id="btn-canal-flex"
           onclick="setCanal('flex')"
-          style="flex:1;padding:10px;border:2px solid #7C3AED;background:#7C3AED;
+          style="flex:1;padding:10px 6px;border:2px solid #7C3AED;background:#7C3AED;
           color:#fff;font-weight:800;font-size:15px;border-radius:10px 0 0 10px;
-          cursor:pointer">⚡ FLEX</button>
+          cursor:pointer;min-height:52px;line-height:1.2">&#x26A1; FLEX</button>
   <button class="canal-btn" id="btn-canal-colecta"
           onclick="setCanal('colecta')"
-          style="flex:1;padding:10px;border:2px solid #2563EB;background:var(--card);
+          style="flex:1;padding:10px 6px;border:2px solid #2563EB;background:var(--card);
           color:#2563EB;font-weight:800;font-size:15px;border-radius:0 10px 10px 0;
-          cursor:pointer">🚚 COLECTA</button>
+          cursor:pointer;min-height:52px;line-height:1.2">&#x1F69A; COLECTA</button>
 </div>
 
-<!-- BANNER COMPLETADO -->
-<div id="ban">🎉 ¡COLECTA COMPLETA! Avisá al supervisor.</div>
+<div id="ban">&#x1F389; &#xA1;COLECTA COMPLETA! Avis&#xE1; al supervisor.</div>
 
-<!-- GUÍA: PRÓXIMO ÍTEM A BUSCAR -->
 <div id="guia" style="display:none;background:linear-gradient(135deg,#1E3A8A,#152C66);
      color:#fff;padding:14px 16px;border-bottom:3px solid #06B6D4">
   <div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:#93C5FD;margin-bottom:4px">
-    👉 PRÓXIMO A BUSCAR</div>
-  <div id="guia-pasillo" style="font-size:20px;font-weight:900;line-height:1.1">—</div>
-  <div id="guia-nombre" style="font-size:15px;font-weight:600;margin-top:4px;line-height:1.25">—</div>
+    &#x1F449; PR&#xD3;XIMO A BUSCAR</div>
+  <div id="guia-pasillo" style="font-size:20px;font-weight:900;line-height:1.1">&#x2014;</div>
+  <div id="guia-nombre" style="font-size:15px;font-weight:600;margin-top:4px;line-height:1.25">&#x2014;</div>
   <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">
     <span id="guia-sku" style="font-family:monospace;font-size:13px;background:rgba(255,255,255,.18);
           padding:2px 8px;border-radius:6px"></span>
@@ -207,43 +178,38 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     <span id="guia-cant" style="font-size:13px;font-weight:700;color:#FCD34D"></span>
     <button onclick="repetirVoz()" style="margin-left:auto;background:rgba(255,255,255,.2);
             border:none;color:#fff;border-radius:8px;padding:5px 12px;font-size:16px;cursor:pointer"
-            title="Repetir por voz">🔊</button>
+            title="Repetir por voz">&#x1F50A;</button>
   </div>
 </div>
 
-<!-- ESCANEO -->
 <div class="scan-box">
   <div style="display:flex;gap:8px;margin-bottom:8px">
-    <input id="sku" type="text"
-           inputmode="decimal"
+    <input id="sku" type="text" inputmode="decimal"
            autocomplete="off" autocorrect="off" autocapitalize="off"
            spellcheck="false" enterkeyhint="send"
-           placeholder="Apuntá el escáner aquí"
+           placeholder="Apunt&#xE1; el esc&#xE1;ner aqu&#xED;"
            style="flex:1;font-size:18px">
     <button id="btn-confirmar"
             style="background:var(--success);color:#fff;border:none;border-radius:10px;
             padding:0 18px;font-size:20px;font-weight:800;cursor:pointer;flex-shrink:0"
-            onclick="confirmarManual()">✓</button>
+            onclick="confirmarManual()">&#x2713;</button>
   </div>
   <div style="display:flex;align-items:center;gap:8px">
-    <div id="fb" class="neu" style="flex:1">🔫 Listo para escanear</div>
-    <button id="btn-teclado"
-            onclick="toggleTeclado()"
+    <div id="fb" class="neu" style="flex:1">&#x1F52B; Listo para escanear</div>
+    <button id="btn-teclado" onclick="toggleTeclado()"
             style="background:var(--panel);border:1px solid var(--border);color:var(--mid);
             border-radius:8px;padding:5px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
-            title="Abrir teclado manual">⌨</button>
+            title="Abrir teclado manual">&#x2328;</button>
   </div>
-  <div id="scanner-debug" style="font-size:10px;color:var(--text-lo);margin-top:4px;min-height:14px"></div>
+  <div id="scanner-debug" style="font-size:10px;color:var(--lo);margin-top:4px;min-height:14px"></div>
 </div>
 
-<!-- Lightbox para ver imagen del producto en grande -->
 <div id="lightbox" class="lightbox" onclick="cerrarImagen()">
   <img id="lb-img" src="" alt="Producto" onclick="event.stopPropagation()" />
   <div id="lb-name" class="lb-name"></div>
-  <div class="lb-close">Tocá afuera para cerrar</div>
+  <div class="lb-close">Toc&#xE1; afuera para cerrar</div>
 </div>
 
-<!-- MODAL CAMARA -->
 <div id="cam-overlay">
   <div id="cam-wrap">
     <video id="cam-video" autoplay playsinline muted></video>
@@ -258,79 +224,225 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
       </svg>
     </div>
   </div>
-  <div id="cam-hint">Apuntá al código de barras</div>
+  <div id="cam-hint">Apunt&#xE1; al c&#xF3;digo de barras</div>
   <div id="cam-result"></div>
-  <button id="cam-torch" onclick="toggleTorch()">🔦 Linterna</button>
-  <button id="btn-close-cam" onclick="cerrarCamara()">✕ Cerrar</button>
+  <button id="cam-torch" onclick="toggleTorch()">&#x1F526; Linterna</button>
+  <button id="btn-close-cam" onclick="cerrarCamara()">&#x2715; Cerrar</button>
 </div>
 
-<!-- Botón cámara flotante -->
-<button id="btn-cam" onclick="abrirCamara()" title="Escanear con cámara">📷</button>
+<button id="btn-cam" onclick="abrirCamara()" title="Escanear con c&#xE1;mara">&#x1F4F7;</button>
 
-<!-- LISTA -->
 <div class="content" id="content">
   <div class="empty">
-    <div class="empty-i">📦</div>
-    <div class="empty-t">Cargando…</div>
+    <div class="empty-i">&#x1F4E6;</div>
+    <div class="empty-t">Cargando&#x2026;</div>
   </div>
 </div>
 
-<button class="fab" id="fab" title="Actualizar">🔄</button>
+<button class="fab" id="fab" title="Actualizar">&#x1F504;</button>
 <div id="toast"></div>
 
+<!-- CAMBIOS AL movil.html — solo las funciones JS modificadas -->
+<!-- Reemplazar el bloque <script> completo por este -->
 <script>
 const $ = id => document.getElementById(id);
 let E = null, last = null;
-let _guiaActual = null;   // SKU que se está buscando ahora
-let _vozActiva  = true;   // TTS habilitado
+let _guiaActual = null;
+let _vozActiva  = true;
 
-// ── CANAL ACTIVO (flex o colecta) ────────────────────────────────────────────
-// Cada trabajador elige su canal al abrir la app. Los lotes son independientes.
+// ── CANAL ACTIVO ────────────────────────────────────────────────────────────
 let _canalActivo = localStorage.getItem('canal_picking') || 'flex';
+// Timestamp del último lote recibido — para detectar lotes nuevos
+let _loteTimestamp = '';
 
-function setCanal(canal) {
+function setCanal(canal, silencioso = false) {
   _canalActivo = canal;
   localStorage.setItem('canal_picking', canal);
-  // Actualizar botones
   const btnF = $('btn-canal-flex');
   const btnC = $('btn-canal-colecta');
+
+  // Estilos activo/inactivo para cada botón
   if (canal === 'flex') {
-    btnF.style.background = '#7C3AED'; btnF.style.color = '#fff';
-    btnC.style.background = 'var(--card)'; btnC.style.color = '#2563EB';
-    $('t-sub').textContent = 'Colecta FLEX';
+    if (btnF) { btnF.style.background='#7C3AED'; btnF.style.color='#fff';
+                btnF.style.borderColor='#7C3AED'; }
+    if (btnC) { btnC.style.background='var(--card)'; btnC.style.color='#2563EB';
+                btnC.style.borderColor='#2563EB'; }
+    $('t-sub').textContent = '⚡ Colecta FLEX';
   } else {
-    btnC.style.background = '#2563EB'; btnC.style.color = '#fff';
-    btnF.style.background = 'var(--card)'; btnF.style.color = '#7C3AED';
-    $('t-sub').textContent = 'Colecta en depósito';
+    if (btnC) { btnC.style.background='#2563EB'; btnC.style.color='#fff';
+                btnC.style.borderColor='#2563EB'; }
+    if (btnF) { btnF.style.background='var(--card)'; btnF.style.color='#7C3AED';
+                btnF.style.borderColor='#7C3AED'; }
+    $('t-sub').textContent = '🚚 Colecta COLECTA';
   }
-  // Recargar datos del canal elegido
-  load();
+
+  // Cuando el operario toca el botón manualmente, resetear timestamp
+  // para que el siguiente loadQ detecte el lote del nuevo canal
+  if (!silencioso) {
+    _loteTimestamp = '';
+    load();
+  }
 }
 
-// Inicializar visual del canal guardado al cargar
-document.addEventListener('DOMContentLoaded', () => {
-  setCanal(_canalActivo);
-});
+// ── AUTO-DETECCIÓN DE CANAL CON LOTE ACTIVO ────────────────────────────────
+// Si el supervisor subió un lote en 'colecta' pero el celular tiene 'flex'
+// guardado (o viceversa), el móvil lo detecta y cambia automáticamente.
+async function detectarCanalActivo() {
+  try {
+    // Consultar ambos canales en paralelo
+    const [rF, rC] = await Promise.all([
+      fetch('/api/estado?canal=flex'),
+      fetch('/api/estado?canal=colecta')
+    ]);
+    const dF = await rF.json();
+    const dC = await rC.json();
 
-// ── IMAGEN DEL PRODUCTO ────────────────────────────────────────────────────────
-// ── IMÁGENES DE PRODUCTO (miniaturas + lightbox) ────────────────────────────
-const _imgCache = {};      // { sku: imagen_url }  URL ya resuelta
-const _imgPedida = new Set();  // SKUs ya consultados (evita repetir fetch)
+    const flexCargado    = dF.cargado && (dF.grupos || []).length > 0;
+    const colectaCargado = dC.cargado && (dC.grupos || []).length > 0;
 
-// Resuelve la URL de imagen de un SKU (con cache) y la asigna a los <img> de ese SKU
+    // Actualizar los botones de canal con SKUs disponibles en cada uno
+    _actualizarBotonesCanal(
+      flexCargado    ? (dF.total_skus || 0) : 0,
+      colectaCargado ? (dC.total_skus || 0) : 0
+    );
+
+    // Caso 1: Solo flex tiene lote → cambiar automáticamente
+    if (flexCargado && !colectaCargado) {
+      if (_canalActivo !== 'flex') {
+        setCanal('flex', true);
+        toast('⚡ Canal FLEX detectado automáticamente', 'ok');
+      }
+      E = dF; _loteTimestamp = dF.ultima_actualizacion || ''; render(); return;
+    }
+
+    // Caso 2: Solo colecta tiene lote → cambiar automáticamente
+    if (colectaCargado && !flexCargado) {
+      if (_canalActivo !== 'colecta') {
+        setCanal('colecta', true);
+        toast('🚚 Canal COLECTA detectado automáticamente', 'ok');
+      }
+      E = dC; _loteTimestamp = dC.ultima_actualizacion || ''; render(); return;
+    }
+
+    // Caso 3: Ambas PCs tienen lote activo simultáneamente (caso normal de operación)
+    // → Respetar el canal que el operario eligió (localStorage)
+    // El operario ya eligió su canal con los botones FLEX / COLECTA
+    const d = _canalActivo === 'flex' ? dF : dC;
+    E = d; _loteTimestamp = d.ultima_actualizacion || ''; render(); return;
+
+    // Caso 4: Ninguno tiene lote → mostrar pantalla de espera
+  } catch(e) {
+    console.error('[MOVIL] detectarCanalActivo error:', e);
+    fb('err', '❌ Sin conexión al servidor');
+  }
+}
+
+// Actualiza el texto de los botones de canal con cantidad de SKUs
+function _actualizarBotonesCanal(skusFlex, skusColecta) {
+  const btnF = document.getElementById('btn-canal-flex');
+  const btnC = document.getElementById('btn-canal-colecta');
+  if (btnF) {
+    btnF.innerHTML = skusFlex > 0
+      ? `⚡ FLEX<br><small style="font-weight:400;font-size:11px">${skusFlex} SKUs</small>`
+      : '⚡ FLEX';
+  }
+  if (btnC) {
+    btnC.innerHTML = skusColecta > 0
+      ? `🚚 COLECTA<br><small style="font-weight:400;font-size:11px">${skusColecta} SKUs</small>`
+      : '🚚 COLECTA';
+  }
+}
+
+// ── CARGA ──────────────────────────────────────────────────────────────────
+async function load() {
+  try {
+    const r = await fetch('/api/estado?canal=' + _canalActivo);
+    if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
+    E = await r.json();
+    console.log('[MOVIL] canal='+_canalActivo+' cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
+
+    // Si el canal actual NO tiene lote, buscar en el otro canal
+    if (!E.cargado || !(E.grupos||[]).length) {
+      console.log('[MOVIL] Canal sin lote — detectando canal activo...');
+      await detectarCanalActivo();
+      return;
+    }
+
+    render();
+  } catch(e) {
+    console.error('[MOVIL] load error:', e);
+    fb('err', '❌ Sin conexión al servidor');
+  }
+}
+
+// ── REFRESH SILENCIOSO (cada 5s) ────────────────────────────────────────────
+// Solo sincroniza el canal propio del operario.
+// Si ambas PCs tienen lote simultáneo, cada celular trabaja en su canal.
+async function loadQ() {
+  try {
+    const r = await fetch('/api/estado?canal=' + _canalActivo);
+    if (!r.ok) return;
+    const nuevo = await r.json();
+
+    // ── Caso A: Lote nuevo del supervisor (timestamp cambió) ─────────────────
+    const tsNuevo = nuevo.ultima_actualizacion || '';
+    if (tsNuevo && tsNuevo !== _loteTimestamp && nuevo.cargado && (nuevo.grupos||[]).length > 0) {
+      if (_loteTimestamp) {
+        // Había un lote antes → el supervisor cargó uno nuevo
+        toast('🔄 Lote nuevo del supervisor', 'ok');
+        leerProducto('El supervisor cargó un lote nuevo.');
+      }
+      _loteTimestamp = tsNuevo;
+      E = nuevo;
+      render();
+      return;
+    }
+
+    // ── Caso B: Canal propio sin lote → buscar en otro canal ─────────────────
+    // SOLO si el canal propio está vacío. Si ambos tienen lote, no cambiar.
+    if (!nuevo.cargado || !(nuevo.grupos||[]).length) {
+      const otroCanal = _canalActivo === 'flex' ? 'colecta' : 'flex';
+      const r2 = await fetch('/api/estado?canal=' + otroCanal);
+      const d2 = await r2.json();
+      if (d2.cargado && (d2.grupos||[]).length > 0) {
+        // Cambiar solo si el canal propio está vacío
+        setCanal(otroCanal, true);
+        E = d2;
+        _loteTimestamp = d2.ultima_actualizacion || '';
+        render();
+        toast(`🔄 Lote detectado en canal ${otroCanal.toUpperCase()}`, 'ok');
+        return;
+      }
+      // Ningún canal tiene lote → mantener pantalla de espera
+      E = nuevo; render(); return;
+    }
+
+    // ── Caso C: Mismo lote, actualizar colecta ───────────────────────────────
+    // Sincronizar escaneos del propio canal (otro celular escaneó algo)
+    if (nuevo.cargado && E && E.cargado) {
+      const colNueva = nuevo.colecta || {};
+      const colVieja = E.colecta || {};
+      const totNuevo = Object.values(colNueva).reduce((s, v) => s + Number(v), 0);
+      const totViejo = Object.values(colVieja).reduce((s, v) => s + Number(v), 0);
+      if (totNuevo !== totViejo) {
+        E = nuevo; render(true);
+      }
+    }
+  } catch(e) {
+    // Silencioso — no mostrar error en refresh de fondo
+  }
+}
+
+// ── IMAGEN DEL PRODUCTO ────────────────────────────────────────────────────
+const _imgCache  = {};
+const _imgPedida = new Set();
+
 async function resolverImagen(sku) {
   sku = (sku || '').toUpperCase();
   if (!sku) return null;
-
-  // Ya en cache
-  if (sku in _imgCache) {
-    aplicarMiniatura(sku, _imgCache[sku]);
-    return _imgCache[sku];
-  }
-  // Ya pedida (en curso) → no duplicar
+  if (sku in _imgCache) { aplicarMiniatura(sku, _imgCache[sku]); return _imgCache[sku]; }
   if (_imgPedida.has(sku)) return null;
   _imgPedida.add(sku);
-
   try {
     const r = await fetch(`/api/imagen-sku/${sku}`);
     const d = await r.json();
@@ -338,13 +450,9 @@ async function resolverImagen(sku) {
     _imgCache[sku] = url;
     aplicarMiniatura(sku, url);
     return url;
-  } catch(e) {
-    _imgCache[sku] = null;
-    return null;
-  }
+  } catch(e) { _imgCache[sku] = null; return null; }
 }
 
-// Asigna la URL a todas las miniaturas de ese SKU que estén en pantalla
 function aplicarMiniatura(sku, url) {
   document.querySelectorAll(`.ithumb[data-sku="${sku}"]`).forEach(el => {
     if (url) {
@@ -358,58 +466,37 @@ function aplicarMiniatura(sku, url) {
   });
 }
 
-// Carga perezosa de las miniaturas visibles (llamar tras render)
 function cargarMiniaturasVisibles() {
   document.querySelectorAll('.ithumb:not(.cargada)').forEach(el => {
     const sku = el.dataset.sku;
     if (!sku) return;
     el.classList.add('cargada');
-    if (sku in _imgCache) {
-      aplicarMiniatura(sku, _imgCache[sku]);
-    } else {
-      resolverImagen(sku);
-    }
+    if (sku in _imgCache) aplicarMiniatura(sku, _imgCache[sku]);
+    else resolverImagen(sku);
   });
 }
 
-// Abrir imagen grande (lightbox)
 async function abrirImagen(sku) {
   sku = (sku || '').toUpperCase();
   let url = _imgCache[sku];
-  if (url === undefined) {
-    url = await resolverImagen(sku);
-  }
-  if (!url) return;  // sin imagen, no hacer nada
-
-  const lb     = $('lightbox');
-  const lbImg  = $('lb-img');
-  const lbName = $('lb-name');
-  if (!lb || !lbImg) return;
-  lbImg.src = url;
-  if (lbName) lbName.textContent = sku;
+  if (url === undefined) url = await resolverImagen(sku);
+  if (!url) return;
+  const lb = $('lightbox');
+  $('lb-img').src = url;
+  $('lb-name').textContent = sku;
   lb.style.display = 'flex';
 }
 
-function cerrarImagen() {
-  const lb = $('lightbox');
-  if (lb) lb.style.display = 'none';
-}
+function cerrarImagen() { $('lightbox').style.display = 'none'; }
+async function cargarImagen(sku) { resolverImagen(sku); }
 
-// Compatibilidad: cargarImagen ahora solo precarga en cache (sin cuadro fijo)
-async function cargarImagen(sku) {
-  resolverImagen(sku);
-}
-
-// ── VOZ (Text-To-Speech en español) ────────────────────────────────────────
+// ── VOZ ─────────────────────────────────────────────────────────────────────
 function leerProducto(texto) {
   if (!_vozActiva || !texto || !window.speechSynthesis) return;
   try {
-    window.speechSynthesis.cancel();   // cortar lo anterior
+    window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(texto);
-    u.lang  = 'es-UY';
-    u.rate  = 0.95;
-    u.pitch = 1.0;
-    // Preferir una voz en español si está disponible
+    u.lang = 'es-UY'; u.rate = 0.95; u.pitch = 1.0;
     const voces = window.speechSynthesis.getVoices();
     const vEs = voces.find(v => v.lang && v.lang.toLowerCase().startsWith('es'));
     if (vEs) u.voice = vEs;
@@ -417,47 +504,35 @@ function leerProducto(texto) {
   } catch(e) {}
 }
 
-// Forzar carga de voces (algunos navegadores las cargan async)
-if (window.speechSynthesis) {
+if (window.speechSynthesis)
   window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
-}
 
-function repetirVoz() {
-  if (_guiaActual) _anunciarItem(_guiaActual);
-}
+function repetirVoz() { if (_guiaActual) _anunciarItem(_guiaActual); }
 
 function toggleVoz() {
   _vozActiva = !_vozActiva;
   const btn = $('btn-voz');
   if (_vozActiva) {
-    btn.textContent = '🔊';
-    btn.style.color = 'var(--accent)';
-    btn.style.borderColor = 'var(--border)';
+    btn.textContent = '🔊'; btn.style.color = 'var(--accent)';
     toast('🔊 Voz activada', 'ok');
     if (_guiaActual) _anunciarItem(_guiaActual);
   } else {
-    if (window.speechSynthesis) window.speechSynthesis.cancel();  // cortar lo que esté hablando
-    btn.textContent = '🔇';
-    btn.style.color = 'var(--mid)';
-    btn.style.borderColor = 'var(--border)';
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    btn.textContent = '🔇'; btn.style.color = 'var(--mid)';
     toast('🔇 Voz desactivada', '');
   }
 }
 
-// ── GUÍA SECUENCIAL POR PASILLO ─────────────────────────────────────────────
-// Busca el próximo SKU pendiente recorriendo los grupos EN ORDEN (pasillo 1,
-// luego pasillo 2, etc., tal como vienen del servidor).
+// ── GUÍA SECUENCIAL ─────────────────────────────────────────────────────────
 function _proximoItem() {
   if (!E || !E.grupos) return null;
   const col = E.colecta || {};
   for (const g of E.grupos) {
     for (const it of (g.items || [])) {
-      if ((col[it.sku] || 0) < it.req) {
-        return { ...it, pasillo: g.pasillo || 'Sin pasillo' };
-      }
+      if ((col[it.sku] || 0) < it.req) return { ...it, pasillo: g.pasillo || 'Sin pasillo' };
     }
   }
-  return null;   // todo completo
+  return null;
 }
 
 function _anunciarItem(it) {
@@ -468,20 +543,12 @@ function _anunciarItem(it) {
   leerProducto(frase);
 }
 
-// Deletrea el SKU para que la voz no lo lea como número gigante
-function _deletrear(sku) {
-  return String(sku).split('').join(' ');
-}
+function _deletrear(sku) { return String(sku).split('').join(' '); }
 
 function actualizarGuia(anunciar = false) {
   const it  = _proximoItem();
   const box = $('guia');
-  if (!it) {
-    // No queda nada pendiente
-    if (box) box.style.display = 'none';
-    _guiaActual = null;
-    return;
-  }
+  if (!it) { if (box) box.style.display = 'none'; _guiaActual = null; return; }
   _guiaActual = it;
   if (box) box.style.display = 'block';
   $('guia-pasillo').textContent = '📍 ' + it.pasillo;
@@ -492,30 +559,7 @@ function actualizarGuia(anunciar = false) {
   if (anunciar) _anunciarItem(it);
 }
 
-// ── CARGA ──────────────────────────────────────────────────────────────────
-async function load() {
-  try {
-    const r = await fetch('/api/estado?canal=' + _canalActivo);
-    if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
-    E = await r.json();
-    console.log('[MOVIL] canal='+_canalActivo+' cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
-    render();
-  } catch(e) {
-    console.error('[MOVIL] load error:', e);
-    fb('err', '❌ Sin conexión al servidor');
-  }
-}
-
-async function loadQ() {
-  try {
-    const r = await fetch('/api/estado?canal=' + _canalActivo);
-    if (!r.ok) return;
-    E = await r.json();
-    render(true);
-  } catch(e) {}
-}
-
-// ── RENDER ─────────────────────────────────────────────────────────────────
+// ── RENDER ──────────────────────────────────────────────────────────────────
 function render(quiet = false) {
   try {
     if (!E) return;
@@ -525,7 +569,6 @@ function render(quiet = false) {
 
     const content = document.getElementById('content');
     const badge   = document.getElementById('badge');
-    const tsub    = document.getElementById('t-sub');
     const ban     = document.getElementById('ban');
 
     if (!cargado || !gs.length) {
@@ -535,16 +578,17 @@ function render(quiet = false) {
         <small style="color:var(--lo)">Cuando el supervisor genere el lote<br>aparecerá aquí automáticamente.</small>
         </div></div>`;
       if (badge) { badge.textContent = '— / —'; badge.className = 'badge'; }
-      if (tsub)  tsub.textContent = 'Esperando lote…';
+      $('t-sub').textContent = 'Esperando lote…';
       return;
     }
 
-    // Totales
+    // Guardar timestamp del lote actual
+    if (E.ultima_actualizacion) _loteTimestamp = E.ultima_actualizacion;
+
     let tot = 0, done = 0, uds_done = 0, uds_tot = 0;
     gs.forEach(g => (g.items||[]).forEach(it => {
       const c = col[it.sku] || 0;
-      tot++;
-      uds_tot  += it.req || 0;
+      tot++; uds_tot += it.req || 0;
       uds_done += Math.min(c, it.req || 0);
       if (c >= it.req) done++;
     }));
@@ -553,8 +597,8 @@ function render(quiet = false) {
       badge.textContent = `${done} / ${tot}`;
       badge.className   = done === tot ? 'badge done' : (done > 0 ? 'badge warn' : 'badge');
     }
-    if (tsub) tsub.textContent = `${uds_done} / ${uds_tot} unidades`;
-    if (ban)  ban.className    = E.colecta_completa ? 'show' : '';
+    $('t-sub').textContent = `${uds_done} / ${uds_tot} unidades`;
+    if (ban) ban.className = E.colecta_completa ? 'show' : '';
 
     // Recordar grupos colapsados
     const colaps = new Set();
@@ -563,11 +607,10 @@ function render(quiet = false) {
     });
 
     if (content) content.innerHTML = gs.map(g => {
-      const p     = g.pasillo || 'Sin pasillo';
-      const its   = g.items || [];
-      const d     = its.filter(it => (col[it.sku] || 0) >= it.req).length;
-      const gDone = d === its.length;
-      const cl    = colaps.has(p) ? 'col' : '';
+      const p   = g.pasillo || 'Sin pasillo';
+      const its = g.items || [];
+      const d   = its.filter(it => (col[it.sku] || 0) >= it.req).length;
+      const cl  = colaps.has(p) ? 'col' : '';
       return `<div class="grupo" data-p="${p}">
         <div class="g-hdr" onclick="tog(this)">
           <div class="g-left">
@@ -577,7 +620,7 @@ function render(quiet = false) {
               <div class="g-stats">${its.length} SKU${its.length>1?'s':''} · ${its.reduce((s,i)=>s+(i.req||0),0)} ud.</div>
             </div>
           </div>
-          <div class="g-prog ${gDone?'done':'pend'}">${d}/${its.length}</div>
+          <div class="g-prog ${d===its.length?'done':'pend'}">${d}/${its.length}</div>
         </div>
         <div class="g-items ${cl}">
           ${its.map(it => {
@@ -600,9 +643,7 @@ function render(quiet = false) {
       </div>`;
     }).join('');
 
-    // Actualizar el panel de guía con el próximo ítem a buscar
     actualizarGuia(false);
-    // Cargar miniaturas de los productos visibles (perezoso, en cache)
     cargarMiniaturasVisibles();
   } catch(err) {
     console.error('[MOVIL] render error:', err);
@@ -611,12 +652,10 @@ function render(quiet = false) {
 
 function tog(h) { h.nextElementSibling.classList.toggle('col'); }
 
-// ── ESCANEO ────────────────────────────────────────────────────────────────
+// ── ESCANEO ─────────────────────────────────────────────────────────────────
 async function scan(raw) {
   const sku = raw.trim().toUpperCase();
   if (!sku || sku.length < 2) return;
-
-  // Anti-doble lectura 200ms
   if (last === sku) return;
   last = sku;
   setTimeout(() => last = null, 200);
@@ -652,11 +691,8 @@ async function scan(raw) {
       }
 
       render(true);
-
-      // Cargar y mostrar imagen del producto
       cargarImagen(sku);
 
-      // Resaltar el item escaneado y hacer scroll
       const el = document.getElementById(`item-${sku}`);
       if (el) {
         el.classList.add('recien');
@@ -664,343 +700,222 @@ async function scan(raw) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
 
-      // Anunciar por voz el PRÓXIMO ítem a buscar (en orden de pasillo)
-      if (!d.todo_completo) {
-        setTimeout(() => actualizarGuia(true), 350);
-      }
+      if (!d.todo_completo) setTimeout(() => actualizarGuia(true), 350);
     }
   } catch(e) {
     fb('err', '❌ Error de conexión');
   }
 }
 
-// ── HELPERS ────────────────────────────────────────────────────────────────
-function fb(t, m) {
-  const el = $('fb');
-  el.className = t;
-  el.textContent = m;
-}
+// ── HELPERS ─────────────────────────────────────────────────────────────────
+function fb(t, m)  { const el=$('fb'); el.className=t; el.textContent=m; }
 
-function toast(m, t = '') {
-  const el = $('toast');
-  el.textContent = m;
-  el.className   = 'show ' + t;
-  setTimeout(() => el.className = '', 3000);
+function toast(m, t='') {
+  const el=$('toast'); el.textContent=m; el.className='show '+t;
+  setTimeout(() => el.className='', 3000);
 }
 
 function flash(t) {
-  const el = $('flash');
-  el.className   = t;
-  el.style.opacity = '1';
-  setTimeout(() => {
-    el.style.opacity = '0';
-    setTimeout(() => el.className = '', 300);
-  }, 180);
+  const el=$('flash');
+  el.className=t; el.style.opacity='1';
+  setTimeout(() => { el.style.opacity='0'; setTimeout(()=>el.className='',300); },180);
 }
 
 function vib(p) { if (navigator.vibrate) navigator.vibrate(p); }
 
-// ── INIT ───────────────────────────────────────────────────────────────────
+// ── CÁMARA ───────────────────────────────────────────────────────────────────
 let _tecladoVisible = false;
 let _camaraActiva   = false;
 let _zxingReader    = null;
 let _torchTrack     = null;
 let _torchOn        = false;
 
-// ── CÁMARA ESCÁNER ─────────────────────────────────────────────────────────
-
 async function abrirCamara() {
-  const overlay = document.getElementById('cam-overlay');
+  const overlay = $('cam-overlay');
   overlay.classList.add('open');
   _camaraActiva = true;
-
-  // Cargar ZXing si no está cargado
   if (!window.ZXing) {
-    document.getElementById('cam-hint').textContent = 'Cargando escáner…';
+    $('cam-hint').textContent = 'Cargando escáner…';
     await new Promise((res, rej) => {
       const s = document.createElement('script');
       s.src = 'https://unpkg.com/@zxing/library@0.19.1/umd/index.min.js';
-      s.onload = res;
-      s.onerror = rej;
+      s.onload = res; s.onerror = rej;
       document.head.appendChild(s);
     });
   }
-
   try {
-    const video  = document.getElementById('cam-video');
-    const hint   = document.getElementById('cam-hint');
-    const result = document.getElementById('cam-result');
-    const torch  = document.getElementById('cam-torch');
-
-    result.textContent = '';
-    hint.textContent   = 'Iniciando cámara…';
-
-    // Pedir cámara trasera
+    const video  = $('cam-video');
+    const hint   = $('cam-hint');
+    const result = $('cam-result');
+    const torch  = $('cam-torch');
+    result.textContent=''; hint.textContent='Iniciando cámara…';
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: {ideal:1280}, height: {ideal:720} }
+      video: { facingMode:'environment', width:{ideal:1280}, height:{ideal:720} }
     });
     video.srcObject = stream;
-
-    // Detectar si la cámara soporta linterna
     const [track] = stream.getVideoTracks();
     _torchTrack = track;
     const caps = track.getCapabilities ? track.getCapabilities() : {};
-    if (caps.torch) {
-      torch.style.display = 'inline-block';
-    }
-
+    if (caps.torch) torch.style.display = 'inline-block';
     hint.textContent = 'Apuntá el código de barras al recuadro azul';
-
-    // Iniciar ZXing
     _zxingReader = new ZXing.BrowserMultiFormatReader();
     _zxingReader.decodeFromVideoElement(video, (res, err) => {
       if (!_camaraActiva) return;
       if (res) {
         const codigo = res.getText();
-        result.textContent = '✅ ' + codigo;
-        // Vibrar si disponible
-        if (navigator.vibrate) navigator.vibrate([60, 30, 60]);
-        // Pequeño delay para que el usuario vea el resultado
-        setTimeout(() => {
-          cerrarCamara();
-          // Procesar el código escaneado
-          scan(codigo);
-        }, 600);
+        $('cam-result').textContent = '✅ ' + codigo;
+        if (navigator.vibrate) navigator.vibrate([60,30,60]);
+        setTimeout(() => { cerrarCamara(); scan(codigo); }, 600);
       }
     });
-
-  } catch (e) {
-    document.getElementById('cam-hint').textContent =
-      e.name === 'NotAllowedError'
-        ? '❌ Permiso de cámara denegado. Habilitalo en la configuración del navegador.'
-        : '❌ No se pudo acceder a la cámara: ' + e.message;
+  } catch(e) {
+    $('cam-hint').textContent = e.name === 'NotAllowedError'
+      ? '❌ Permiso de cámara denegado.'
+      : '❌ No se pudo acceder a la cámara: ' + e.message;
   }
 }
 
 function cerrarCamara() {
   _camaraActiva = false;
-  const video = document.getElementById('cam-video');
-
-  // Detener ZXing
-  if (_zxingReader) {
-    try { _zxingReader.reset(); } catch(e) {}
-    _zxingReader = null;
-  }
-
-  // Apagar linterna si estaba encendida
+  const video = $('cam-video');
+  if (_zxingReader) { try { _zxingReader.reset(); } catch(e){} _zxingReader=null; }
   if (_torchTrack && _torchOn) {
-    try { _torchTrack.applyConstraints({advanced:[{torch:false}]}); } catch(e) {}
+    try { _torchTrack.applyConstraints({advanced:[{torch:false}]}); } catch(e){}
     _torchOn = false;
   }
-
-  // Detener stream de video
-  if (video.srcObject) {
-    video.srcObject.getTracks().forEach(t => t.stop());
-    video.srcObject = null;
-  }
-
-  document.getElementById('cam-overlay').classList.remove('open');
-  document.getElementById('cam-result').textContent = '';
-  document.getElementById('cam-torch').style.display = 'none';
-
-  // Restaurar foco al input
-  const inp = $('sku');
-  if (inp) setTimeout(() => inp.focus(), 100);
+  if (video.srcObject) { video.srcObject.getTracks().forEach(t=>t.stop()); video.srcObject=null; }
+  $('cam-overlay').classList.remove('open');
+  $('cam-result').textContent='';
+  $('cam-torch').style.display='none';
+  const inp=$('sku'); if (inp) setTimeout(()=>inp.focus(),100);
 }
 
 function toggleTorch() {
   if (!_torchTrack) return;
   _torchOn = !_torchOn;
   try {
-    _torchTrack.applyConstraints({advanced: [{torch: _torchOn}]});
-    document.getElementById('cam-torch').textContent =
-      _torchOn ? '🔦 Linterna ON' : '🔦 Linterna';
-  } catch(e) {
-    console.warn('Linterna no disponible:', e);
-  }
+    _torchTrack.applyConstraints({advanced:[{torch:_torchOn}]});
+    $('cam-torch').textContent = _torchOn ? '🔦 Linterna ON' : '🔦 Linterna';
+  } catch(e) {}
 }
 
 function confirmarManual() {
-  const inp = $('sku');
-  const v   = inp.value.trim();
-  if (v) { scan(v); inp.value = ''; inp.focus(); }
+  const inp=$('sku'), v=inp.value.trim();
+  if (v) { scan(v); inp.value=''; inp.focus(); }
   else   { inp.focus(); }
 }
 
 function toggleTeclado() {
-  const inp = $('sku');
-  const btn = $('btn-teclado');
+  const inp=$('sku'), btn=$('btn-teclado');
   _tecladoVisible = !_tecladoVisible;
-
   if (_tecladoVisible) {
-    // Modo teclado manual — abre teclado virtual
-    inp.setAttribute('inputmode', 'text');
+    inp.setAttribute('inputmode','text');
     inp.focus(); inp.click();
     if (btn) { btn.style.background='var(--accent)'; btn.style.color='#fff'; }
-    const f = $('fb');
-    if (f) { f.textContent='⌨ Escribí el SKU y tocá ✓'; f.className='neu'; }
+    $('fb').textContent='⌨ Escribí el SKU y tocá ✓'; $('fb').className='neu';
   } else {
-    // Modo escáner láser — no abre teclado virtual
-    inp.setAttribute('inputmode', 'none');
-    inp.value = '';
-    inp.blur();
-    setTimeout(() => inp.focus(), 80);
+    inp.setAttribute('inputmode','none');
+    inp.value=''; inp.blur();
+    setTimeout(()=>inp.focus(),80);
     if (btn) { btn.style.background='var(--panel)'; btn.style.color='var(--mid)'; }
-    const f = $('fb');
-    if (f) { f.textContent='🔫 Listo para escanear'; f.className='neu'; }
+    $('fb').textContent='🔫 Listo para escanear'; $('fb').className='neu';
   }
 }
 
+// ── INIT ────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  load();
-  const inp = $('sku');
+  // Inicializar visual del canal sin recargar (la carga la hace detectarCanalActivo)
+  setCanal(_canalActivo, true);
+
+  // Primera carga: detectar automáticamente en qué canal hay lote activo
+  detectarCanalActivo();
+
+  const inp      = $('sku');
   const debugDiv = $('scanner-debug');
 
-  // Helper para mostrar debug
   function debug(msg) {
     if (debugDiv) {
       debugDiv.textContent = msg;
-      setTimeout(() => { if (debugDiv) debugDiv.textContent = ''; }, 2000);
+      setTimeout(()=>{ if(debugDiv) debugDiv.textContent=''; }, 2000);
     }
   }
 
-  // ── DESBLOQUEO DE VOZ ──────────────────────────────────────────────────
-  // Los navegadores móviles bloquean el audio hasta la primera interacción.
-  // En el primer toque, "despertamos" el motor de voz y anunciamos el ítem.
+  // Desbloqueo de voz en primer toque
   let _vozDesbloqueada = false;
   function _desbloquearVoz() {
     if (_vozDesbloqueada || !window.speechSynthesis) return;
     _vozDesbloqueada = true;
-    try {
-      const u = new SpeechSynthesisUtterance(' ');
-      u.volume = 0; window.speechSynthesis.speak(u);
-    } catch(e) {}
-    setTimeout(() => actualizarGuia(true), 300);
+    try { const u=new SpeechSynthesisUtterance(' '); u.volume=0; window.speechSynthesis.speak(u); } catch(e){}
+    setTimeout(()=>actualizarGuia(true), 300);
   }
-  document.addEventListener('touchstart', _desbloquearVoz, { once: true });
-  document.addEventListener('click',      _desbloquearVoz, { once: true });
+  document.addEventListener('touchstart', _desbloquearVoz, {once:true});
+  document.addEventListener('click',      _desbloquearVoz, {once:true});
 
-  // ── ESCÁNER LÁSER HARDWARE ─────────────────────────────────────────────
-  // El escáner manda el código como si fuera un teclado físico + Enter al final.
-
+  // ── ESCÁNER LÁSER ──────────────────────────────────────────────────────────
   let _scanTimer = null;
 
-  // 1. EVENT DIRECTO EN INPUT (más confiable para algunos lectores)
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.keyCode === 13) {
       const v = inp.value.trim();
-      if (v) {
-        e.preventDefault();
-        clearTimeout(_scanTimer);
-        debug(`✓ Enter detectado: ${v}`);
-        scan(v);
-        inp.value = '';
-        inp.focus();
-      }
+      if (v) { e.preventDefault(); clearTimeout(_scanTimer); debug(`✓ Enter: ${v}`); scan(v); inp.value=''; inp.focus(); }
     }
   });
 
-  // 2. INPUT EVENT (captura caracteres conforme llegan)
-  inp.addEventListener('input', (e) => {
+  inp.addEventListener('input', () => {
     clearTimeout(_scanTimer);
     const v = inp.value.trim();
-    if (!v) return;
-    if (_tecladoVisible) return;  // modo teclado manual: esperar Enter o botón ✓
-    
-    // Si detecta que es un scan rápido (muchos caracteres en poco tiempo)
+    if (!v || _tecladoVisible) return;
     _scanTimer = setTimeout(() => {
       const v2 = inp.value.trim();
-      if (v2.length >= 2) {
-        debug(`⏱️ Auto-scan timeout: ${v2}`);
-        scan(v2);
-        inp.value = '';
-        inp.focus();
-      }
-    }, 80);  // Reduci de 50 a 80ms para ser más confiable
+      if (v2.length >= 2) { debug(`⏱️ Auto-scan: ${v2}`); scan(v2); inp.value=''; inp.focus(); }
+    }, 80);
   });
 
-  // 3. BLUR (si pierde foco con valor, procesar)
   inp.addEventListener('blur', () => {
     if (!_tecladoVisible && !_camaraActiva) {
       const v = inp.value.trim();
-      if (v.length >= 2) {
-        clearTimeout(_scanTimer);
-        debug(`👁️ Blur scan: ${v}`);
-        scan(v);
-        inp.value = '';
-        setTimeout(() => inp.focus(), 80);
-      }
+      if (v.length >= 2) { clearTimeout(_scanTimer); debug(`👁️ Blur: ${v}`); scan(v); inp.value=''; setTimeout(()=>inp.focus(),80); }
     }
   });
 
-  // 4. CAPTURA GLOBAL A NIVEL DOCUMENTO (para cuando input pierde foco)
-  // Esto atrapa CUALQUIER entrada de teclado en la página
-  let _gBuf = '', _gLastKey = 0, _gTimer = null;
+  // Captura global para escáner físico
+  let _gBuf='', _gLastKey=0, _gTimer=null;
   document.addEventListener('keydown', e => {
-    if (_tecladoVisible || _camaraActiva) return;     // modo manual / cámara: no interferir
-    
-    // Si Enter global → procesar acumulado
-    if (e.key === 'Enter' || e.keyCode === 13) {
-      const s = _gBuf.trim();
-      _gBuf = '';
-      clearTimeout(_gTimer);
-      if (s.length >= 2) {
-        debug(`🌐 Enter global: ${s}`);
-        scan(s);
-        // Enfocar input nuevamente
-        inp.focus();
-      }
+    if (_tecladoVisible || _camaraActiva) return;
+    if (e.key==='Enter' || e.keyCode===13) {
+      const s=_gBuf.trim(); _gBuf=''; clearTimeout(_gTimer);
+      if (s.length>=2) { debug(`🌐 Enter global: ${s}`); scan(s); inp.focus(); }
       return;
     }
-    
-    // Acumular caracteres imprimibles
-    if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      const now = Date.now();
-      if (now - _gLastKey > 150) {
-        _gBuf = '';  // pausa larga = nueva lectura
-      }
-      _gLastKey = now;
-      _gBuf += e.key;
-      
+    if (e.key && e.key.length===1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const now=Date.now();
+      if (now-_gLastKey>150) _gBuf='';
+      _gLastKey=now; _gBuf+=e.key;
       clearTimeout(_gTimer);
-      _gTimer = setTimeout(() => {
-        const s = _gBuf.trim();
-        _gBuf = '';
-        if (s.length >= 2) {
-          debug(`⏱️ Global timeout: ${s}`);
-          scan(s);
-          inp.focus();
-        }
-      }, 150);  // Aumenté a 150ms para ser más confiable
+      _gTimer=setTimeout(()=>{
+        const s=_gBuf.trim(); _gBuf='';
+        if (s.length>=2) { debug(`⏱️ Global: ${s}`); scan(s); inp.focus(); }
+      }, 150);
     }
   });
 
-  // 5. CLIC EN PANTALLA → ENFOCAR INPUT (para reactivar scanner)
   document.addEventListener('click', e => {
-    if (!e.target.closest('#btn-teclado') &&
-        !e.target.closest('#btn-confirmar') &&
-        !e.target.closest('#btn-cam') &&
-        !e.target.closest('#cam-overlay') &&
+    if (!e.target.closest('#btn-teclado') && !e.target.closest('#btn-confirmar') &&
+        !e.target.closest('#btn-cam') && !e.target.closest('#cam-overlay') &&
         !e.target.closest('.g-hdr')) {
-      if (!_tecladoVisible && !_camaraActiva) {
-        inp.focus();
-        debug('🔫 Scanner activo');
-      }
+      if (!_tecladoVisible && !_camaraActiva) { inp.focus(); debug('🔫 Scanner activo'); }
     }
   });
 
-  // 6. FOCO INICIAL
   inp.focus();
 
-  // 8. MANTENER FOCO CADA 3s (asegura scanner siempre funcione)
+  // Mantener foco cada 3s
   setInterval(() => {
-    if (!_tecladoVisible && !_camaraActiva && document.activeElement !== inp) {
-      inp.focus();
-    }
+    if (!_tecladoVisible && !_camaraActiva && document.activeElement !== inp) inp.focus();
   }, 3000);
 
-  // Botón cámara: solo en dispositivos táctiles
-  const btnCam = document.getElementById('btn-cam');
+  // Botón cámara: solo en táctiles
+  const btnCam = $('btn-cam');
   if (btnCam) {
     const esMovil = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
     btnCam.style.display = esMovil ? 'flex' : 'none';
@@ -1009,10 +924,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Botón refresh
   $('fab').addEventListener('click', () => {
     $('fab').classList.add('spin');
-    load().finally(() => setTimeout(() => $('fab').classList.remove('spin'), 500));
+    // Al hacer refresh manual, siempre buscar el canal correcto
+    detectarCanalActivo().finally(()=>setTimeout(()=>$('fab').classList.remove('spin'),500));
   });
 
-  // Auto-refresh del estado cada 5 segundos (silencioso)
+  // Auto-refresh cada 5 segundos (silencioso)
   setInterval(loadQ, 5000);
 });
 </script>
