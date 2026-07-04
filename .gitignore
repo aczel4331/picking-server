@@ -31,5 +31,9 @@ Thumbs.db
 # Logs
 *.log
 app_deposito.py
-Logibot.exe
-metrics.json
+logibot_updater.py
+logibot_dashboard.py
+logibot_preview_etiqueta.py
+build_exe.bat
+logibot_icon.ico
+logo.ico
