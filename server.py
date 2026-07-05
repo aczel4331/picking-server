@@ -531,7 +531,8 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
 
     oids_con_shipping = [oid for oid, p in pedidos.items() if p.get("shipping_id")]
     if oids_con_shipping:
-        with ThreadPoolExecutor(max_workers=12) as ex:
+        # max_workers=4: suficiente para velocidad sin saturar Waitress ni ML
+        with ThreadPoolExecutor(max_workers=4) as ex:
             futures = {ex.submit(_fetch_shipment, oid): oid for oid in oids_con_shipping}
             for future in as_completed(futures):
                 try:
@@ -619,12 +620,22 @@ def _warmup_matutino():
             time.sleep(300)
 
 
+_refresh_lock = threading.Semaphore(1)  # solo 1 refresh completo a la vez
+
 def _auto_refresh_loop():
-    """Refresca pedidos cada 2 minutos. Respeta horario laboral Uruguay."""
+    """
+    Refresca lista completa de pedidos ML cada 8 minutos.
+    Usa semáforo para evitar dos refresh simultáneos que saturen Waitress.
+    """
     while True:
-        time.sleep(120)
-        if _cuentas and not _sync_pausado():
-            _refresh_pedidos_worker()
+        time.sleep(480)  # 8 minutos — antes era 2, demasiado frecuente
+        if not _cuentas or _sync_pausado():
+            continue
+        if _refresh_lock.acquire(blocking=False):
+            try:
+                _refresh_pedidos_worker()
+            finally:
+                _refresh_lock.release()
 
 
 def _cache_cleanup_loop():
@@ -658,14 +669,20 @@ def _cache_cleanup_loop():
             logger.error(f"[CACHE] Error en limpieza: {e}")
 
 
-def _refrescar_estado_pedidos_bg(pedidos_lista, limite=40):
-    """Consulta shipment de cada pedido en ML y actualiza estado."""
+def _refrescar_estado_pedidos_bg(pedidos_lista, limite=20):
+    """
+    Consulta shipment de cada pedido en ML y actualiza estado.
+    Pausa 0.5s entre requests para no generar burst que sature Waitress.
+    """
     SUBSTATUS_IMPRESOS = (
         "printed","ready_for_pickup","in_packing_list",
         "in_hub","shipped","delivered","ready_to_ship_wt_route","to_be_agreed",
     )
     procesados = marcados_impresos = 0
-    for p in pedidos_lista[:limite]:
+    for i, p in enumerate(pedidos_lista[:limite]):
+        # Pausa entre requests: evita burst que llena la cola de Waitress
+        if i > 0:
+            time.sleep(0.5)
         try:
             ship_id = p.get("shipping_id","")
             cuenta  = p.get("_cuenta","cuenta_0")
@@ -707,28 +724,37 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=40):
 
 
 def _sync_pedidos_ml_periodico():
-    """Sincroniza estado de pedidos con ML cada 90s. Se pausa con lote activo."""
-    time.sleep(30)
+    """
+    Sincroniza estado de envíos con ML.
+    - Ciclo: 120s (antes 90s)
+    - Límite por ciclo: 20 pedidos (antes 60) — evita cola profunda en Waitress
+    - Pausa de 1s entre cada request individual para no saturar
+    - No corre si hay un refresh completo en curso (_refresh_lock)
+    """
+    time.sleep(45)
     ciclo = 0
     while True:
         try:
             if _sync_pausado():
-                # Log cada 60 ciclos (~90 min) para no saturar
-                if ciclo % 60 == 0:
-                    logger.debug(f"[SYNC] Pausado. Estados: { {c: _sync_estado_canal.get(c) for c in _estados_canal} }")
-            else:
-                with _lock:
-                    pendientes = [p for p in _pedidos_ml.values()
-                                  if p.get("shipping_id","") and not p.get("impreso", False)]
-                if pendientes:
-                    # Log cada 20 ciclos (~30 min)
-                    if ciclo % 20 == 0:
-                        logger.debug(f"[SYNC] Ciclo #{ciclo}: {len(pendientes)} pedidos a verificar")
-                    _refrescar_estado_pedidos_bg(pendientes, limite=60)
+                if ciclo % 30 == 0:
+                    logger.debug(f"[SYNC] Pausado (horario/lote activo)")
+            elif _refresh_lock.acquire(blocking=False):
+                # Adquirir el semáforo para no correr junto con _auto_refresh_loop
+                try:
+                    with _lock:
+                        pendientes = [p for p in _pedidos_ml.values()
+                                      if p.get("shipping_id","") and not p.get("impreso", False)]
+                    if pendientes:
+                        if ciclo % 15 == 0:
+                            logger.debug(f"[SYNC] Ciclo #{ciclo}: {len(pendientes)} pendientes")
+                        # Límite 20 por ciclo, con pausa entre requests
+                        _refrescar_estado_pedidos_bg(pendientes, limite=20)
+                finally:
+                    _refresh_lock.release()
         except Exception as e:
             logger.error(f"[SYNC] Error: {e}")
         ciclo += 1
-        time.sleep(90)
+        time.sleep(120)
 
 
 threading.Thread(target=_auto_refresh_loop,  daemon=True).start()
@@ -892,11 +918,9 @@ def api_pedidos():
         log = p.get("logistica","")
         if log and (not p.get("tipo") or p.get("tipo") == "desconocido"):
             p["tipo"] = _calcular_tipo(log, p.get("tags",[]), p.get("shipping_id",""))
-    if not _sync_pausado():
-        necesitan = [p for p in pedidos if p.get("shipping_id","") and not p.get("impreso", False)]
-        if necesitan:
-            threading.Thread(target=_refrescar_estado_pedidos_bg,
-                             args=(necesitan,), kwargs={"limite": 40}, daemon=True).start()
+    # NO lanzar refresh por cada llamada a /api/pedidos —
+    # el sync periódico (_sync_pedidos_ml_periodico) ya lo maneja cada 120s.
+    # Lanzarlo aquí multiplicaba la carga en Waitress con cada poll del cliente.
     return jsonify({
         "ok": True, "pedidos": pedidos, "total": len(pedidos),
         "sync_pausado": _sync_pausado(), "sync_estados": dict(_sync_estado_canal),
@@ -2172,9 +2196,11 @@ if __name__ == "__main__":
     else:
         try:
             from waitress import serve
-            logger.info(f"Servidor iniciado (waitress) en http://0.0.0.0:{port} — threads=16")
-            serve(app, host="0.0.0.0", port=port, threads=16,
-                  channel_timeout=120, connection_limit=200, cleanup_interval=10)
+            logger.info(f"Servidor iniciado (waitress) en http://0.0.0.0:{port} — threads=32")
+            serve(app, host="0.0.0.0", port=port, threads=32,
+                  channel_timeout=60,   # antes 120 — liberar conexiones colgadas más rápido
+                  connection_limit=100, # antes 200 — Railway tiene límite de recursos
+                  cleanup_interval=5)   # antes 10 — limpiar más seguido
         except ImportError:
             logger.info(f"Servidor iniciado (flask dev) en http://0.0.0.0:{port}")
             app.run(host="0.0.0.0", port=port, debug=False)
