@@ -48,7 +48,13 @@ logibot_preview_etiqueta.py
 build_exe.bat
 logibot_icon.ico
 logo.ico
-
+Lote
+logibot_updater.py
+logibot_dashboard.py
+logibot_preview_etiqueta.py
+build_exe.bat
+logibot_icon.ico
+logo.ico
 # ── Datos privados del usuario ────────────────────────────────────────────────
 config.json
 excel_cache.json
