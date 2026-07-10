@@ -1,300 +1,272 @@
 """
-logibot_updater.py
-==================
-Auto-actualizador de Logibot Picking Pro.
+logibot_updater.py — Auto-updater de Logibot Picking Pro
+=========================================================
+Verifica si hay nueva version en GitHub Releases y la instala.
 
-Flujo:
-1. Al arrancar la app, este módulo consulta GitHub Releases (o un JSON público)
-   buscando una versión más nueva.
-2. Si existe → muestra un banner no-bloqueante en la UI con un botón
-   "Descargar actualización".
-3. El usuario hace clic → se descarga el nuevo .exe en la MISMA carpeta
-   con nombre temporal "Logibot_nueva.exe".
-4. Se abre un pequeño script .bat que:
-   a) Espera a que el proceso actual cierre.
-   b) Renombra/reemplaza el .exe viejo con el nuevo.
-   c) Lanza la nueva versión automáticamente.
-5. La app actual se cierra sola.
+FLUJO DE INSTALACION EN WINDOWS:
+  1. Se descarga el nuevo .zip en una carpeta temporal
+  2. Se crea un script .bat que:
+     a. Espera que el proceso actual cierre (usando su PID)
+     b. Extrae el zip sobre la carpeta de instalacion
+     c. Reinicia Logibot.exe
+  3. El bat se ejecuta en background y la app actual se cierra
 
-No requiere desinstalar ni borrar nada. Los datos (config.json, excel_cache.json)
-se conservan porque están en la misma carpeta y no son parte del .exe.
-
-Configuración (en GitHub):
-──────────────────────────
-Crear un archivo público en tu repo:
-  https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main/version.json
-
-Contenido de version.json:
-{
-  "version": "2.2.0",
-  "url_exe": "https://github.com/TU_USUARIO/TU_REPO/releases/download/v2.2.0/Logibot.exe",
-  "notas": "Nuevas funciones: dashboard de métricas, vista previa de etiquetas"
-}
+FIX SSL: algunas PCs con Windows desactualizado no tienen los certificados
+raiz necesarios para verificar github.com. Se desactiva verificacion SSL
+SOLO para descargas de GitHub (no afecta conexiones a Railway/ML).
 """
 
-import threading
-import urllib.request
-import json
 import os
+import ssl
 import sys
-import subprocess
+import json
+import threading
 import tempfile
+import zipfile
+import subprocess
+import urllib.request
+import tkinter as tk
+from tkinter import ttk
 
-# ── URL del archivo de versión (tu repo de GitHub) ────────────────────────────
-VERSION_URL = (
-    "https://raw.githubusercontent.com/aczel4331/picking-server/main/version.json"
-)
+# URL del version.json en el repo publico
+VERSION_URL = "https://raw.githubusercontent.com/aczel4331/picking-server/main/version.json"
 
-# Tiempo de espera entre verificaciones (segundos)
-CHECK_INTERVAL = 3600   # cada 1 hora
+# Contexto SSL sin verificacion — solo para descargas de GitHub
+_SSL_NO_VERIFY = ssl.create_default_context()
+_SSL_NO_VERIFY.check_hostname = False
+_SSL_NO_VERIFY.verify_mode    = ssl.CERT_NONE
 
 
-def _comparar_versiones(v_actual: str, v_nueva: str) -> bool:
-    """Devuelve True si v_nueva es mayor que v_actual."""
+def _get_json(url, timeout=10):
+    """GET que devuelve dict JSON. Ignora errores de certificado SSL."""
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "LogibotUpdater/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_NO_VERIFY) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def verificar_actualizacion(version_actual: str, callback_disponible):
+    """
+    Verifica en background si hay nueva version.
+    Si la hay, llama a callback_disponible(info_dict).
+    """
+    def _worker():
+        try:
+            data           = _get_json(VERSION_URL, timeout=12)
+            version_remota = data.get("version", "0.0.0")
+            if _es_mas_nueva(version_remota, version_actual):
+                info = {
+                    "version": version_remota,
+                    "notas":   data.get("notas",   ""),
+                    "url_zip": data.get("url_zip", ""),
+                    "url_exe": data.get("url_exe", ""),
+                }
+                callback_disponible(info)
+        except Exception as e:
+            print(f"[UPDATER] No se pudo verificar actualizacion: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _es_mas_nueva(remota: str, actual: str) -> bool:
     try:
-        def _partes(v):
-            return [int(x) for x in v.strip().lstrip("v").split(".")]
-        return _partes(v_nueva) > _partes(v_actual)
+        r = [int(x) for x in remota.strip().split(".")]
+        a = [int(x) for x in actual.strip().split(".")]
+        return r > a
     except Exception:
         return False
 
 
-def verificar_actualizacion(version_actual: str, callback_hay_update):
+def _dir_instalacion() -> str:
+    """Carpeta donde vive el Logibot.exe actual."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def descargar_e_instalar(url: str, version: str,
+                         callback_progreso,
+                         callback_listo,
+                         callback_error):
     """
-    Verifica en background si hay una versión nueva disponible.
-    Si la hay, llama a callback_hay_update(info_dict) en el thread de fondo.
-    El callback debe usar root.after(0, ...) para actualizar la UI.
-
-    Parámetros:
-        version_actual       : str  ej. "2.1.0"
-        callback_hay_update  : callable(info: dict)
-            info = {
-                "version": "2.2.0",
-                "url_exe": "https://...",
-                "notas":   "Cambios en esta versión"
-            }
-    """
-    def _worker():
-        try:
-            req = urllib.request.Request(
-                VERSION_URL,
-                headers={"User-Agent": "Logibot-Updater/1.0",
-                         "Cache-Control": "no-cache"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                info = json.loads(resp.read().decode("utf-8"))
-
-            v_nueva = info.get("version", "0.0.0")
-            if _comparar_versiones(version_actual, v_nueva):
-                print(f"[UPDATER] Nueva versión disponible: {v_nueva} "
-                      f"(actual: {version_actual})")
-                callback_hay_update(info)
-            else:
-                print(f"[UPDATER] App al día (v{version_actual})")
-        except Exception as e:
-            print(f"[UPDATER] No se pudo verificar actualización: {e}")
-
-    threading.Thread(target=_worker, daemon=True).start()
-
-
-def descargar_e_instalar(url_exe: str, version_nueva: str,
-                         callback_progreso=None,
-                         callback_listo=None,
-                         callback_error=None):
-    """
-    Descarga el nuevo .exe y prepara el reemplazo automático.
-
-    Parámetros:
-        url_exe           : URL del nuevo .exe
-        version_nueva     : str  ej. "2.2.0"
-        callback_progreso : callable(porcentaje: int)  0-100
-        callback_listo    : callable()  cuando está listo para reiniciar
-        callback_error    : callable(msg: str)
+    Descarga el .zip del release en background y prepara la instalacion.
+    La instalacion real ocurre en reiniciar_con_nueva_version().
     """
     def _worker():
         try:
-            # Directorio donde está el .exe actual (o el .py en dev)
-            if getattr(sys, "frozen", False):
-                # Corriendo como .exe generado por PyInstaller
-                carpeta = os.path.dirname(sys.executable)
-                exe_actual = sys.executable
-            else:
-                # Corriendo como .py en desarrollo
-                carpeta = os.path.dirname(os.path.abspath(__file__))
-                exe_actual = os.path.join(carpeta, "Logibot.exe")
+            # Guardar zip en carpeta temporal del sistema
+            tmp_dir  = tempfile.gettempdir()
+            zip_path = os.path.join(tmp_dir, f"Logibot_update_v{version}.zip")
 
-            exe_nuevo   = os.path.join(carpeta, "_Logibot_nueva.exe")
-            bat_archivo = os.path.join(carpeta, "_actualizar.bat")
-
-            print(f"[UPDATER] Descargando {url_exe}")
-            print(f"[UPDATER] Destino temporal: {exe_nuevo}")
-
-            # ── Descargar con progreso ────────────────────────────────────────
             req = urllib.request.Request(
-                url_exe, headers={"User-Agent": "Logibot-Updater/1.0"})
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                total = int(resp.headers.get("Content-Length", 0))
+                url, headers={"User-Agent": "LogibotUpdater/1.0"})
+
+            with urllib.request.urlopen(req, context=_SSL_NO_VERIFY, timeout=120) as resp:
+                total      = int(resp.headers.get("Content-Length", 0))
                 descargado = 0
-                chunk = 65536   # 64 KB
-                with open(exe_nuevo, "wb") as f:
+                bloque     = 8192
+
+                with open(zip_path, "wb") as f:
                     while True:
-                        bloque = resp.read(chunk)
-                        if not bloque:
+                        chunk = resp.read(bloque)
+                        if not chunk:
                             break
-                        f.write(bloque)
-                        descargado += len(bloque)
-                        if total and callback_progreso:
-                            pct = int(descargado * 100 / total)
-                            callback_progreso(pct)
+                        f.write(chunk)
+                        descargado += len(chunk)
+                        if total > 0:
+                            callback_progreso(int(descargado / total * 100))
 
-            print(f"[UPDATER] Descarga completa: {descargado} bytes")
+            callback_progreso(100)
 
-            # ── Crear .bat que reemplaza el exe y lanza la nueva versión ──────
-            # El .bat espera a que este proceso termine, reemplaza y relanza.
-            bat_contenido = f"""@echo off
-title Actualizando Logibot...
-echo Actualizando Logibot Picking Pro a v{version_nueva}...
-echo Por favor espere...
-
-:: Esperar a que el proceso viejo termine (máx 30 segundos)
-:WAIT
-tasklist /FI "IMAGENAME eq {os.path.basename(exe_actual)}" 2>NUL | find /I /N "{os.path.basename(exe_actual)}" >NUL
-if "%ERRORLEVEL%"=="0" (
-    timeout /t 1 /nobreak >NUL
-    goto WAIT
-)
-
-:: Reemplazar el exe viejo con el nuevo
-echo Instalando nueva version...
-del /F /Q "{exe_actual}" 2>NUL
-move /Y "{exe_nuevo}" "{exe_actual}"
-
-:: Lanzar la nueva version
-echo Lanzando Logibot v{version_nueva}...
-start "" "{exe_actual}"
-
-:: Autolimpieza
-del /F /Q "%~f0"
-"""
-            with open(bat_archivo, "w", encoding="cp1252") as f:
-                f.write(bat_contenido)
-
-            print(f"[UPDATER] .bat creado: {bat_archivo}")
-
-            if callback_listo:
-                callback_listo()
+            # Guardar ruta del zip para que reiniciar_con_nueva_version lo use
+            _guardar_ruta_descarga(zip_path)
+            callback_listo()
 
         except Exception as e:
-            print(f"[UPDATER] Error descargando: {e}")
-            if callback_error:
-                callback_error(str(e))
+            callback_error(str(e))
 
     threading.Thread(target=_worker, daemon=True).start()
+
+
+def _guardar_ruta_descarga(ruta: str):
+    """Persiste la ruta del zip descargado."""
+    path = os.path.join(_dir_instalacion(), "_update_pending.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(ruta)
 
 
 def reiniciar_con_nueva_version():
     """
-    Lanza el .bat de actualización y cierra la app actual.
-    Llamar solo cuando la descarga ya completó.
+    Instala la actualizacion y reinicia Logibot.
+
+    PROBLEMA EN WINDOWS: no se puede sobrescribir Logibot.exe mientras esta
+    corriendo. La solucion es un script .bat que:
+      1. Espera que el proceso actual (PID conocido) termine
+      2. Extrae el zip sobre la carpeta de instalacion
+      3. Ejecuta el nuevo Logibot.exe
+      4. Se autoeliimina
+
+    El bat se lanza con START /B para correr en background,
+    luego sys.exit() cierra la app actual y el bat toma el control.
     """
-    try:
-        if getattr(sys, "frozen", False):
-            carpeta = os.path.dirname(sys.executable)
-        else:
-            carpeta = os.path.dirname(os.path.abspath(__file__))
+    install_dir = _dir_instalacion()
+    pending     = os.path.join(install_dir, "_update_pending.txt")
 
-        bat = os.path.join(carpeta, "_actualizar.bat")
-        if os.path.exists(bat):
-            subprocess.Popen(
-                ["cmd", "/c", bat],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-                close_fds=True
-            )
-            print("[UPDATER] Proceso de actualización iniciado. Cerrando app...")
-            # Dar tiempo al bat para arrancar antes de cerrar
-            import time; time.sleep(1)
-            sys.exit(0)
-        else:
-            print(f"[UPDATER] .bat no encontrado: {bat}")
-    except Exception as e:
-        print(f"[UPDATER] Error al reiniciar: {e}")
+    if not os.path.exists(pending):
+        print("[UPDATER] No hay actualizacion pendiente")
+        return
+
+    with open(pending, "r", encoding="utf-8") as f:
+        zip_path = f.read().strip()
+
+    os.remove(pending)
+
+    if not os.path.exists(zip_path):
+        print(f"[UPDATER] ZIP no encontrado: {zip_path}")
+        return
+
+    pid      = os.getpid()
+    exe_dest = os.path.join(install_dir, "Logibot.exe")
+    bat_path = os.path.join(tempfile.gettempdir(), "logibot_install.bat")
+
+    # Construir el batch de instalacion
+    bat_content = f"""@echo off
+title Instalando Logibot...
+echo Esperando que Logibot cierre...
+
+:: Esperar a que el proceso actual (PID {pid}) termine
+:WAIT_LOOP
+tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >NUL
+    goto WAIT_LOOP
+)
+
+echo Instalando actualizacion...
+
+:: Extraer el ZIP sobre la carpeta de instalacion
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "Expand-Archive -Path '{zip_path}' -DestinationPath '{install_dir}' -Force"
+
+if errorlevel 1 (
+    echo ERROR al extraer el ZIP.
+    pause
+    goto CLEANUP
+)
+
+echo Iniciando nueva version...
+timeout /t 1 /nobreak >NUL
+
+:: Buscar Logibot.exe (puede estar en subcarpeta dist\\Logibot\\)
+if exist "{exe_dest}" (
+    start "" "{exe_dest}"
+) else (
+    :: Buscar en subcarpetas
+    for /r "{install_dir}" %%f in (Logibot.exe) do (
+        start "" "%%f"
+        goto CLEANUP
+    )
+    echo No se encontro Logibot.exe
+    pause
+)
+
+:CLEANUP
+:: Borrar el ZIP temporal y este bat
+del /Q "{zip_path}" 2>NUL
+del /Q "%~f0" 2>NUL
+"""
+
+    with open(bat_path, "w", encoding="utf-8") as f:
+        f.write(bat_content)
+
+    print(f"[UPDATER] Lanzando instalador: {bat_path}")
+
+    # Lanzar el bat en una ventana minimizada y separada del proceso actual
+    subprocess.Popen(
+        ["cmd.exe", "/C", "start", "/MIN", bat_path],
+        shell=False,
+        creationflags=subprocess.CREATE_NEW_CONSOLE
+        if hasattr(subprocess, "CREATE_NEW_CONSOLE") else 0
+    )
+
+    # Cerrar la app actual — el bat tomara el control
+    sys.exit(0)
 
 
-# ── Widget de notificación de actualización (banner en la UI) ─────────────────
+# ── Widget: Banner de actualizacion disponible ────────────────────────────────
 
-class BannerActualizacion:
+class BannerActualizacion(tk.Frame):
     """
-    Banner discreto que aparece en la parte superior de la ventana cuando
-    hay una actualización disponible. No bloquea la app.
-
-    Uso:
-        banner = BannerActualizacion(root, info_update, on_instalar_callback)
-        banner.mostrar()
+    Banner naranja en la parte superior cuando hay nueva version disponible.
     """
+    def __init__(self, parent, info: dict, on_instalar=None, **kwargs):
+        super().__init__(parent, bg="#854D0E", **kwargs)
+        self.place(relx=0, rely=0, relwidth=1, height=36)
 
-    def __init__(self, parent_frame, info: dict, on_instalar):
-        """
-        parent_frame : tk.Frame donde se inserta el banner
-        info         : dict con version, url_exe, notas
-        on_instalar  : callable() → se llama cuando el usuario confirma instalar
-        """
-        self._parent = parent_frame
-        self._info   = info
-        self._on_ins = on_instalar
-        self._frame  = None
+        version = info.get("version", "?")
+        notas   = info.get("notas",   "")
 
-    def mostrar(self):
-        if self._frame:
-            return
-        import tkinter as tk
+        tk.Label(
+            self,
+            text=f"🔄  Nueva version {version} disponible — {notas[:60]}",
+            bg="#854D0E", fg="#FEF3C7",
+            font=("Segoe UI", 9)
+        ).pack(side="left", padx=12)
 
-        v = self._info.get("version", "?")
-        notas = self._info.get("notas", "")
+        if on_instalar:
+            tk.Button(
+                self,
+                text="Actualizar ahora",
+                bg="#F59E0B", fg="white", relief="flat",
+                font=("Segoe UI Semibold", 9), cursor="hand2",
+                padx=8, pady=2, bd=0,
+                command=on_instalar
+            ).pack(side="right", padx=8)
 
-        # Banner amarillo discreto
-        self._frame = tk.Frame(self._parent, bg="#854D0E",
-                               relief="flat", bd=0)
-        self._frame.pack(fill="x", side="top", before=self._parent.winfo_children()[0]
-                         if self._parent.winfo_children() else None)
-
-        tk.Label(self._frame,
-                 text=f"🔄  Nueva versión v{v} disponible",
-                 bg="#854D0E", fg="#FEF3C7",
-                 font=("Segoe UI Semibold", 9)).pack(side="left", padx=12, pady=6)
-
-        if notas:
-            tk.Label(self._frame,
-                     text=f"— {notas[:80]}",
-                     bg="#854D0E", fg="#FDE68A",
-                     font=("Segoe UI", 8)).pack(side="left", padx=(0,8))
-
-        tk.Button(self._frame,
-                  text="⬇  Descargar e instalar",
-                  bg="#F59E0B", fg="white",
-                  activebackground="#D97706", activeforeground="white",
-                  font=("Segoe UI Semibold", 9),
-                  relief="flat", cursor="hand2",
-                  padx=10, pady=4, bd=0,
-                  command=self._confirmar).pack(side="right", padx=8, pady=4)
-
-        tk.Button(self._frame,
-                  text="✕", bg="#854D0E", fg="#FEF3C7",
-                  activebackground="#713F12", activeforeground="white",
-                  font=("Segoe UI", 9), relief="flat", cursor="hand2",
-                  padx=6, pady=4, bd=0,
-                  command=self.ocultar).pack(side="right", padx=4)
-
-    def ocultar(self):
-        if self._frame:
-            self._frame.destroy()
-            self._frame = None
-
-    def _confirmar(self):
-        import tkinter.messagebox as mb
-        v = self._info.get("version", "?")
-        notas = self._info.get("notas", "")
-        msg = (f"¿Actualizar Logibot a la versión {v}?\n\n"
-               f"Qué hay de nuevo:\n{notas}\n\n"
-               f"La app se cerrará y se reabrirá automáticamente.\n"
-               f"Tus datos (config, Excel, lotes) no se borran.")
-        if mb.askyesno("Actualizar Logibot", msg):
-            self._on_ins()
+        tk.Button(
+            self,
+            text="x", bg="#854D0E", fg="#FEF3C7",
+            relief="flat", font=("Segoe UI", 9),
+            cursor="hand2", padx=6, pady=2, bd=0,
+            command=self.destroy
+        ).pack(side="right")
