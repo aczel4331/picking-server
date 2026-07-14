@@ -91,6 +91,7 @@ def _resolver_data_dir():
 DATA_DIR       = _resolver_data_dir()
 LOTE_PATH      = os.path.join(DATA_DIR, "lote_estado.json")
 ML_TOKENS_PATH = os.path.join(DATA_DIR, "ml_tokens.json")
+USUARIOS_PATH  = os.path.join(DATA_DIR, "usuarios.json")
 
 RAILWAY_API_TOKEN  = os.environ.get("RAILWAY_API_TOKEN", "")
 RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID", "")
@@ -162,6 +163,7 @@ _etiquetas_cache     = {}
 _cola_etiquetas      = []
 _ultimo_refresh_pedidos = None
 _sku_db              = {}
+_usuarios            = []   # lista de usuarios cargada desde /data/usuarios.json
 _pkce_store          = {}
 
 def _ts():
@@ -298,6 +300,169 @@ def _cuentas_info():
          "user_id": tok.get("user_id", ""), "activa": bool(tok.get("access_token"))}
         for cid, tok in _cuentas.items() if tok.get("access_token")
     ]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GESTIÓN DE USUARIOS — persiste en /data/usuarios.json (Railway Volume)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cargar_usuarios():
+    """Carga usuarios desde /data/usuarios.json al arrancar."""
+    global _usuarios
+    try:
+        if os.path.exists(USUARIOS_PATH):
+            with open(USUARIOS_PATH, encoding="utf-8") as f:
+                _usuarios = json.load(f)
+            logger.info(f"[USUARIOS] Cargados: {[u.get('usuario') for u in _usuarios]}")
+        else:
+            # Primera vez: crear usuario admin por defecto
+            _usuarios = [{
+                "usuario":    "admin",
+                "clave":      "1234",
+                "nombre":     "Administrador",
+                "cuenta_id":  "todas",
+                "rol":        "supervisor",
+            }]
+            _guardar_usuarios()
+            logger.info("[USUARIOS] Archivo creado con usuario admin por defecto")
+    except Exception as e:
+        logger.error(f"[USUARIOS] Error cargando: {e}")
+        _usuarios = []
+
+
+def _guardar_usuarios():
+    """Persiste usuarios en /data/usuarios.json."""
+    try:
+        with open(USUARIOS_PATH, "w", encoding="utf-8") as f:
+            json.dump(_usuarios, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"[USUARIOS] Error guardando: {e}")
+
+
+def _verificar_credenciales(usuario: str, clave: str):
+    """
+    Verifica credenciales. Devuelve el dict del usuario si son correctas,
+    o None si son incorrectas.
+    No guarda contraseñas en texto plano en logs.
+    """
+    usuario = usuario.strip().lower()
+    for u in _usuarios:
+        if u.get("usuario","").lower() == usuario and u.get("clave","") == clave:
+            return {
+                "usuario":   u.get("usuario"),
+                "nombre":    u.get("nombre", u.get("usuario")),
+                "cuenta_id": u.get("cuenta_id", "todas"),
+                "rol":       u.get("rol", "operario"),
+            }
+    return None
+
+
+# ── API de usuarios ───────────────────────────────────────────────────────────
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    """
+    Endpoint de login para la app de escritorio.
+    Body JSON: {"usuario": "everest", "clave": "xxxx"}
+    Respuesta: {"ok": true, "usuario": {...}} o {"ok": false, "msg": "..."}
+    NO requiere API key — es el punto de entrada antes de autenticarse.
+    """
+    data    = request.get_json(silent=True) or {}
+    usuario = str(data.get("usuario", "")).strip()
+    clave   = str(data.get("clave",   "")).strip()
+
+    if not usuario or not clave:
+        return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
+
+    resultado = _verificar_credenciales(usuario, clave)
+    if resultado:
+        logger.info(f"[AUTH] Login OK: {usuario} (rol={resultado['rol']})")
+        return jsonify({"ok": True, "usuario": resultado})
+    else:
+        logger.warning(f"[AUTH] Login FALLIDO: {usuario}")
+        return jsonify({"ok": False, "msg": "Usuario o clave incorrectos"}), 401
+
+
+@app.route("/api/auth/usuarios", methods=["GET"])
+@requiere_api_key
+def api_usuarios_lista():
+    """Lista todos los usuarios (sin mostrar claves). Solo supervisores."""
+    return jsonify({
+        "ok":      True,
+        "usuarios": [
+            {k: v for k, v in u.items() if k != "clave"}
+            for u in _usuarios
+        ]
+    })
+
+
+@app.route("/api/auth/usuarios", methods=["POST"])
+@requiere_api_key
+def api_usuarios_crear():
+    """
+    Crea un nuevo usuario.
+    Body: {"usuario","clave","nombre","cuenta_id","rol"}
+    """
+    data    = request.get_json(silent=True) or {}
+    usuario = str(data.get("usuario","")).strip().lower()
+    clave   = str(data.get("clave","")).strip()
+    nombre  = str(data.get("nombre", usuario)).strip()
+    cuenta  = str(data.get("cuenta_id","todas")).strip()
+    rol     = str(data.get("rol","operario")).strip()
+
+    if not usuario or not clave:
+        return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
+    if any(u.get("usuario","").lower() == usuario for u in _usuarios):
+        return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
+    if rol not in ("operario", "supervisor"):
+        return jsonify({"ok": False, "msg": "Rol debe ser 'operario' o 'supervisor'"}), 400
+
+    nuevo = {"usuario": usuario, "clave": clave,
+             "nombre": nombre, "cuenta_id": cuenta, "rol": rol}
+    _usuarios.append(nuevo)
+    _guardar_usuarios()
+    logger.info(f"[USUARIOS] Creado: {usuario} (cuenta={cuenta}, rol={rol})")
+    return jsonify({"ok": True, "msg": f"Usuario '{usuario}' creado", "usuario": {
+        k: v for k, v in nuevo.items() if k != "clave"
+    }})
+
+
+@app.route("/api/auth/usuarios/<usuario_id>", methods=["PUT"])
+@requiere_api_key
+def api_usuarios_editar(usuario_id):
+    """Edita un usuario existente (clave, nombre, cuenta_id, rol)."""
+    u = next((x for x in _usuarios if x.get("usuario","").lower() == usuario_id.lower()), None)
+    if not u:
+        return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
+    data = request.get_json(silent=True) or {}
+    if data.get("clave"):
+        u["clave"]     = data["clave"].strip()
+    if data.get("nombre"):
+        u["nombre"]    = data["nombre"].strip()
+    if data.get("cuenta_id"):
+        u["cuenta_id"] = data["cuenta_id"].strip()
+    if data.get("rol") in ("operario","supervisor"):
+        u["rol"]       = data["rol"]
+    _guardar_usuarios()
+    logger.info(f"[USUARIOS] Editado: {usuario_id}")
+    return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' actualizado"})
+
+
+@app.route("/api/auth/usuarios/<usuario_id>", methods=["DELETE"])
+@requiere_api_key
+def api_usuarios_eliminar(usuario_id):
+    """Elimina un usuario. No se puede eliminar el último supervisor."""
+    global _usuarios
+    u = next((x for x in _usuarios if x.get("usuario","").lower() == usuario_id.lower()), None)
+    if not u:
+        return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
+    supervisores = [x for x in _usuarios if x.get("rol") == "supervisor"]
+    if u.get("rol") == "supervisor" and len(supervisores) <= 1:
+        return jsonify({"ok": False, "msg": "No podés eliminar el único supervisor"}), 400
+    _usuarios = [x for x in _usuarios if x.get("usuario","").lower() != usuario_id.lower()]
+    _guardar_usuarios()
+    logger.info(f"[USUARIOS] Eliminado: {usuario_id}")
+    return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' eliminado"})
+
 
 def _cargar_sku_db():
     global _sku_db
@@ -2122,6 +2287,7 @@ def api_diag_pedidos():
 
 def _startup():
     _cargar_sku_db()
+    _cargar_usuarios()
     _cargar_tokens_persistidos()
     if not _cuentas:
         _cargar_tokens_local()
