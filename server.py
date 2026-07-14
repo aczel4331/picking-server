@@ -30,7 +30,7 @@ logging.getLogger("requests").setLevel(logging.WARNING)
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-app.secret_key = os.environ.get("APP_SECRET_KEY", "picking-dev-secret-2024")
+app.secret_key = os.environ.get("APP_SECRET_KEY", os.urandom(24).hex())
 _lock = threading.Lock()
 
 # ── Templates HTML ─────────────────────────────────────────────────────────────
@@ -59,12 +59,18 @@ ML_SECRET_KEY = os.environ.get("ML_SECRET_KEY", "")
 ML_SITE_ID    = "MLU"
 ML_AUTH_URL   = "https://auth.mercadolibre.com.uy"
 ML_API_URL    = "https://api.mercadolibre.com"
-ML_REDIRECT   = os.environ.get(
-    "ML_REDIRECT_URI",
-    "https://picking-server-production.up.railway.app/auth/callback"
-)
+ML_REDIRECT   = os.environ.get("ML_REDIRECT_URI", "")
+if not ML_REDIRECT:
+    # Construir desde RAILWAY_PUBLIC_DOMAIN si está disponible
+    _domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if _domain:
+        ML_REDIRECT = f"https://{_domain}/auth/callback"
 
-API_KEY           = os.environ.get("PICKING_API_KEY", "everest2024")
+API_KEY           = os.environ.get("PICKING_API_KEY", "")
+if not API_KEY:
+    raise RuntimeError(
+        "[STARTUP] Variable PICKING_API_KEY no definida en Railway. "
+        "Agrégala en Settings → Variables.")
 ML_TOKENS_ENV_KEY = "ML_TOKENS_JSON"
 _SKU_DB_ENV_KEY   = "SKU_DB_JSON"
 
@@ -839,8 +845,11 @@ def requiere_api_key(f):
     def decorated(*args, **kwargs):
         k = (request.headers.get("X-API-Key") or
              request.args.get("key") or request.args.get("api_key") or "").strip()
-        if k not in (API_KEY, "everest2024", "everest2025"):
-            return jsonify({"ok": False, "msg": f"Clave invalida."}), 401
+        # Si API_KEY no está configurada, bloquear todo
+        if not API_KEY:
+            return jsonify({"ok": False, "msg": "Servidor no configurado correctamente."}), 503
+        if k != API_KEY:
+            return jsonify({"ok": False, "msg": "Clave invalida."}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -2294,7 +2303,7 @@ def api_diag_pedidos():
 
 @app.route("/admin/usuarios")
 def admin_usuarios_panel():
-    """Panel web para gestionar usuarios. URL: /admin/usuarios?key=everest2024"""
+    """Panel web para gestionar usuarios. Requiere ?key=PICKING_API_KEY"""
     key = request.args.get("key","")
     if key != API_KEY:
         return """<html><body style='font-family:sans-serif;background:#0F172A;
