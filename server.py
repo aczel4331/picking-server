@@ -356,112 +356,7 @@ def _verificar_credenciales(usuario: str, clave: str):
     return None
 
 
-# ── API de usuarios ───────────────────────────────────────────────────────────
 
-@app.route("/api/auth/login", methods=["POST"])
-def api_auth_login():
-    """
-    Endpoint de login para la app de escritorio.
-    Body JSON: {"usuario": "everest", "clave": "xxxx"}
-    Respuesta: {"ok": true, "usuario": {...}} o {"ok": false, "msg": "..."}
-    NO requiere API key — es el punto de entrada antes de autenticarse.
-    """
-    data    = request.get_json(silent=True) or {}
-    usuario = str(data.get("usuario", "")).strip()
-    clave   = str(data.get("clave",   "")).strip()
-
-    if not usuario or not clave:
-        return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
-
-    resultado = _verificar_credenciales(usuario, clave)
-    if resultado:
-        logger.info(f"[AUTH] Login OK: {usuario} (rol={resultado['rol']})")
-        return jsonify({"ok": True, "usuario": resultado})
-    else:
-        logger.warning(f"[AUTH] Login FALLIDO: {usuario}")
-        return jsonify({"ok": False, "msg": "Usuario o clave incorrectos"}), 401
-
-
-@app.route("/api/auth/usuarios", methods=["GET"])
-@requiere_api_key
-def api_usuarios_lista():
-    """Lista todos los usuarios (sin mostrar claves). Solo supervisores."""
-    return jsonify({
-        "ok":      True,
-        "usuarios": [
-            {k: v for k, v in u.items() if k != "clave"}
-            for u in _usuarios
-        ]
-    })
-
-
-@app.route("/api/auth/usuarios", methods=["POST"])
-@requiere_api_key
-def api_usuarios_crear():
-    """
-    Crea un nuevo usuario.
-    Body: {"usuario","clave","nombre","cuenta_id","rol"}
-    """
-    data    = request.get_json(silent=True) or {}
-    usuario = str(data.get("usuario","")).strip().lower()
-    clave   = str(data.get("clave","")).strip()
-    nombre  = str(data.get("nombre", usuario)).strip()
-    cuenta  = str(data.get("cuenta_id","todas")).strip()
-    rol     = str(data.get("rol","operario")).strip()
-
-    if not usuario or not clave:
-        return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
-    if any(u.get("usuario","").lower() == usuario for u in _usuarios):
-        return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
-    if rol not in ("operario", "supervisor"):
-        return jsonify({"ok": False, "msg": "Rol debe ser 'operario' o 'supervisor'"}), 400
-
-    nuevo = {"usuario": usuario, "clave": clave,
-             "nombre": nombre, "cuenta_id": cuenta, "rol": rol}
-    _usuarios.append(nuevo)
-    _guardar_usuarios()
-    logger.info(f"[USUARIOS] Creado: {usuario} (cuenta={cuenta}, rol={rol})")
-    return jsonify({"ok": True, "msg": f"Usuario '{usuario}' creado", "usuario": {
-        k: v for k, v in nuevo.items() if k != "clave"
-    }})
-
-
-@app.route("/api/auth/usuarios/<usuario_id>", methods=["PUT"])
-@requiere_api_key
-def api_usuarios_editar(usuario_id):
-    """Edita un usuario existente (clave, nombre, cuenta_id, rol)."""
-    u = next((x for x in _usuarios if x.get("usuario","").lower() == usuario_id.lower()), None)
-    if not u:
-        return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
-    data = request.get_json(silent=True) or {}
-    if data.get("clave"):
-        u["clave"]     = data["clave"].strip()
-    if data.get("nombre"):
-        u["nombre"]    = data["nombre"].strip()
-    if data.get("cuenta_id"):
-        u["cuenta_id"] = data["cuenta_id"].strip()
-    if data.get("rol") in ("operario","supervisor"):
-        u["rol"]       = data["rol"]
-    _guardar_usuarios()
-    logger.info(f"[USUARIOS] Editado: {usuario_id}")
-    return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' actualizado"})
-
-
-@app.route("/api/auth/usuarios/<usuario_id>", methods=["DELETE"])
-@requiere_api_key
-def api_usuarios_eliminar(usuario_id):
-    """Elimina un usuario. No se puede eliminar el último supervisor."""
-    global _usuarios
-    u = next((x for x in _usuarios if x.get("usuario","").lower() == usuario_id.lower()), None)
-    if not u:
-        return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
-    supervisores = [x for x in _usuarios if x.get("rol") == "supervisor"]
-    if u.get("rol") == "supervisor" and len(supervisores) <= 1:
-        return jsonify({"ok": False, "msg": "No podés eliminar el único supervisor"}), 400
-    _usuarios = [x for x in _usuarios if x.get("usuario","").lower() != usuario_id.lower()]
-    _guardar_usuarios()
-    logger.info(f"[USUARIOS] Eliminado: {usuario_id}")
-    return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' eliminado"})
 
 
 def _cargar_sku_db():
@@ -948,6 +843,118 @@ def requiere_api_key(f):
             return jsonify({"ok": False, "msg": f"Clave invalida."}), 401
         return f(*args, **kwargs)
     return decorated
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API USUARIOS — login centralizado en Railway
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── API de usuarios ───────────────────────────────────────────────────────────
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    """
+    Endpoint de login para la app de escritorio.
+    Body JSON: {"usuario": "everest", "clave": "xxxx"}
+    Respuesta: {"ok": true, "usuario": {...}} o {"ok": false, "msg": "..."}
+    NO requiere API key — es el punto de entrada antes de autenticarse.
+    """
+    data    = request.get_json(silent=True) or {}
+    usuario = str(data.get("usuario", "")).strip()
+    clave   = str(data.get("clave",   "")).strip()
+
+    if not usuario or not clave:
+        return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
+
+    resultado = _verificar_credenciales(usuario, clave)
+    if resultado:
+        logger.info(f"[AUTH] Login OK: {usuario} (rol={resultado['rol']})")
+        return jsonify({"ok": True, "usuario": resultado})
+    else:
+        logger.warning(f"[AUTH] Login FALLIDO: {usuario}")
+        return jsonify({"ok": False, "msg": "Usuario o clave incorrectos"}), 401
+
+
+@app.route("/api/auth/usuarios", methods=["GET"])
+@requiere_api_key
+def api_usuarios_lista():
+    """Lista todos los usuarios (sin mostrar claves). Solo supervisores."""
+    return jsonify({
+        "ok":      True,
+        "usuarios": [
+            {k: v for k, v in u.items() if k != "clave"}
+            for u in _usuarios
+        ]
+    })
+
+
+@app.route("/api/auth/usuarios", methods=["POST"])
+@requiere_api_key
+def api_usuarios_crear():
+    """
+    Crea un nuevo usuario.
+    Body: {"usuario","clave","nombre","cuenta_id","rol"}
+    """
+    data    = request.get_json(silent=True) or {}
+    usuario = str(data.get("usuario","")).strip().lower()
+    clave   = str(data.get("clave","")).strip()
+    nombre  = str(data.get("nombre", usuario)).strip()
+    cuenta  = str(data.get("cuenta_id","todas")).strip()
+    rol     = str(data.get("rol","operario")).strip()
+
+    if not usuario or not clave:
+        return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
+    if any(u.get("usuario","").lower() == usuario for u in _usuarios):
+        return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
+    if rol not in ("operario", "supervisor"):
+        return jsonify({"ok": False, "msg": "Rol debe ser 'operario' o 'supervisor'"}), 400
+
+    nuevo = {"usuario": usuario, "clave": clave,
+             "nombre": nombre, "cuenta_id": cuenta, "rol": rol}
+    _usuarios.append(nuevo)
+    _guardar_usuarios()
+    logger.info(f"[USUARIOS] Creado: {usuario} (cuenta={cuenta}, rol={rol})")
+    return jsonify({"ok": True, "msg": f"Usuario '{usuario}' creado", "usuario": {
+        k: v for k, v in nuevo.items() if k != "clave"
+    }})
+
+
+@app.route("/api/auth/usuarios/<usuario_id>", methods=["PUT"])
+@requiere_api_key
+def api_usuarios_editar(usuario_id):
+    """Edita un usuario existente (clave, nombre, cuenta_id, rol)."""
+    u = next((x for x in _usuarios if x.get("usuario","").lower() == usuario_id.lower()), None)
+    if not u:
+        return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
+    data = request.get_json(silent=True) or {}
+    if data.get("clave"):
+        u["clave"]     = data["clave"].strip()
+    if data.get("nombre"):
+        u["nombre"]    = data["nombre"].strip()
+    if data.get("cuenta_id"):
+        u["cuenta_id"] = data["cuenta_id"].strip()
+    if data.get("rol") in ("operario","supervisor"):
+        u["rol"]       = data["rol"]
+    _guardar_usuarios()
+    logger.info(f"[USUARIOS] Editado: {usuario_id}")
+    return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' actualizado"})
+
+
+@app.route("/api/auth/usuarios/<usuario_id>", methods=["DELETE"])
+@requiere_api_key
+def api_usuarios_eliminar(usuario_id):
+    """Elimina un usuario. No se puede eliminar el último supervisor."""
+    global _usuarios
+    u = next((x for x in _usuarios if x.get("usuario","").lower() == usuario_id.lower()), None)
+    if not u:
+        return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
+    supervisores = [x for x in _usuarios if x.get("rol") == "supervisor"]
+    if u.get("rol") == "supervisor" and len(supervisores) <= 1:
+        return jsonify({"ok": False, "msg": "No podés eliminar el único supervisor"}), 400
+    _usuarios = [x for x in _usuarios if x.get("usuario","").lower() != usuario_id.lower()]
+    _guardar_usuarios()
+    logger.info(f"[USUARIOS] Eliminado: {usuario_id}")
+    return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' eliminado"})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2283,6 +2290,126 @@ def api_diag_pedidos():
             "impreso":        p.get("impreso", False),
         })
     return jsonify({"total": len(pedidos), "contadores": contadores, "pedidos": detalle})
+
+
+@app.route("/admin/usuarios")
+def admin_usuarios_panel():
+    """Panel web para gestionar usuarios. URL: /admin/usuarios?key=everest2024"""
+    key = request.args.get("key","")
+    if key != API_KEY:
+        return """<html><body style='font-family:sans-serif;background:#0F172A;
+        color:#F1F5F9;display:flex;align-items:center;justify-content:center;
+        min-height:100vh;margin:0'>
+        <div style='text-align:center'><h2>Acceso restringido</h2>
+        <p>Agregá <code>?key=TU_API_KEY</code> a la URL</p>
+        </div></body></html>""", 401
+
+    usuarios_html = ""
+    for u in _usuarios:
+        rol_color = "#10B981" if u.get("rol") == "supervisor" else "#3B82F6"
+        usuarios_html += f"""<tr>
+          <td>{u.get('nombre','')}</td>
+          <td><code>{u.get('usuario','')}</code></td>
+          <td><code>{u.get('cuenta_id','')}</code></td>
+          <td><span style='color:{rol_color};font-weight:700'>{u.get('rol','')}</span></td>
+          <td><button onclick="eliminar('{u.get('usuario','')}')"
+            style='background:#EF4444;color:white;border:none;padding:4px 12px;
+            border-radius:6px;cursor:pointer'>Eliminar</button></td></tr>"""
+
+    return render_template_string("""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logibot — Usuarios</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:32px 20px}
+h1{color:#3B82F6;margin-bottom:4px}
+.sub{color:#94A3B8;font-size:13px;margin-bottom:28px}
+table{width:100%;border-collapse:collapse;background:#1E293B;border-radius:12px;
+  overflow:hidden;margin-bottom:32px}
+th{background:#1E3A5F;padding:12px 16px;text-align:left;font-size:13px;
+  color:#93C5FD;font-weight:700}
+td{padding:11px 16px;font-size:13px;border-bottom:1px solid #334155}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#263350}
+code{background:#0F172A;padding:2px 6px;border-radius:4px;font-size:12px;color:#34D399}
+.card{background:#1E293B;border-radius:12px;padding:24px;max-width:520px}
+.card h2{color:#F1F5F9;font-size:16px;margin-bottom:16px}
+label{display:block;color:#94A3B8;font-size:12px;margin-bottom:4px;margin-top:12px}
+input,select{width:100%;padding:9px 12px;background:#0F172A;border:1px solid #334155;
+  color:#F1F5F9;border-radius:8px;font-size:14px}
+input:focus,select:focus{outline:none;border-color:#3B82F6}
+.btn{margin-top:16px;width:100%;padding:11px;background:#3B82F6;color:white;
+  border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer}
+.btn:hover{background:#2563EB}
+#msg{margin-top:12px;font-size:13px;min-height:20px}
+.ok{color:#10B981}.err{color:#EF4444}
+</style></head><body>
+<h1>Logibot — Gestion de Usuarios</h1>
+<p class="sub">Usuarios que pueden iniciar sesion en la app de escritorio.</p>
+<table><thead><tr>
+  <th>Nombre</th><th>Usuario</th><th>cuenta_id ML</th>
+  <th>Rol</th><th>Acciones</th>
+</tr></thead><tbody>""" + usuarios_html + """</tbody></table>
+<div class="card">
+  <h2>Agregar usuario</h2>
+  <label>Nombre visible</label>
+  <input id="f-nombre" placeholder="Ej: Everest Shopping">
+  <label>Usuario (para el login)</label>
+  <input id="f-usuario" placeholder="Ej: everest">
+  <label>Clave</label>
+  <input id="f-clave" type="password" placeholder="Minimo 4 caracteres">
+  <label>cuenta_id ML</label>
+  <input id="f-cuenta" placeholder="Ej: cuenta_0 o cuenta_2 o todas">
+  <small style="color:#64748B;font-size:11px">
+    Ver /api/cuentas?key=""" + key + """ para los cuenta_id disponibles
+  </small>
+  <label>Rol</label>
+  <select id="f-rol">
+    <option value="operario">Operario - ve solo su tienda</option>
+    <option value="supervisor">Supervisor - ve todo + Config</option>
+  </select>
+  <button class="btn" onclick="crear()">Crear usuario</button>
+  <div id="msg"></div>
+</div>
+<script>
+const KEY = '""" + key + """';
+const BASE = window.location.origin;
+async function crear() {
+  const msg = document.getElementById('msg');
+  const body = {
+    nombre:    document.getElementById('f-nombre').value.trim(),
+    usuario:   document.getElementById('f-usuario').value.trim().toLowerCase(),
+    clave:     document.getElementById('f-clave').value.trim(),
+    cuenta_id: document.getElementById('f-cuenta').value.trim(),
+    rol:       document.getElementById('f-rol').value,
+  };
+  if (!body.usuario || !body.clave || !body.cuenta_id) {
+    msg.textContent='Completa usuario, clave y cuenta_id.';
+    msg.className='err'; return;
+  }
+  try {
+    const r = await fetch(BASE+'/api/auth/usuarios', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-API-Key':KEY},
+      body:JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (d.ok) { msg.textContent='OK: '+d.msg; msg.className='ok';
+      setTimeout(()=>location.reload(),1200);
+    } else { msg.textContent='Error: '+d.msg; msg.className='err'; }
+  } catch(e) { msg.textContent='Error: '+e; msg.className='err'; }
+}
+async function eliminar(usuario) {
+  if (!confirm('Eliminar usuario '+usuario+'?')) return;
+  try {
+    const r = await fetch(BASE+'/api/auth/usuarios/'+usuario,
+      {method:'DELETE',headers:{'X-API-Key':KEY}});
+    const d = await r.json();
+    if (d.ok) location.reload(); else alert('Error: '+d.msg);
+  } catch(e) { alert('Error: '+e); }
+}
+</script></body></html>""")
 
 
 def _startup():
