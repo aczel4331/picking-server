@@ -2301,17 +2301,94 @@ def api_diag_pedidos():
     return jsonify({"total": len(pedidos), "contadores": contadores, "pedidos": detalle})
 
 
-@app.route("/admin/usuarios")
+# ── HTML del login del panel admin ────────────────────────────────────────────
+_PANEL_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logibot — Acceso Admin</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;
+  display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.card{background:#1E293B;border-radius:16px;padding:40px;width:100%;max-width:380px;
+  box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.logo{font-size:48px;text-align:center;margin-bottom:8px}
+h1{color:#F1F5F9;font-size:20px;text-align:center;margin-bottom:4px}
+.sub{color:#64748B;font-size:12px;text-align:center;margin-bottom:28px}
+label{display:block;color:#94A3B8;font-size:12px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;margin-top:16px}
+input{width:100%;padding:12px 14px;background:#0F172A;border:1px solid #334155;
+  color:#F1F5F9;border-radius:8px;font-size:15px;outline:none;transition:border .2s}
+input:focus{border-color:#3B82F6}
+.btn{margin-top:24px;width:100%;padding:13px;background:#3B82F6;color:white;
+  border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;
+  transition:background .2s}
+.btn:hover{background:#2563EB}
+.err{margin-top:14px;background:rgba(239,68,68,.15);border:1px solid #EF4444;
+  color:#FCA5A5;border-radius:8px;padding:10px 14px;font-size:13px;display:none}
+.err.show{display:block}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">🏭</div>
+  <h1>Logibot Admin</h1>
+  <p class="sub">Panel de gestión de usuarios</p>
+  <form method="POST" action="/admin/usuarios">
+    <label>Usuario</label>
+    <input type="text" name="usuario" placeholder="Tu usuario supervisor"
+           autocomplete="username" required autofocus>
+    <label>Clave</label>
+    <input type="password" name="clave" placeholder="••••••••"
+           autocomplete="current-password" required>
+    <button type="submit" class="btn">Ingresar</button>
+    <div class="err {% if error %}show{% endif %}">{{ error }}</div>
+  </form>
+</div>
+</body>
+</html>"""
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    """Cierra la sesión del panel admin."""
+    session.pop("admin_panel_usuario", None)
+    session.pop("admin_panel_rol", None)
+    return redirect("/admin/usuarios")
+
+
+@app.route("/admin/usuarios", methods=["GET","POST"])
 def admin_usuarios_panel():
-    """Panel web para gestionar usuarios. Requiere ?key=PICKING_API_KEY"""
-    key = request.args.get("key","")
-    if key != API_KEY:
-        return """<html><body style='font-family:sans-serif;background:#0F172A;
-        color:#F1F5F9;display:flex;align-items:center;justify-content:center;
-        min-height:100vh;margin:0'>
-        <div style='text-align:center'><h2>Acceso restringido</h2>
-        <p>Agregá <code>?key=TU_API_KEY</code> a la URL</p>
-        </div></body></html>""", 401
+    """
+    Panel web para gestionar usuarios.
+    Acceso: /admin/usuarios (muestra formulario de login)
+    Login via POST con usuario + clave de rol supervisor.
+    La key NO va en la URL — se valida contra los usuarios del sistema.
+    """
+    # ── Formulario de login ────────────────────────────────────────────────────
+    # GET sin sesion → mostrar pantalla de login
+    usuario_panel = session.get("admin_panel_usuario")
+    if not usuario_panel:
+        if request.method == "POST":
+            u = request.form.get("usuario","").strip().lower()
+            c = request.form.get("clave","").strip()
+            resultado = _verificar_credenciales(u, c)
+            if resultado and resultado.get("rol") == "supervisor":
+                session["admin_panel_usuario"] = resultado.get("nombre", u)
+                session["admin_panel_rol"]      = "supervisor"
+                logger.info(f"[ADMIN-PANEL] Login OK: {u}")
+            else:
+                logger.warning(f"[ADMIN-PANEL] Login fallido: {u}")
+                return render_template_string(_PANEL_LOGIN_HTML,
+                    error="Usuario o clave incorrectos, o no tenés permiso de supervisor.")
+        else:
+            return render_template_string(_PANEL_LOGIN_HTML, error="")
+
+    key = API_KEY  # usar internamente para las llamadas JS
+    if not key:
+        return "Servidor no configurado (PICKING_API_KEY vacío)", 503
 
     usuarios_html = ""
     for u in _usuarios:
@@ -2324,6 +2401,8 @@ def admin_usuarios_panel():
           <td><button onclick="eliminar('{u.get('usuario','')}')"
             style='background:#EF4444;color:white;border:none;padding:4px 12px;
             border-radius:6px;cursor:pointer'>Eliminar</button></td></tr>"""
+
+    nombre_admin = session.get("admin_panel_usuario", "Admin")
 
     return render_template_string("""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8">
@@ -2354,7 +2433,15 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
 #msg{margin-top:12px;font-size:13px;min-height:20px}
 .ok{color:#10B981}.err{color:#EF4444}
 </style></head><body>
-<h1>Logibot — Gestion de Usuarios</h1>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+  <h1 style="margin:0">Logibot — Gestion de Usuarios</h1>
+  <div style="display:flex;align-items:center;gap:12px">
+    <span style="color:#94A3B8;font-size:13px">👑 {{ nombre_admin }}</span>
+    <a href="/admin/logout" style="background:#334155;color:#94A3B8;
+       text-decoration:none;padding:6px 14px;border-radius:8px;
+       font-size:12px;font-weight:600">Cerrar sesion</a>
+  </div>
+</div>
 <p class="sub">Usuarios que pueden iniciar sesion en la app de escritorio.</p>
 <table><thead><tr>
   <th>Nombre</th><th>Usuario</th><th>cuenta_id ML</th>
@@ -2418,7 +2505,7 @@ async function eliminar(usuario) {
     if (d.ok) location.reload(); else alert('Error: '+d.msg);
   } catch(e) { alert('Error: '+e); }
 }
-</script></body></html>""")
+</script></body></html>""", nombre_admin=nombre_admin)
 
 
 def _startup():
