@@ -32,20 +32,23 @@ METRICS_PATH = os.path.join(
 # ── Estado en memoria ─────────────────────────────────────────────────────────
 _lote_inicio  = {}   # { canal: timestamp_inicio }
 _lote_skus    = {}   # { canal: {sku: qty} }
-_lote_pedidos = {}   # { canal: n_pedidos }
+_lote_pedidos  = {}   # { canal: n_pedidos }
+_lote_operario = {}   # { canal: nombre_operario }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # API pública — registrar eventos
 # ─────────────────────────────────────────────────────────────────────────────
 
-def registrar_inicio_lote(canal: str, n_pedidos: int, skus: dict):
+def registrar_inicio_lote(canal: str, n_pedidos: int, skus: dict,
+                          operario: str = ""):
     """Llamar cuando el lote se sube a Railway y empieza la colecta."""
-    _lote_inicio[canal]  = time.time()
-    _lote_skus[canal]    = dict(skus)
-    _lote_pedidos[canal] = n_pedidos
+    _lote_inicio[canal]   = time.time()
+    _lote_skus[canal]     = dict(skus)
+    _lote_pedidos[canal]  = n_pedidos
+    _lote_operario[canal] = operario.strip() if operario else "—"
     print(f"[METRICS] Inicio lote canal='{canal}' "
-          f"pedidos={n_pedidos} skus={len(skus)}")
+          f"pedidos={n_pedidos} skus={len(skus)} operario='{operario}'")
 
 
 def registrar_fin_lote(canal: str):
@@ -57,6 +60,8 @@ def registrar_fin_lote(canal: str):
     skus    = _lote_skus.pop(canal, {})
     n_peds  = _lote_pedidos.pop(canal, 0)
 
+    operario = _lote_operario.pop(canal, "—")
+
     entrada = {
         "ts":            datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "canal":         canal,
@@ -65,6 +70,7 @@ def registrar_fin_lote(canal: str):
         "n_skus":        len(skus),
         "total_uds":     sum(skus.values()),
         "skus":          skus,
+        "operario":      operario,
     }
 
     _guardar_metrica(entrada)
