@@ -898,12 +898,14 @@ def api_usuarios_lista():
     })
 
 
+
 @app.route("/api/auth/usuarios", methods=["POST"])
 @requiere_api_key
 def api_usuarios_crear():
     """
     Crea un nuevo usuario.
-    Body: {"usuario","clave","nombre","cuenta_id","rol"}
+    - Admin: puede crear cualquier usuario con cualquier rol y cuenta_id
+    - Supervisor: solo puede crear operarios de su propia tienda
     """
     data    = request.get_json(silent=True) or {}
     usuario = str(data.get("usuario","")).strip().lower()
@@ -916,18 +918,29 @@ def api_usuarios_crear():
         return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
     if any(u.get("usuario","").lower() == usuario for u in _usuarios):
         return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
-    if rol not in ("operario", "supervisor", "admin"):
-        return jsonify({"ok": False, "msg": "Rol: 'operario', 'supervisor' o 'admin'"}), 400
+
+    # Validar permisos: supervisor solo crea operarios de su tienda
+    rol_sesion    = session.get("admin_panel_rol","supervisor")
+    cuenta_sesion = session.get("admin_panel_cuenta_id","todas")
+
+    if rol_sesion != "admin":
+        if rol != "operario":
+            return jsonify({"ok": False,
+                "msg": "Solo el admin puede crear supervisores o admins"}), 403
+        cuenta = cuenta_sesion  # forzar tienda del supervisor
+
+    if rol not in ("operario","supervisor","admin"):
+        return jsonify({"ok": False,
+            "msg": "Rol: operario, supervisor o admin"}), 400
 
     nuevo = {"usuario": usuario, "clave": clave,
              "nombre": nombre, "cuenta_id": cuenta, "rol": rol}
     _usuarios.append(nuevo)
     _guardar_usuarios()
-    logger.info(f"[USUARIOS] Creado: {usuario} (cuenta={cuenta}, rol={rol})")
-    return jsonify({"ok": True, "msg": f"Usuario '{usuario}' creado", "usuario": {
-        k: v for k, v in nuevo.items() if k != "clave"
-    }})
-
+    logger.info(f"[USUARIOS] Creado: {usuario} "
+                f"(cuenta={cuenta}, rol={rol}, por={rol_sesion})")
+    return jsonify({"ok": True, "msg": f"Usuario '{usuario}' creado",
+                    "usuario": {k: v for k, v in nuevo.items() if k != "clave"}})
 
 @app.route("/api/auth/usuarios/<usuario_id>", methods=["PUT"])
 @requiere_api_key
@@ -950,21 +963,45 @@ def api_usuarios_editar(usuario_id):
     return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' actualizado"})
 
 
+
+
+
 @app.route("/api/auth/usuarios/<usuario_id>", methods=["DELETE"])
 @requiere_api_key
 def api_usuarios_eliminar(usuario_id):
-    """Elimina un usuario. No se puede eliminar el último supervisor."""
+    """
+    Elimina un usuario.
+    - Admin: puede eliminar cualquiera (menos el ultimo supervisor/admin)
+    - Supervisor: solo puede eliminar operarios de su tienda
+    """
     global _usuarios
-    u = next((x for x in _usuarios if x.get("usuario","").lower() == usuario_id.lower()), None)
+    u = next((x for x in _usuarios
+               if x.get("usuario","").lower() == usuario_id.lower()), None)
     if not u:
         return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
-    supervisores = [x for x in _usuarios if x.get("rol") == "supervisor"]
-    if u.get("rol") == "supervisor" and len(supervisores) <= 1:
-        return jsonify({"ok": False, "msg": "No podés eliminar el único supervisor"}), 400
-    _usuarios = [x for x in _usuarios if x.get("usuario","").lower() != usuario_id.lower()]
+
+    rol_sesion    = session.get("admin_panel_rol","supervisor")
+    cuenta_sesion = session.get("admin_panel_cuenta_id","todas")
+
+    if rol_sesion != "admin":
+        if u.get("rol") != "operario":
+            return jsonify({"ok": False,
+                "msg": "Solo el admin puede eliminar supervisores o admins"}), 403
+        if u.get("cuenta_id","") != cuenta_sesion:
+            return jsonify({"ok": False,
+                "msg": "No podes eliminar usuarios de otra tienda"}), 403
+
+    # Proteger el ultimo supervisor/admin
+    if u.get("rol") in ("supervisor","admin") and        sum(1 for x in _usuarios if x.get("rol") in ("supervisor","admin")) <= 1:
+        return jsonify({"ok": False,
+            "msg": "No podes eliminar el unico supervisor/admin"}), 400
+
+    _usuarios = [x for x in _usuarios
+                 if x.get("usuario","").lower() != usuario_id.lower()]
     _guardar_usuarios()
-    logger.info(f"[USUARIOS] Eliminado: {usuario_id}")
+    logger.info(f"[USUARIOS] Eliminado: {usuario_id} (por {rol_sesion})")
     return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' eliminado"})
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2391,33 +2428,48 @@ def admin_usuarios_panel():
         else:
             return render_template_string(_PANEL_LOGIN_HTML, error="")
 
-    key = API_KEY  # usar internamente para las llamadas JS
+    key            = API_KEY
     if not key:
         return "Servidor no configurado (PICKING_API_KEY vacío)", 503
 
+    rol_sesion    = session.get("admin_panel_rol",      "supervisor")
+    cuenta_sesion = session.get("admin_panel_cuenta_id","todas")
+    es_admin      = (rol_sesion == "admin")
+
+    # Supervisor solo ve usuarios de su tienda
+    # Admin ve todos
+    usuarios_visibles = _usuarios if es_admin else [
+        u for u in _usuarios
+        if u.get("cuenta_id","") == cuenta_sesion
+    ]
+
     usuarios_html = ""
-    for u in _usuarios:
+    for u in usuarios_visibles:
         rol = u.get("rol","operario")
         if rol == "admin":
-            rol_color = "#F59E0B"
-            rol_emoji = "👑"
-            rol_label = "Admin"
+            rol_color = "#F59E0B"; rol_emoji = "👑"; rol_label = "Admin"
         elif rol == "supervisor":
-            rol_color = "#10B981"
-            rol_emoji = "🏢"
-            rol_label = "Supervisor"
+            rol_color = "#10B981"; rol_emoji = "🏢"; rol_label = "Supervisor"
         else:
-            rol_color = "#3B82F6"
-            rol_emoji = "👤"
-            rol_label = "Operario"
+            rol_color = "#3B82F6"; rol_emoji = "👤"; rol_label = "Operario"
+
+        # El supervisor no puede eliminar otros supervisores ni admins
+        puede_eliminar = es_admin or rol == "operario"
+        uname_safe = u.get("usuario","")
+        if puede_eliminar:
+            btn_eliminar = (
+                f"<button onclick=\"eliminar('{uname_safe}')\" "
+                "style='background:#EF4444;color:white;border:none;"
+                "padding:4px 12px;border-radius:6px;cursor:pointer'>"
+                "Eliminar</button>")
+        else:
+            btn_eliminar = "<span style='color:#334155;font-size:11px'>—</span>"
         usuarios_html += f"""<tr>
           <td>{u.get('nombre','')}</td>
           <td><code>{u.get('usuario','')}</code></td>
           <td><code>{u.get('cuenta_id','')}</code></td>
           <td><span style='color:{rol_color};font-weight:700'>{rol_emoji} {rol_label}</span></td>
-          <td><button onclick="eliminar('{u.get('usuario','')}')"
-            style='background:#EF4444;color:white;border:none;padding:4px 12px;
-            border-radius:6px;cursor:pointer'>Eliminar</button></td></tr>"""
+          <td>{btn_eliminar}</td></tr>"""
 
     nombre_admin = session.get("admin_panel_usuario", "Admin")
 
@@ -2485,15 +2537,25 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
   <label>Clave</label>
   <input id="f-clave" type="password" placeholder="Minimo 4 caracteres">
   <label>cuenta_id ML</label>
+  {% if es_admin %}
   <input id="f-cuenta" placeholder="Ej: cuenta_0 o cuenta_2 o todas">
   <small style="color:#64748B;font-size:11px">
-    Ver /api/cuentas?key=""" + key + """ para los cuenta_id disponibles
+    Ver /api/cuentas para los cuenta_id disponibles
   </small>
+  {% else %}
+  <input id="f-cuenta" value="{{ cuenta_sesion }}"
+         readonly style="opacity:.6;cursor:not-allowed">
+  <small style="color:#64748B;font-size:11px">
+    Los operarios que agregues quedarán asignados a tu tienda automáticamente.
+  </small>
+  {% endif %}
   <label>Rol</label>
   <select id="f-rol">
     <option value="operario">👤 Operario — solo Pedidos ML y Picking</option>
-    <option value="supervisor">🏢 Supervisor de tienda — ve Inicio + Config (sin agregar cuentas ML)</option>
-    <option value="admin">👑 Admin — acceso total (puede agregar cuentas ML)</option>
+    {% if es_admin %}
+    <option value="supervisor">🏢 Supervisor de tienda — ve Inicio + Config</option>
+    <option value="admin">👑 Admin — acceso total</option>
+    {% endif %}
   </select>
   <button class="btn" onclick="crear()">Crear usuario</button>
   <div id="msg"></div>
@@ -2535,7 +2597,9 @@ async function eliminar(usuario) {
     if (d.ok) location.reload(); else alert('Error: '+d.msg);
   } catch(e) { alert('Error: '+e); }
 }
-</script></body></html>""", nombre_admin=nombre_admin)
+</script></body></html>""", nombre_admin=nombre_admin,
+                              es_admin=es_admin,
+                              cuenta_sesion=cuenta_sesion)
 
 
 
