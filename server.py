@@ -920,8 +920,9 @@ def api_usuarios_crear():
         return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
 
     # Validar permisos: supervisor solo crea operarios de su tienda
-    rol_sesion    = session.get("admin_panel_rol","supervisor")
-    cuenta_sesion = session.get("admin_panel_cuenta_id","todas")
+    # El rol viene del body (enviado por el panel JS) o de la sesión Flask
+    rol_sesion    = data.get("_panel_rol","") or session.get("admin_panel_rol","supervisor")
+    cuenta_sesion = data.get("_panel_cuenta","") or session.get("admin_panel_cuenta_id","todas")
 
     if rol_sesion != "admin":
         if rol != "operario":
@@ -980,8 +981,11 @@ def api_usuarios_eliminar(usuario_id):
     if not u:
         return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
 
-    rol_sesion    = session.get("admin_panel_rol","supervisor")
-    cuenta_sesion = session.get("admin_panel_cuenta_id","todas")
+    # Leer rol del query string (enviado por el panel JS) o de la sesión Flask
+    rol_sesion    = (request.args.get("_panel_rol","") or
+                     session.get("admin_panel_rol","supervisor"))
+    cuenta_sesion = (request.args.get("_panel_cuenta","") or
+                     session.get("admin_panel_cuenta_id","todas"))
 
     if rol_sesion != "admin":
         if u.get("rol") != "operario":
@@ -2566,11 +2570,13 @@ const BASE = window.location.origin;
 async function crear() {
   const msg = document.getElementById('msg');
   const body = {
-    nombre:    document.getElementById('f-nombre').value.trim(),
-    usuario:   document.getElementById('f-usuario').value.trim().toLowerCase(),
-    clave:     document.getElementById('f-clave').value.trim(),
-    cuenta_id: document.getElementById('f-cuenta').value.trim(),
-    rol:       document.getElementById('f-rol').value,
+    nombre:        document.getElementById('f-nombre').value.trim(),
+    usuario:       document.getElementById('f-usuario').value.trim().toLowerCase(),
+    clave:         document.getElementById('f-clave').value.trim(),
+    cuenta_id:     document.getElementById('f-cuenta').value.trim(),
+    rol:           document.getElementById('f-rol').value,
+    _panel_rol:    '{{ "admin" if es_admin else "supervisor" }}',
+    _panel_cuenta: '{{ cuenta_sesion }}',
   };
   if (!body.usuario || !body.clave || !body.cuenta_id) {
     msg.textContent='Completa usuario, clave y cuenta_id.';
@@ -2591,7 +2597,7 @@ async function crear() {
 async function eliminar(usuario) {
   if (!confirm('Eliminar usuario '+usuario+'?')) return;
   try {
-    const r = await fetch(BASE+'/api/auth/usuarios/'+usuario,
+    const r = await fetch(BASE+'/api/auth/usuarios/'+usuario+'?_panel_rol={{ "admin" if es_admin else "supervisor" }}&_panel_cuenta={{ cuenta_sesion }}',
       {method:'DELETE',headers:{'X-API-Key':KEY}});
     const d = await r.json();
     if (d.ok) location.reload(); else alert('Error: '+d.msg);
