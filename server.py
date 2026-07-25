@@ -915,8 +915,8 @@ def api_usuarios_crear():
         return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
     if any(u.get("usuario","").lower() == usuario for u in _usuarios):
         return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
-    if rol not in ("operario", "supervisor"):
-        return jsonify({"ok": False, "msg": "Rol debe ser 'operario' o 'supervisor'"}), 400
+    if rol not in ("operario", "supervisor", "admin"):
+        return jsonify({"ok": False, "msg": "Rol: 'operario', 'supervisor' o 'admin'"}), 400
 
     nuevo = {"usuario": usuario, "clave": clave,
              "nombre": nombre, "cuenta_id": cuenta, "rol": rol}
@@ -942,7 +942,7 @@ def api_usuarios_editar(usuario_id):
         u["nombre"]    = data["nombre"].strip()
     if data.get("cuenta_id"):
         u["cuenta_id"] = data["cuenta_id"].strip()
-    if data.get("rol") in ("operario","supervisor"):
+    if data.get("rol") in ("operario","supervisor","admin"):
         u["rol"]       = data["rol"]
     _guardar_usuarios()
     logger.info(f"[USUARIOS] Editado: {usuario_id}")
@@ -2375,14 +2375,15 @@ def admin_usuarios_panel():
             u = request.form.get("usuario","").strip().lower()
             c = request.form.get("clave","").strip()
             resultado = _verificar_credenciales(u, c)
-            if resultado and resultado.get("rol") == "supervisor":
+            # Panel accesible para admin y supervisor
+            if resultado and resultado.get("rol") in ("supervisor", "admin"):
                 session["admin_panel_usuario"] = resultado.get("nombre", u)
-                session["admin_panel_rol"]      = "supervisor"
-                logger.info(f"[ADMIN-PANEL] Login OK: {u}")
+                session["admin_panel_rol"]      = resultado.get("rol","supervisor")
+                logger.info(f"[ADMIN-PANEL] Login OK: {u} (rol={resultado.get('rol')})")
             else:
                 logger.warning(f"[ADMIN-PANEL] Login fallido: {u}")
                 return render_template_string(_PANEL_LOGIN_HTML,
-                    error="Usuario o clave incorrectos, o no tenés permiso de supervisor.")
+                    error="Usuario o clave incorrectos, o no tenés permiso de supervisor/admin.")
         else:
             return render_template_string(_PANEL_LOGIN_HTML, error="")
 
@@ -2392,12 +2393,24 @@ def admin_usuarios_panel():
 
     usuarios_html = ""
     for u in _usuarios:
-        rol_color = "#10B981" if u.get("rol") == "supervisor" else "#3B82F6"
+        rol = u.get("rol","operario")
+        if rol == "admin":
+            rol_color = "#F59E0B"
+            rol_emoji = "👑"
+            rol_label = "Admin"
+        elif rol == "supervisor":
+            rol_color = "#10B981"
+            rol_emoji = "🏢"
+            rol_label = "Supervisor"
+        else:
+            rol_color = "#3B82F6"
+            rol_emoji = "👤"
+            rol_label = "Operario"
         usuarios_html += f"""<tr>
           <td>{u.get('nombre','')}</td>
           <td><code>{u.get('usuario','')}</code></td>
           <td><code>{u.get('cuenta_id','')}</code></td>
-          <td><span style='color:{rol_color};font-weight:700'>{u.get('rol','')}</span></td>
+          <td><span style='color:{rol_color};font-weight:700'>{rol_emoji} {rol_label}</span></td>
           <td><button onclick="eliminar('{u.get('usuario','')}')"
             style='background:#EF4444;color:white;border:none;padding:4px 12px;
             border-radius:6px;cursor:pointer'>Eliminar</button></td></tr>"""
@@ -2436,13 +2449,22 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
   <h1 style="margin:0">Logibot — Gestion de Usuarios</h1>
   <div style="display:flex;align-items:center;gap:12px">
-    <span style="color:#94A3B8;font-size:13px">👑 {{ nombre_admin }}</span>
+    <span style="color:#94A3B8;font-size:13px">
+      {% if "admin" in nombre_admin %}👑{% else %}🏢{% endif %}
+      {{ nombre_admin }}
+    </span>
     <a href="/admin/logout" style="background:#334155;color:#94A3B8;
        text-decoration:none;padding:6px 14px;border-radius:8px;
        font-size:12px;font-weight:600">Cerrar sesion</a>
   </div>
 </div>
 <p class="sub">Usuarios que pueden iniciar sesion en la app de escritorio.</p>
+<div style="background:#1E3A5F;border-radius:8px;padding:10px 14px;
+     margin-bottom:20px;font-size:12px;color:#93C5FD;line-height:1.8">
+  👑 <b>Admin</b> — acceso total, puede agregar cuentas MercadoLibre<br>
+  🏢 <b>Supervisor</b> — ve Inicio + estadísticas + Config, <b>no</b> puede agregar cuentas ML<br>
+  👤 <b>Operario</b> — solo Pedidos ML y Picking/Packing de su tienda
+</div>
 <table><thead><tr>
   <th>Nombre</th><th>Usuario</th><th>cuenta_id ML</th>
   <th>Rol</th><th>Acciones</th>
@@ -2462,8 +2484,9 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
   </small>
   <label>Rol</label>
   <select id="f-rol">
-    <option value="operario">Operario - ve solo su tienda</option>
-    <option value="supervisor">Supervisor - ve todo + Config</option>
+    <option value="operario">👤 Operario — solo Pedidos ML y Picking</option>
+    <option value="supervisor">🏢 Supervisor de tienda — ve Inicio + Config (sin agregar cuentas ML)</option>
+    <option value="admin">👑 Admin — acceso total (puede agregar cuentas ML)</option>
   </select>
   <button class="btn" onclick="crear()">Crear usuario</button>
   <div id="msg"></div>
