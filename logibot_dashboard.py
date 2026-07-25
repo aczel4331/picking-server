@@ -32,23 +32,20 @@ METRICS_PATH = os.path.join(
 # ── Estado en memoria ─────────────────────────────────────────────────────────
 _lote_inicio  = {}   # { canal: timestamp_inicio }
 _lote_skus    = {}   # { canal: {sku: qty} }
-_lote_pedidos  = {}   # { canal: n_pedidos }
-_lote_operario = {}   # { canal: nombre_operario }
+_lote_pedidos = {}   # { canal: n_pedidos }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # API pública — registrar eventos
 # ─────────────────────────────────────────────────────────────────────────────
 
-def registrar_inicio_lote(canal: str, n_pedidos: int, skus: dict,
-                          operario: str = ""):
+def registrar_inicio_lote(canal: str, n_pedidos: int, skus: dict):
     """Llamar cuando el lote se sube a Railway y empieza la colecta."""
-    _lote_inicio[canal]   = time.time()
-    _lote_skus[canal]     = dict(skus)
-    _lote_pedidos[canal]  = n_pedidos
-    _lote_operario[canal] = operario.strip() if operario else "—"
+    _lote_inicio[canal]  = time.time()
+    _lote_skus[canal]    = dict(skus)
+    _lote_pedidos[canal] = n_pedidos
     print(f"[METRICS] Inicio lote canal='{canal}' "
-          f"pedidos={n_pedidos} skus={len(skus)} operario='{operario}'")
+          f"pedidos={n_pedidos} skus={len(skus)}")
 
 
 def registrar_fin_lote(canal: str):
@@ -60,8 +57,6 @@ def registrar_fin_lote(canal: str):
     skus    = _lote_skus.pop(canal, {})
     n_peds  = _lote_pedidos.pop(canal, 0)
 
-    operario = _lote_operario.pop(canal, "—")
-
     entrada = {
         "ts":            datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "canal":         canal,
@@ -70,7 +65,6 @@ def registrar_fin_lote(canal: str):
         "n_skus":        len(skus),
         "total_uds":     sum(skus.values()),
         "skus":          skus,
-        "operario":      operario,
     }
 
     _guardar_metrica(entrada)
@@ -90,6 +84,77 @@ def _guardar_metrica(entrada: dict):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[METRICS] Error guardando: {e}")
+
+
+def subir_metricas_railway(url_base: str, api_key: str,
+                           silencioso: bool = False) -> bool:
+    """
+    Sube el metrics.json completo a Railway.
+    Se llama automaticamente a las 5:50 PM o manualmente.
+    """
+    import urllib.request as _ur, ssl
+
+    data = _cargar_metricas()
+    if not data:
+        print("[METRICS] Sin datos para subir")
+        return False
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode    = ssl.CERT_NONE
+
+    try:
+        payload = json.dumps({"metricas": data}, ensure_ascii=False).encode()
+        req = _ur.Request(
+            url_base.rstrip("/") + "/api/metricas/subir",
+            data=payload,
+            headers={"Content-Type": "application/json",
+                     "X-API-Key": api_key},
+            method="POST")
+        with _ur.urlopen(req, timeout=20, context=ctx) as r:
+            resp = json.loads(r.read())
+        if resp.get("ok"):
+            if not silencioso:
+                print(f"[METRICS] Subidas {len(data)} entradas a Railway OK")
+            return True
+        else:
+            print(f"[METRICS] Error subiendo: {resp.get('msg','?')}")
+            return False
+    except Exception as e:
+        print(f"[METRICS] Error de conexion al subir: {e}")
+        return False
+
+
+def _scheduler_subida_diaria(url_base: str, api_key: str):
+    """
+    Hilo que espera a las 17:50 (5:50 PM hora Uruguay) y sube las metricas.
+    Se lanza una vez al arrancar la app y se reprograma automaticamente cada dia.
+    """
+    import threading, datetime as _dt
+    from datetime import timezone, timedelta
+
+    def _worker():
+        while True:
+            try:
+                uy    = timezone(timedelta(hours=-3))
+                ahora = _dt.datetime.now(uy)
+                obj   = ahora.replace(hour=17, minute=50, second=0, microsecond=0)
+                if ahora >= obj:
+                    obj += _dt.timedelta(days=1)
+                espera = (obj - ahora).total_seconds()
+                print(f"[METRICS] Proxima subida en "
+                      f"{int(espera//3600)}h {int((espera%3600)//60)}m "
+                      f"(17:50 hora Uruguay)")
+                time.sleep(espera)
+                print("[METRICS] 5:50 PM — subiendo metricas a Railway...")
+                subir_metricas_railway(url_base, api_key, silencioso=False)
+                time.sleep(70)  # evita doble disparo
+            except Exception as e:
+                print(f"[METRICS] Error en scheduler: {e}")
+                time.sleep(300)
+
+    threading.Thread(target=_worker, daemon=True,
+                     name="MetricsScheduler").start()
 
 
 def _cargar_metricas() -> list:

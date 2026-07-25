@@ -98,6 +98,7 @@ DATA_DIR       = _resolver_data_dir()
 LOTE_PATH      = os.path.join(DATA_DIR, "lote_estado.json")
 ML_TOKENS_PATH = os.path.join(DATA_DIR, "ml_tokens.json")
 USUARIOS_PATH  = os.path.join(DATA_DIR, "usuarios.json")
+METRICAS_PATH  = os.path.join(DATA_DIR, "metricas.json")
 
 RAILWAY_API_TOKEN  = os.environ.get("RAILWAY_API_TOKEN", "")
 RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID", "")
@@ -2453,9 +2454,12 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
       {% if "admin" in nombre_admin %}👑{% else %}🏢{% endif %}
       {{ nombre_admin }}
     </span>
+    <a href="/estadisticas" style="background:#1E3A5F;color:#93C5FD;
+       text-decoration:none;padding:6px 14px;border-radius:8px;
+       font-size:12px;font-weight:600">📊 Estadisticas</a>
     <a href="/admin/logout" style="background:#334155;color:#94A3B8;
        text-decoration:none;padding:6px 14px;border-radius:8px;
-       font-size:12px;font-weight:600">Cerrar sesion</a>
+       font-size:12px;font-weight:600">🔒 Cerrar sesion</a>
   </div>
 </div>
 <p class="sub">Usuarios que pueden iniciar sesion en la app de escritorio.</p>
@@ -2529,6 +2533,346 @@ async function eliminar(usuario) {
   } catch(e) { alert('Error: '+e); }
 }
 </script></body></html>""", nombre_admin=nombre_admin)
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MÉTRICAS — recibe y sirve datos del logibot_dashboard.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _cargar_metricas_servidor():
+    """Carga métricas desde /data/metricas.json."""
+    try:
+        if os.path.exists(METRICAS_PATH):
+            with open(METRICAS_PATH, encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"[METRICAS] Error cargando: {e}")
+    return []
+
+
+def _guardar_metricas_servidor(data: list):
+    """Persiste métricas en /data/metricas.json."""
+    try:
+        with open(METRICAS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"[METRICAS] Error guardando: {e}")
+
+
+@app.route("/api/metricas/subir", methods=["POST"])
+@requiere_api_key
+def api_metricas_subir():
+    """
+    Recibe las métricas del día desde la app de escritorio.
+    La app las sube automáticamente a las 5:50 PM hora Uruguay.
+    """
+    data    = request.get_json(silent=True) or {}
+    nuevas  = data.get("metricas", [])
+    if not nuevas or not isinstance(nuevas, list):
+        return jsonify({"ok": False, "msg": "Sin métricas válidas"}), 400
+
+    # Mergear con las existentes (evitar duplicados por ts+canal)
+    existentes  = _cargar_metricas_servidor()
+    keys_exist  = {(e.get("ts",""), e.get("canal","")) for e in existentes}
+    agregadas   = 0
+    for m in nuevas:
+        key = (m.get("ts",""), m.get("canal",""))
+        if key not in keys_exist:
+            existentes.append(m)
+            keys_exist.add(key)
+            agregadas += 1
+
+    # Ordenar por timestamp y conservar últimos 2000
+    existentes.sort(key=lambda x: x.get("ts",""))
+    if len(existentes) > 2000:
+        existentes = existentes[-2000:]
+
+    _guardar_metricas_servidor(existentes)
+    logger.info(f"[METRICAS] Recibidas {len(nuevas)}, "
+                f"agregadas {agregadas}, total {len(existentes)}")
+    return jsonify({"ok": True, "agregadas": agregadas, "total": len(existentes)})
+
+
+@app.route("/api/metricas", methods=["GET"])
+@requiere_api_key
+def api_metricas_lista():
+    """Devuelve las métricas con filtros opcionales."""
+    desde = request.args.get("desde","")
+    hasta = request.args.get("hasta","")
+    op    = request.args.get("operario","").strip().lower()
+    canal = request.args.get("canal","").strip().lower()
+
+    data = _cargar_metricas_servidor()
+
+    if desde:
+        data = [d for d in data if d.get("ts","") >= desde]
+    if hasta:
+        data = [d for d in data if d.get("ts","") <= hasta + " 23:59"]
+    if op:
+        data = [d for d in data if op in d.get("operario","").lower()]
+    if canal:
+        data = [d for d in data if d.get("canal","") == canal]
+
+    return jsonify({"ok": True, "total": len(data), "metricas": data})
+
+
+@app.route("/estadisticas")
+def panel_estadisticas():
+    """
+    Panel web de estadísticas con filtros de fecha y operario.
+    Accesible para admin y supervisor.
+    """
+    # Validar sesión del panel admin
+    usuario_panel = session.get("admin_panel_usuario")
+    if not usuario_panel:
+        return redirect("/admin/usuarios")
+
+    # Parámetros de filtro
+    desde   = request.args.get("desde", "")
+    hasta   = request.args.get("hasta", "")
+    op_fil  = request.args.get("operario","").strip().lower()
+    canal_f = request.args.get("canal","").strip().lower()
+
+    data = _cargar_metricas_servidor()
+
+    # Si no hay fechas, usar últimos 30 días
+    import datetime as _dt
+    if not desde:
+        desde = (_dt.date.today() - _dt.timedelta(days=30)).strftime("%Y-%m-%d")
+    if not hasta:
+        hasta = _dt.date.today().strftime("%Y-%m-%d")
+
+    data_f = [d for d in data if desde <= d.get("ts","")[:10] <= hasta]
+    if op_fil:
+        data_f = [d for d in data_f if op_fil in d.get("operario","").lower()]
+    if canal_f:
+        data_f = [d for d in data_f if d.get("canal","") == canal_f]
+
+    # Calcular KPIs
+    total_lotes   = len(data_f)
+    total_pedidos = sum(d.get("n_pedidos",0) for d in data_f)
+    total_uds     = sum(d.get("total_uds",0) for d in data_f)
+    flex_peds     = sum(d.get("n_pedidos",0) for d in data_f if d.get("canal")=="flex")
+    col_peds      = sum(d.get("n_pedidos",0) for d in data_f if d.get("canal")=="colecta")
+
+    # Ranking de operarios
+    ranking = {}
+    for d in data_f:
+        op = d.get("operario","—") or "—"
+        ranking[op] = ranking.get(op,0) + d.get("n_pedidos",0)
+    ranking_sorted = sorted(ranking.items(), key=lambda x: x[1], reverse=True)
+
+    # Detalle por día
+    por_dia = {}
+    for d in data_f:
+        dia = d.get("ts","")[:10]
+        if dia not in por_dia:
+            por_dia[dia] = {"flex":0,"colecta":0,"total":0,"lotes":0}
+        por_dia[dia][d.get("canal","flex")] += d.get("n_pedidos",0)
+        por_dia[dia]["total"]  += d.get("n_pedidos",0)
+        por_dia[dia]["lotes"]  += 1
+    por_dia_sorted = sorted(por_dia.items())
+
+    # Operarios únicos para el filtro
+    ops_unicos = sorted({d.get("operario","—") or "—" for d in data})
+
+    # Tabla de lotes detallada
+    lotes_tabla = sorted(data_f, key=lambda x: x.get("ts",""), reverse=True)[:200]
+
+    MEDAL = ["🥇","🥈","🥉","4","5"]
+
+    ranking_html = ""
+    for i,(op,peds) in enumerate(ranking_sorted[:10]):
+        med = MEDAL[i] if i < len(MEDAL) else str(i+1)
+        op_flex = sum(d.get("n_pedidos",0) for d in data_f
+                      if (d.get("operario","") or "—") == op
+                      and d.get("canal")=="flex")
+        op_col  = sum(d.get("n_pedidos",0) for d in data_f
+                      if (d.get("operario","") or "—") == op
+                      and d.get("canal")=="colecta")
+        color   = "#F59E0B" if i==0 else "#94A3B8" if i==1 else "#CD7F32" if i==2 else "#3B82F6"
+        ranking_html += f"""
+        <tr>
+          <td style="color:{color};font-weight:800;font-size:18px">{med}</td>
+          <td style="font-weight:700">{op}</td>
+          <td style="color:#8B5CF6">{op_flex}</td>
+          <td style="color:#2563EB">{op_col}</td>
+          <td style="font-weight:800;color:{color}">{peds}</td>
+        </tr>"""
+
+    dias_html = ""
+    for dia, vals in por_dia_sorted:
+        dias_html += f"""
+        <tr>
+          <td>{dia}</td>
+          <td>{vals["lotes"]}</td>
+          <td style="color:#8B5CF6">{vals.get("flex",0)}</td>
+          <td style="color:#2563EB">{vals.get("colecta",0)}</td>
+          <td style="font-weight:700">{vals["total"]}</td>
+        </tr>"""
+
+    lotes_html = ""
+    for d in lotes_tabla:
+        canal_c = "#8B5CF6" if d.get("canal")=="flex" else "#2563EB"
+        lotes_html += f"""
+        <tr>
+          <td>{d.get("ts","")}</td>
+          <td style="color:{canal_c};font-weight:700">{d.get("canal","")}</td>
+          <td>{d.get("operario","—")}</td>
+          <td>{d.get("n_pedidos",0)}</td>
+          <td>{d.get("total_uds",0)}</td>
+          <td>{int(d.get("duracion_seg",0)//60)} min</td>
+        </tr>"""
+
+    ops_options = "".join(
+        f'<option value="{o}" {"selected" if op_fil==o.lower() else ""}>{o}</option>'
+        for o in ops_unicos)
+
+    return render_template_string(f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logibot — Estadísticas</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:24px 16px}}
+.topbar{{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px}}
+h1{{color:#3B82F6;font-size:20px}}
+.sub{{color:#64748B;font-size:12px}}
+.nav{{display:flex;gap:8px}}
+.nav a{{background:#1E293B;color:#94A3B8;text-decoration:none;padding:6px 14px;
+  border-radius:8px;font-size:12px;font-weight:600}}
+.nav a:hover{{background:#334155;color:#F1F5F9}}
+.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px}}
+.kpi{{background:#1E293B;border-radius:12px;padding:16px;border-left:4px solid}}
+.kpi .val{{font-size:28px;font-weight:900;line-height:1}}
+.kpi .lbl{{font-size:11px;color:#64748B;margin-top:4px;font-weight:600;text-transform:uppercase}}
+.filters{{background:#1E293B;border-radius:12px;padding:16px;margin-bottom:20px;
+  display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}}
+.filters label{{font-size:11px;color:#94A3B8;font-weight:600;text-transform:uppercase;
+  display:block;margin-bottom:4px}}
+.filters input,.filters select{{background:#0F172A;border:1px solid #334155;
+  color:#F1F5F9;border-radius:8px;padding:8px 12px;font-size:13px}}
+.btn-f{{background:#3B82F6;color:white;border:none;border-radius:8px;
+  padding:8px 20px;font-size:13px;font-weight:700;cursor:pointer}}
+.btn-f:hover{{background:#2563EB}}
+.card{{background:#1E293B;border-radius:12px;padding:20px;margin-bottom:20px}}
+.card h2{{font-size:14px;font-weight:700;color:#94A3B8;text-transform:uppercase;
+  letter-spacing:.05em;margin-bottom:14px}}
+table{{width:100%;border-collapse:collapse}}
+th{{background:#0F172A;padding:10px 12px;text-align:left;font-size:11px;
+  color:#64748B;font-weight:700;text-transform:uppercase}}
+td{{padding:10px 12px;font-size:13px;border-bottom:1px solid #1E293B}}
+tr:hover td{{background:#263350}}
+.badge{{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}}
+</style></head><body>
+
+<div class="topbar">
+  <div>
+    <h1>📊 Estadísticas de Operaciones</h1>
+    <div class="sub">Logibot Picking Pro — {desde} al {hasta}</div>
+  </div>
+  <div class="nav">
+    <a href="/admin/usuarios">👥 Usuarios</a>
+    <a href="/admin/logout">🔒 Salir</a>
+  </div>
+</div>
+
+<!-- Filtros -->
+<form method="GET" action="/estadisticas">
+<div class="filters">
+  <div>
+    <label>Desde</label>
+    <input type="date" name="desde" value="{desde}">
+  </div>
+  <div>
+    <label>Hasta</label>
+    <input type="date" name="hasta" value="{hasta}">
+  </div>
+  <div>
+    <label>Operario</label>
+    <select name="operario">
+      <option value="">Todos</option>
+      {ops_options}
+    </select>
+  </div>
+  <div>
+    <label>Canal</label>
+    <select name="canal">
+      <option value="" {"selected" if not canal_f else ""}>Todos</option>
+      <option value="flex" {"selected" if canal_f=="flex" else ""}>⚡ Flex</option>
+      <option value="colecta" {"selected" if canal_f=="colecta" else ""}>🚚 Colecta</option>
+    </select>
+  </div>
+  <button type="submit" class="btn-f">🔍 Filtrar</button>
+</div>
+</form>
+
+<!-- KPIs -->
+<div class="kpis">
+  <div class="kpi" style="border-color:#7C3AED">
+    <div class="val" style="color:#7C3AED">{total_lotes}</div>
+    <div class="lbl">Lotes procesados</div>
+  </div>
+  <div class="kpi" style="border-color:#0891B2">
+    <div class="val" style="color:#0891B2">{total_pedidos:,}</div>
+    <div class="lbl">Pedidos totales</div>
+  </div>
+  <div class="kpi" style="border-color:#059669">
+    <div class="val" style="color:#059669">{total_uds:,}</div>
+    <div class="lbl">Unidades</div>
+  </div>
+  <div class="kpi" style="border-color:#8B5CF6">
+    <div class="val" style="color:#8B5CF6">{flex_peds:,}</div>
+    <div class="lbl">⚡ Flex</div>
+  </div>
+  <div class="kpi" style="border-color:#2563EB">
+    <div class="val" style="color:#2563EB">{col_peds:,}</div>
+    <div class="lbl">🚚 Colecta</div>
+  </div>
+</div>
+
+<!-- Ranking operarios -->
+<div class="card">
+  <h2>🏅 Ranking de Operarios</h2>
+  <table>
+    <thead><tr>
+      <th>#</th><th>Operario</th>
+      <th style="color:#8B5CF6">⚡ Flex</th>
+      <th style="color:#2563EB">🚚 Colecta</th>
+      <th>Total peds</th>
+    </tr></thead>
+    <tbody>{ranking_html}</tbody>
+  </table>
+</div>
+
+<!-- Por día -->
+<div class="card">
+  <h2>📅 Pedidos por día</h2>
+  <table>
+    <thead><tr>
+      <th>Fecha</th><th>Lotes</th>
+      <th style="color:#8B5CF6">⚡ Flex</th>
+      <th style="color:#2563EB">🚚 Colecta</th>
+      <th>Total</th>
+    </tr></thead>
+    <tbody>{dias_html}</tbody>
+  </table>
+</div>
+
+<!-- Detalle de lotes -->
+<div class="card">
+  <h2>📋 Detalle de lotes (últimos 200)</h2>
+  <table>
+    <thead><tr>
+      <th>Fecha/Hora</th><th>Canal</th><th>Operario</th>
+      <th>Pedidos</th><th>Unidades</th><th>Duración</th>
+    </tr></thead>
+    <tbody>{lotes_html}</tbody>
+  </table>
+</div>
+
+</body></html>""")
 
 
 def _startup():
