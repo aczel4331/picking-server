@@ -138,31 +138,46 @@ def subir_metricas_railway(url_base: str, api_key: str,
 
 def _scheduler_subida_diaria(url_base: str, api_key: str):
     """
-    Hilo que espera a las 17:50 (5:50 PM hora Uruguay) y sube las metricas.
-    Se lanza una vez al arrancar la app y se reprograma automaticamente cada dia.
+    Sube metricas a Railway cada 5 minutos entre 7:00 AM y 18:05 (hora Uruguay).
+    Fuera de ese rango duerme y vuelve a revisar cada 5 min.
+    Asi el supervisor ve las estadisticas en tiempo real durante la jornada.
     """
     import threading, datetime as _dt
     from datetime import timezone, timedelta
 
+    HORA_INICIO = 7     # 7:00 AM
+    HORA_FIN    = 18    # hasta las 18:05
+    MIN_FIN     = 5
+    INTERVALO   = 300   # 5 minutos en segundos
+
+    def _en_horario(ahora):
+        """True si estamos entre 7:00 AM y 18:05 hora Uruguay."""
+        if ahora.hour < HORA_INICIO:
+            return False
+        if ahora.hour > HORA_FIN:
+            return False
+        if ahora.hour == HORA_FIN and ahora.minute > MIN_FIN:
+            return False
+        return True
+
     def _worker():
+        uy = timezone(timedelta(hours=-3))
+        print("[METRICS] Scheduler iniciado — sube cada 5 min de 7:00 a 18:05 UY")
         while True:
             try:
-                uy    = timezone(timedelta(hours=-3))
                 ahora = _dt.datetime.now(uy)
-                obj   = ahora.replace(hour=17, minute=50, second=0, microsecond=0)
-                if ahora >= obj:
-                    obj += _dt.timedelta(days=1)
-                espera = (obj - ahora).total_seconds()
-                print(f"[METRICS] Proxima subida en "
-                      f"{int(espera//3600)}h {int((espera%3600)//60)}m "
-                      f"(17:50 hora Uruguay)")
-                time.sleep(espera)
-                print("[METRICS] 5:50 PM — subiendo metricas a Railway...")
-                subir_metricas_railway(url_base, api_key, silencioso=False)
-                time.sleep(70)  # evita doble disparo
+                if _en_horario(ahora):
+                    print(f"[METRICS] {ahora.strftime('%H:%M')} — subiendo metricas...")
+                    subir_metricas_railway(url_base, api_key, silencioso=True)
+                else:
+                    # Fuera de horario: log cada hora para no saturar
+                    if ahora.minute < 5:
+                        print(f"[METRICS] {ahora.strftime('%H:%M')} — "
+                              f"fuera de horario (7:00-18:05), esperando...")
             except Exception as e:
                 print(f"[METRICS] Error en scheduler: {e}")
-                time.sleep(300)
+
+            time.sleep(INTERVALO)
 
     threading.Thread(target=_worker, daemon=True,
                      name="MetricsScheduler").start()
