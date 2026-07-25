@@ -2378,9 +2378,12 @@ def admin_usuarios_panel():
             resultado = _verificar_credenciales(u, c)
             # Panel accesible para admin y supervisor
             if resultado and resultado.get("rol") in ("supervisor", "admin"):
-                session["admin_panel_usuario"] = resultado.get("nombre", u)
-                session["admin_panel_rol"]      = resultado.get("rol","supervisor")
-                logger.info(f"[ADMIN-PANEL] Login OK: {u} (rol={resultado.get('rol')})")
+                session["admin_panel_usuario"]  = resultado.get("nombre", u)
+                session["admin_panel_rol"]       = resultado.get("rol","supervisor")
+                session["admin_panel_cuenta_id"] = resultado.get("cuenta_id","todas")
+                logger.info(f"[ADMIN-PANEL] Login OK: {u} "
+                            f"(rol={resultado.get('rol')} "
+                            f"cuenta={resultado.get('cuenta_id')})")
             else:
                 logger.warning(f"[ADMIN-PANEL] Login fallido: {u}")
                 return render_template_string(_PANEL_LOGIN_HTML,
@@ -2628,13 +2631,22 @@ def panel_estadisticas():
     if not usuario_panel:
         return redirect("/admin/usuarios")
 
-    # Parámetros de filtro
+    # Cuenta_id del usuario logueado — filtra qué tienda puede ver
+    cuenta_sesion = session.get("admin_panel_cuenta_id","todas")
+    rol_sesion    = session.get("admin_panel_rol","supervisor")
+
+    # Parámetros de filtro de la URL
     desde   = request.args.get("desde", "")
     hasta   = request.args.get("hasta", "")
     op_fil  = request.args.get("operario","").strip().lower()
     canal_f = request.args.get("canal","").strip().lower()
 
     data = _cargar_metricas_servidor()
+
+    # Filtrar por tienda según la sesión
+    # admin con cuenta "todas" ve todo, el resto solo su tienda
+    if cuenta_sesion and cuenta_sesion != "todas":
+        data = [d for d in data if d.get("cuenta_id","todas") == cuenta_sesion]
 
     # Si no hay fechas, usar últimos 30 días
     import datetime as _dt
@@ -2770,7 +2782,10 @@ tr:hover td{{background:#263350}}
 <div class="topbar">
   <div>
     <h1>📊 Estadísticas de Operaciones</h1>
-    <div class="sub">Logibot Picking Pro — {desde} al {hasta}</div>
+    <div class="sub">
+      Logibot Picking Pro — {desde} al {hasta}
+      {'— cuenta: <b>' + cuenta_sesion + '</b>' if cuenta_sesion != 'todas' else '— Todas las tiendas'}
+    </div>
   </div>
   <div class="nav">
     <a href="/admin/usuarios">👥 Usuarios</a>
