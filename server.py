@@ -808,16 +808,17 @@ def _sync_pedidos_ml_periodico():
                 if ciclo % 30 == 0:
                     logger.debug(f"[SYNC] Pausado (horario/lote activo)")
             elif _refresh_lock.acquire(blocking=False):
-                # Adquirir el semáforo para no correr junto con _auto_refresh_loop
                 try:
                     with _lock:
-                        pendientes = [p for p in _pedidos_ml.values()
-                                      if p.get("shipping_id","") and not p.get("impreso", False)]
-                    if pendientes:
-                        if ciclo % 15 == 0:
-                            logger.debug(f"[SYNC] Ciclo #{ciclo}: {len(pendientes)} pendientes")
-                        # Límite 20 por ciclo, con pausa entre requests
-                        _refrescar_estado_pedidos_bg(pendientes, limite=50)
+                        # Sincronizar TODOS los pedidos con shipping_id
+                        # sin importar si ya tienen impreso=True
+                        # Así la app siempre muestra el estado real de ML
+                        todos_con_ship = [p for p in _pedidos_ml.values()
+                                          if p.get("shipping_id","")]
+                    if todos_con_ship:
+                        logger.debug(f"[SYNC] Ciclo #{ciclo}: "
+                                     f"{len(todos_con_ship)} pedidos a verificar")
+                        _refrescar_estado_pedidos_bg(todos_con_ship, limite=50)
                 finally:
                     _refresh_lock.release()
         except Exception as e:
