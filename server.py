@@ -899,49 +899,63 @@ def api_usuarios_lista():
 
 
 
+
 @app.route("/api/auth/usuarios", methods=["POST"])
 @requiere_api_key
 def api_usuarios_crear():
     """
     Crea un nuevo usuario.
-    - Admin: puede crear cualquier usuario con cualquier rol y cuenta_id
-    - Supervisor: solo puede crear operarios de su propia tienda
+    ADMIN    → puede crear admin/supervisor/operario de CUALQUIER tienda
+    SUPERVISOR → solo puede crear operarios de SU tienda
+    OPERARIO → sin acceso al panel, nunca llega aquí
     """
-    data    = request.get_json(silent=True) or {}
-    usuario = str(data.get("usuario","")).strip().lower()
-    clave   = str(data.get("clave","")).strip()
-    nombre  = str(data.get("nombre", usuario)).strip()
-    cuenta  = str(data.get("cuenta_id","todas")).strip()
-    rol     = str(data.get("rol","operario")).strip()
+    data          = request.get_json(silent=True) or {}
+    usuario       = str(data.get("usuario","")).strip().lower()
+    clave         = str(data.get("clave","")).strip()
+    nombre        = str(data.get("nombre", usuario)).strip()
+    cuenta        = str(data.get("cuenta_id","")).strip()
+    rol_nuevo     = str(data.get("rol","operario")).strip()
 
     if not usuario or not clave:
         return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
     if any(u.get("usuario","").lower() == usuario for u in _usuarios):
         return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
 
-    # Validar permisos: supervisor solo crea operarios de su tienda
-    # El rol viene del body (enviado por el panel JS) o de la sesión Flask
-    rol_sesion    = data.get("_panel_rol","") or session.get("admin_panel_rol","supervisor")
-    cuenta_sesion = data.get("_panel_cuenta","") or session.get("admin_panel_cuenta_id","todas")
+    # ── Permisos según sesión del panel ───────────────────────────────────────
+    rol_sesion    = session.get("admin_panel_rol", "")
+    cuenta_sesion = session.get("admin_panel_cuenta_id", "")
 
-    if rol_sesion != "admin":
-        if rol != "operario":
+    if rol_sesion == "admin":
+        # Admin: puede crear cualquier rol en cualquier tienda
+        # Validar que el rol sea válido
+        if rol_nuevo not in ("operario", "supervisor", "admin"):
             return jsonify({"ok": False,
-                "msg": "Solo el admin puede crear supervisores o admins"}), 403
-        cuenta = cuenta_sesion  # forzar tienda del supervisor
+                "msg": "Rol inválido. Usa: operario, supervisor o admin"}), 400
+        if not cuenta:
+            return jsonify({"ok": False, "msg": "Falta cuenta_id"}), 400
 
-    if rol not in ("operario","supervisor","admin"):
-        return jsonify({"ok": False,
-            "msg": "Rol: operario, supervisor o admin"}), 400
+    elif rol_sesion == "supervisor":
+        # Supervisor: SOLO puede crear operarios de SU tienda
+        if rol_nuevo != "operario":
+            return jsonify({"ok": False,
+                "msg": "El supervisor solo puede crear operarios"}), 403
+        # Forzar la cuenta_id del supervisor — no puede elegir otra tienda
+        cuenta = cuenta_sesion
+
+    else:
+        # Sin sesión válida o es operario — rechazar
+        return jsonify({"ok": False, "msg": "Sin permiso"}), 403
 
     nuevo = {"usuario": usuario, "clave": clave,
-             "nombre": nombre, "cuenta_id": cuenta, "rol": rol}
+             "nombre": nombre, "cuenta_id": cuenta, "rol": rol_nuevo}
     _usuarios.append(nuevo)
     _guardar_usuarios()
     logger.info(f"[USUARIOS] Creado: {usuario} "
-                f"(cuenta={cuenta}, rol={rol}, por={rol_sesion})")
-    return jsonify({"ok": True, "msg": f"Usuario '{usuario}' creado",
+                f"(rol={rol_nuevo}, cuenta={cuenta}, por={rol_sesion})")
+    return jsonify({"ok": True,
+                    "msg": f"Usuario '{usuario}' creado correctamente",
                     "usuario": {k: v for k, v in nuevo.items() if k != "clave"}})
+
 
 @app.route("/api/auth/usuarios/<usuario_id>", methods=["PUT"])
 @requiere_api_key
@@ -967,13 +981,14 @@ def api_usuarios_editar(usuario_id):
 
 
 
+
 @app.route("/api/auth/usuarios/<usuario_id>", methods=["DELETE"])
 @requiere_api_key
 def api_usuarios_eliminar(usuario_id):
     """
     Elimina un usuario.
-    - Admin: puede eliminar cualquiera (menos el ultimo supervisor/admin)
-    - Supervisor: solo puede eliminar operarios de su tienda
+    ADMIN    → puede eliminar cualquier usuario (menos el último admin)
+    SUPERVISOR → solo puede eliminar operarios de SU tienda
     """
     global _usuarios
     u = next((x for x in _usuarios
@@ -981,24 +996,26 @@ def api_usuarios_eliminar(usuario_id):
     if not u:
         return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
 
-    # Leer rol del query string (enviado por el panel JS) o de la sesión Flask
-    rol_sesion    = (request.args.get("_panel_rol","") or
-                     session.get("admin_panel_rol","supervisor"))
-    cuenta_sesion = (request.args.get("_panel_cuenta","") or
-                     session.get("admin_panel_cuenta_id","todas"))
+    rol_sesion    = session.get("admin_panel_rol", "")
+    cuenta_sesion = session.get("admin_panel_cuenta_id", "")
 
-    if rol_sesion != "admin":
+    if rol_sesion == "admin":
+        # Admin puede eliminar cualquiera menos el último admin
+        admins = [x for x in _usuarios if x.get("rol") == "admin"]
+        if u.get("rol") == "admin" and len(admins) <= 1:
+            return jsonify({"ok": False,
+                "msg": "No podés eliminar el único admin"}), 400
+
+    elif rol_sesion == "supervisor":
+        # Supervisor solo elimina operarios de SU tienda
         if u.get("rol") != "operario":
             return jsonify({"ok": False,
-                "msg": "Solo el admin puede eliminar supervisores o admins"}), 403
+                "msg": "El supervisor solo puede eliminar operarios"}), 403
         if u.get("cuenta_id","") != cuenta_sesion:
             return jsonify({"ok": False,
-                "msg": "No podes eliminar usuarios de otra tienda"}), 403
-
-    # Proteger el ultimo supervisor/admin
-    if u.get("rol") in ("supervisor","admin") and        sum(1 for x in _usuarios if x.get("rol") in ("supervisor","admin")) <= 1:
-        return jsonify({"ok": False,
-            "msg": "No podes eliminar el unico supervisor/admin"}), 400
+                "msg": "No podés eliminar usuarios de otra tienda"}), 403
+    else:
+        return jsonify({"ok": False, "msg": "Sin permiso"}), 403
 
     _usuarios = [x for x in _usuarios
                  if x.get("usuario","").lower() != usuario_id.lower()]
@@ -2575,8 +2592,7 @@ async function crear() {
     clave:         document.getElementById('f-clave').value.trim(),
     cuenta_id:     document.getElementById('f-cuenta').value.trim(),
     rol:           document.getElementById('f-rol').value,
-    _panel_rol:    '{{ "admin" if es_admin else "supervisor" }}',
-    _panel_cuenta: '{{ cuenta_sesion }}',
+
   };
   if (!body.usuario || !body.clave || !body.cuenta_id) {
     msg.textContent='Completa usuario, clave y cuenta_id.';
@@ -2597,7 +2613,7 @@ async function crear() {
 async function eliminar(usuario) {
   if (!confirm('Eliminar usuario '+usuario+'?')) return;
   try {
-    const r = await fetch(BASE+'/api/auth/usuarios/'+usuario+'?_panel_rol={{ "admin" if es_admin else "supervisor" }}&_panel_cuenta={{ cuenta_sesion }}',
+    const r = await fetch(BASE+'/api/auth/usuarios/'+usuario,
       {method:'DELETE',headers:{'X-API-Key':KEY}});
     const d = await r.json();
     if (d.ok) location.reload(); else alert('Error: '+d.msg);
