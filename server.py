@@ -2980,6 +2980,21 @@ def _startup():
     _cargar_sku_db()
     _cargar_usuarios()
     _cargar_tokens_persistidos()
+
+    # ── Corrección automática: si "admin" tiene rol "supervisor", cambiarlo a "admin"
+    # Esto corrige usuarios creados antes de que existiera el rol "admin"
+    global _usuarios
+    cambiado = False
+    for u in _usuarios:
+        if u.get("usuario","").lower() == "admin" and u.get("rol") != "admin":
+            logger.info(f"[STARTUP] Corrigiendo rol de '{u['usuario']}': "
+                        f"{u['rol']} → admin")
+            u["rol"]       = "admin"
+            u["cuenta_id"] = u.get("cuenta_id","todas") or "todas"
+            cambiado = True
+    if cambiado:
+        _guardar_usuarios()
+        logger.info("[STARTUP] usuarios.json actualizado con rol admin")
     if not _cuentas:
         _cargar_tokens_local()
     if _cuentas:
