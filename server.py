@@ -736,20 +736,22 @@ def _cache_cleanup_loop():
             logger.error(f"[CACHE] Error en limpieza: {e}")
 
 
-def _refrescar_estado_pedidos_bg(pedidos_lista, limite=20):
+def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
     """
     Consulta shipment de cada pedido en ML y actualiza estado.
-    Pausa 0.5s entre requests para no generar burst que sature Waitress.
+    Pausa 0.3s entre requests — balance entre velocidad y no saturar Waitress.
+    Con limite=50 y 0.3s cubre 50 pedidos en ~15s por ciclo.
     """
     SUBSTATUS_IMPRESOS = (
         "printed","ready_for_pickup","in_packing_list",
         "in_hub","shipped","delivered","ready_to_ship_wt_route","to_be_agreed",
+        "picked_up","returning_to_sender","returned",
     )
     procesados = marcados_impresos = 0
     for i, p in enumerate(pedidos_lista[:limite]):
-        # Pausa entre requests: evita burst que llena la cola de Waitress
+        # Pausa reducida: 0.3s es suficiente para no saturar
         if i > 0:
-            time.sleep(0.5)
+            time.sleep(0.3)
         try:
             ship_id = p.get("shipping_id","")
             cuenta  = p.get("_cuenta","cuenta_0")
@@ -815,13 +817,13 @@ def _sync_pedidos_ml_periodico():
                         if ciclo % 15 == 0:
                             logger.debug(f"[SYNC] Ciclo #{ciclo}: {len(pendientes)} pendientes")
                         # Límite 20 por ciclo, con pausa entre requests
-                        _refrescar_estado_pedidos_bg(pendientes, limite=20)
+                        _refrescar_estado_pedidos_bg(pendientes, limite=50)
                 finally:
                     _refresh_lock.release()
         except Exception as e:
             logger.error(f"[SYNC] Error: {e}")
         ciclo += 1
-        time.sleep(120)
+        time.sleep(60)  # cada 60s en vez de 120s
 
 
 threading.Thread(target=_auto_refresh_loop,  daemon=True).start()
