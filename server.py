@@ -615,13 +615,20 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                         ped["estado_envio"] = status
                         ped["substatus"] = substatus
                         ped["tipo"] = _calcular_tipo(logistica, ped.get("tags",[]), ped.get("shipping_id",""))
-                        IMPRESOS = {"printed","shipped","delivered","not_delivered","cancelled"}
-                        if substatus in IMPRESOS or status in ("shipped","delivered","not_delivered","cancelled"):
+                        # Regla por tipo de logística
+                        FINS = {"shipped","delivered","not_delivered","cancelled"}
+                        es_fx = logistica in ("self_service","xd_drop_off","drop_off")
+                        if status in FINS:
                             ped["impreso"] = True
-                        elif substatus == "ready_to_print":
-                            ped["impreso"] = False
-                        elif status == "ready_to_ship" and not substatus:
-                            ped["impreso"] = False
+                        elif es_fx:
+                            ped["impreso"] = substatus in (
+                                "printed","ready_for_pickup","in_packing_list",
+                                "in_hub","picked_up","in_pickup_list",
+                                "ready_for_pkl_creation")
+                        else:
+                            ped["impreso"] = substatus in (
+                                "ready_for_pickup","in_packing_list","in_hub",
+                                "picked_up","in_pickup_list","ready_for_pkl_creation")
                 except Exception:
                     pass
 
@@ -776,12 +783,34 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
                 pp["substatus"]    = substatus
                 pp["tipo"]         = _calcular_tipo(logistica, pp.get("tags",[]), ship_id)
                 antes = pp.get("impreso", False)
-                if substatus in SUBSTATUS_IMPRESOS or status in ("shipped","delivered","not_delivered","cancelled"):
+
+                # ── Regla oficial ML diferenciada por tipo ────────────────────
+                # FLEX (self_service/xd_drop_off/drop_off):
+                #   printed     → IMPRESO (vendedor ya imprimió la etiqueta)
+                #   ready_to_print / vacío → PENDIENTE
+                # COLECTA (cross_docking):
+                #   printed / ready_to_print → PENDIENTE (ML aún no retiró)
+                #   ready_for_pickup en adelante → IMPRESO (ML ya retiró)
+                ESTADOS_FINALES = {"shipped","delivered","not_delivered","cancelled"}
+                es_flex = logistica in ("self_service","xd_drop_off","drop_off")
+
+                if status in ESTADOS_FINALES:
                     pp["impreso"] = True
-                elif substatus == "ready_to_print":
-                    pp["impreso"] = False
-                elif status == "ready_to_ship" and not substatus:
-                    pp["impreso"] = False
+                elif es_flex:
+                    # Flex: desde "printed" en adelante = IMPRESO
+                    if substatus in ("printed","ready_for_pickup","in_packing_list",
+                                     "in_hub","picked_up","in_pickup_list",
+                                     "ready_for_pkl_creation"):
+                        pp["impreso"] = True
+                    else:
+                        pp["impreso"] = False
+                else:
+                    # Colecta: "printed" sigue PENDIENTE, solo desde ready_for_pickup = IMPRESO
+                    if substatus in ("ready_for_pickup","in_packing_list","in_hub",
+                                     "picked_up","in_pickup_list","ready_for_pkl_creation"):
+                        pp["impreso"] = True
+                    else:
+                        pp["impreso"] = False
                 if not antes and pp.get("impreso"):
                     marcados_impresos += 1
                     logger.info(f"[PEDIDOS] #{oid} -> impreso (sub={substatus})")
