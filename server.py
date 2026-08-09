@@ -99,7 +99,8 @@ LOTE_PATH      = os.path.join(DATA_DIR, "lote_estado.json")
 ML_TOKENS_PATH = os.path.join(DATA_DIR, "ml_tokens.json")
 USUARIOS_PATH  = os.path.join(DATA_DIR, "usuarios.json")
 METRICAS_PATH   = os.path.join(DATA_DIR, "metricas.json")
-CONFIG_APP_PATH = os.path.join(DATA_DIR, "config_app.json")
+CONFIG_APP_PATH  = os.path.join(DATA_DIR, "config_app.json")
+ALERTAS_PATH     = os.path.join(DATA_DIR, "alertas_sin_stock.json")
 
 RAILWAY_API_TOKEN  = os.environ.get("RAILWAY_API_TOKEN", "")
 RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID", "")
@@ -3084,6 +3085,39 @@ tr:hover td{background:rgba(255,255,255,.03)}
   </div>
 </div>
 
+<!-- ── ALERTAS SIN STOCK ────────────────────────────────────────────────── -->
+<div id="alertas-container" style="margin-bottom:20px;display:none">
+  <div style="background:#7C2D12;border:2px solid #F97316;border-radius:12px;
+       padding:16px 20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;
+         margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:24px">⚠️</span>
+        <div>
+          <div style="font-weight:800;font-size:16px;color:#FED7AA">
+            ALERTA: Productos Sin Stock
+          </div>
+          <div id="alertas-ts" style="font-size:11px;color:#FB923C"></div>
+        </div>
+        <span id="alertas-badge" style="background:#EF4444;color:white;
+              font-weight:800;font-size:13px;padding:4px 10px;
+              border-radius:20px;min-width:28px;text-align:center"></span>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button onclick="marcarLeidas()" style="background:#F97316;color:white;
+          border:none;padding:7px 14px;border-radius:8px;cursor:pointer;
+          font-weight:700;font-size:12px">✅ Marcar como leídas</button>
+        <button onclick="limpiarAlertas()" style="background:#374151;color:#9CA3AF;
+          border:none;padding:7px 14px;border-radius:8px;cursor:pointer;
+          font-size:12px">🗑 Limpiar todas</button>
+      </div>
+    </div>
+    <div id="alertas-lista" style="display:grid;
+         grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
+    </div>
+  </div>
+</div>
+
 <!-- Filtros -->
 <form method="GET" action="/estadisticas">
 <div class="filters">
@@ -3197,6 +3231,91 @@ tr:hover td{background:rgba(255,255,255,.03)}
   </table>
 </div>
 
+
+<script>
+const BASE = window.location.origin;
+const KEY_ALERTAS = '""" + (API_KEY or "") + """';
+let _alertas_previas = 0;
+let _audio_ctx = null;
+
+function _beep_alerta() {
+  try {
+    if (!_audio_ctx) _audio_ctx = new (window.AudioContext||window.webkitAudioContext)();
+    [440,550,660].forEach((f,i)=>{
+      const o=_audio_ctx.createOscillator(),g=_audio_ctx.createGain();
+      o.connect(g);g.connect(_audio_ctx.destination);
+      o.frequency.value=f;o.type='sine';
+      const t=_audio_ctx.currentTime+i*0.18;
+      g.gain.setValueAtTime(0.4,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.15);
+      o.start(t);o.stop(t+0.15);
+    });
+  } catch(e){}
+}
+
+function _card(a) {
+  const leida=a.leida?'opacity:.5;':'';
+  const img=a.img_url
+    ?`<img src="${a.img_url}" style="width:56px;height:56px;object-fit:cover;border-radius:6px" onerror="this.style.display='none'">`
+    :`<div style="width:56px;height:56px;background:#374151;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:22px">📦</div>`;
+  return `<div style="background:#431407;border:1px solid #F97316;border-radius:10px;padding:12px;${leida}">
+    <div style="display:flex;gap:10px;align-items:flex-start">
+      ${img}
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:800;font-size:13px;color:#FED7AA;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${a.nombre||a.sku}</div>
+        <code style="background:#1C0A00;padding:2px 6px;border-radius:4px;font-size:11px;color:#F97316">${a.sku}</code>
+        <div style="font-size:11px;color:#9CA3AF;margin-top:3px">×${a.cantidad} · #${a.order_id}</div>
+        <div style="font-size:10px;color:#6B7280">${a.operario?'👤 '+a.operario+' · ':''}${a.ts?a.ts.slice(11,16):''}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function _poll() {
+  try {
+    const r=await fetch(BASE+'/api/alertas/sin-stock',{headers:{'X-API-Key':KEY_ALERTAS}});
+    const d=await r.json();
+    if(!d.ok) return;
+    const nl=d.no_leidas||0;
+    const ct=document.getElementById('alertas-container');
+    const li=document.getElementById('alertas-lista');
+    const bg=document.getElementById('alertas-badge');
+    const ts=document.getElementById('alertas-ts');
+    if(d.alertas&&d.alertas.length>0){
+      ct.style.display='block';
+      bg.textContent=nl>0?nl+' nuevas':'';
+      bg.style.display=nl>0?'inline-block':'none';
+      li.innerHTML=[...d.alertas].reverse().slice(0,20).map(_card).join('');
+      if(d.alertas.length>0&&d.alertas[d.alertas.length-1].ts)
+        ts.textContent='Última: '+d.alertas[d.alertas.length-1].ts;
+      if(nl>_alertas_previas&&_alertas_previas>=0){
+        _beep_alerta();
+        document.title='⚠️ ('+nl+') Sin Stock — Logibot';
+      }
+    } else {
+      ct.style.display='none';
+      document.title='📊 Estadísticas — Logibot';
+    }
+    _alertas_previas=nl;
+  } catch(e){}
+}
+
+async function marcarLeidas(){
+  await fetch(BASE+'/api/alertas/sin-stock/leer',{method:'POST',headers:{'X-API-Key':KEY_ALERTAS}});
+  _alertas_previas=0;document.title='📊 Estadísticas — Logibot';_poll();
+}
+async function limpiarAlertas(){
+  if(!confirm('¿Limpiar todas las alertas?'))return;
+  await fetch(BASE+'/api/alertas/sin-stock/limpiar',{method:'POST',headers:{'X-API-Key':KEY_ALERTAS}});
+  _alertas_previas=0;document.getElementById('alertas-container').style.display='none';
+  document.title='📊 Estadísticas — Logibot';
+}
+
+_poll();
+setInterval(_poll,15000);
+document.addEventListener('click',()=>{
+  if(!_audio_ctx)_audio_ctx=new(window.AudioContext||window.webkitAudioContext)();
+},{once:true});
+</script>
 </body></html>""",
         desde=desde, hasta=hasta, total_lotes=total_lotes,
         total_pedidos=total_pedidos, total_uds=total_uds,
@@ -3482,6 +3601,90 @@ async function cambiarCodigo() {
 }
 </script></body></html>""",
         cfg=cfg, excel_info=excel_info)
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALERTAS SIN STOCK — notificaciones en tiempo real para el supervisor
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cargar_alertas() -> list:
+    try:
+        if os.path.exists(ALERTAS_PATH):
+            with open(ALERTAS_PATH, encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def _guardar_alertas(data: list):
+    try:
+        with open(ALERTAS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"[ALERTAS] Error guardando: {e}")
+
+
+@app.route("/api/alertas/sin-stock", methods=["POST"])
+@requiere_api_key
+def api_alertas_sin_stock():
+    """Recibe alertas de sin stock desde la app de escritorio."""
+    import datetime as _dt
+    data     = request.get_json(silent=True) or {}
+    alertas  = data.get("alertas", [])
+    operario = data.get("operario","")
+    if not alertas:
+        return jsonify({"ok": False, "msg": "Sin alertas"}), 400
+
+    existentes = _cargar_alertas()
+    ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for a in alertas:
+        existentes.append({
+            "ts":       ts,
+            "sku":      a.get("sku",""),
+            "nombre":   a.get("nombre",""),
+            "cantidad": a.get("cantidad",1),
+            "img_url":  a.get("img_url",""),
+            "order_id": a.get("order_id",""),
+            "operario": operario,
+            "leida":    False,
+        })
+    # Conservar solo las últimas 200
+    if len(existentes) > 200:
+        existentes = existentes[-200:]
+    _guardar_alertas(existentes)
+    logger.info(f"[ALERTAS] {len(alertas)} sin stock de {operario}")
+    return jsonify({"ok": True, "total": len(existentes)})
+
+
+@app.route("/api/alertas/sin-stock", methods=["GET"])
+@requiere_api_key
+def api_alertas_get():
+    """Devuelve alertas sin stock (no leídas primero)."""
+    alertas  = _cargar_alertas()
+    no_leidas = [a for a in alertas if not a.get("leida")]
+    return jsonify({"ok": True, "alertas": alertas,
+                    "no_leidas": len(no_leidas)})
+
+
+@app.route("/api/alertas/sin-stock/leer", methods=["POST"])
+@requiere_api_key
+def api_alertas_marcar_leidas():
+    """Marca todas las alertas como leídas."""
+    alertas = _cargar_alertas()
+    for a in alertas:
+        a["leida"] = True
+    _guardar_alertas(alertas)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/alertas/sin-stock/limpiar", methods=["POST"])
+@requiere_api_key
+def api_alertas_limpiar():
+    """Elimina todas las alertas (después de resolverlas)."""
+    _guardar_alertas([])
+    return jsonify({"ok": True})
 
 
 def _startup():
