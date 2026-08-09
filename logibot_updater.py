@@ -170,49 +170,100 @@ def reiniciar_con_nueva_version():
     bat_path = os.path.join(tempfile.gettempdir(), "logibot_install.bat")
 
     # Construir el batch de instalacion
+    # Carpeta de respaldo con timestamp
+    from datetime import datetime
+    ts_backup   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir  = os.path.join(install_dir, f"_backup_v{ts_backup}")
+    desktop_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+    shortcut_ps = (
+        f"$ws = New-Object -ComObject WScript.Shell; "
+        f"$s = $ws.CreateShortcut('{desktop_dir}\\Logibot.lnk'); "
+        f"$s.TargetPath = '{exe_dest}'; "
+        f"$s.WorkingDirectory = '{install_dir}'; "
+        f"$s.Description = 'Logibot Picking Pro'; "
+        f"$s.Save()"
+    )
+
     bat_content = f"""@echo off
 title Instalando Logibot...
-echo Esperando que Logibot cierre...
+chcp 65001 >NUL
+echo.
+echo ============================================
+echo   Actualizacion de Logibot Picking Pro
+echo ============================================
+echo.
 
 :: Esperar a que el proceso actual (PID {pid}) termine
+echo Esperando que Logibot cierre...
 :WAIT_LOOP
 tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL
 if not errorlevel 1 (
     timeout /t 1 /nobreak >NUL
     goto WAIT_LOOP
 )
+echo Logibot cerrado OK.
+echo.
 
-echo Instalando actualizacion...
+:: Respaldar version anterior (NO se borra, queda en _backup_vFECHA)
+echo Respaldando version anterior...
+if exist "{install_dir}\\Logibot" (
+    mkdir "{backup_dir}" 2>NUL
+    xcopy /E /I /Q /Y "{install_dir}\\Logibot" "{backup_dir}\\Logibot" >NUL 2>&1
+    echo Respaldo creado en: {backup_dir}
+) else if exist "{exe_dest}" (
+    mkdir "{backup_dir}" 2>NUL
+    copy /Y "{exe_dest}" "{backup_dir}\\Logibot.exe" >NUL 2>&1
+    echo Respaldo del exe creado.
+)
+echo.
 
 :: Extraer el ZIP sobre la carpeta de instalacion
+echo Instalando nueva version...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Expand-Archive -Path '{zip_path}' -DestinationPath '{install_dir}' -Force"
 
 if errorlevel 1 (
-    echo ERROR al extraer el ZIP.
+    echo.
+    echo ERROR al extraer el ZIP. Restaurando version anterior...
+    if exist "{backup_dir}\\Logibot" (
+        xcopy /E /I /Q /Y "{backup_dir}\\Logibot" "{install_dir}\\Logibot" >NUL 2>&1
+    )
     pause
     goto CLEANUP
 )
+echo Instalacion OK.
+echo.
 
-echo Iniciando nueva version...
-timeout /t 1 /nobreak >NUL
+:: Crear acceso directo en el escritorio
+echo Creando acceso directo en el escritorio...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "{shortcut_ps}"
+if not errorlevel 1 (
+    echo Acceso directo creado en el escritorio.
+) else (
+    echo Nota: No se pudo crear el acceso directo automaticamente.
+)
+echo.
 
-:: Buscar Logibot.exe (puede estar en subcarpeta dist\\Logibot\\)
+:: Iniciar nueva version
+echo Iniciando Logibot...
+timeout /t 2 /nobreak >NUL
+
 if exist "{exe_dest}" (
     start "" "{exe_dest}"
-) else (
-    :: Buscar en subcarpetas
-    for /r "{install_dir}" %%f in (Logibot.exe) do (
-        start "" "%%f"
-        goto CLEANUP
-    )
-    echo No se encontro Logibot.exe
-    pause
+    goto CLEANUP
 )
+:: Buscar en subcarpetas si no esta en la raiz
+for /r "{install_dir}" %%f in (Logibot.exe) do (
+    start "" "%%f"
+    goto CLEANUP
+)
+echo No se encontro Logibot.exe
+pause
 
 :CLEANUP
-:: Borrar el ZIP temporal y este bat
+:: Limpiar ZIP temporal y este bat
 del /Q "{zip_path}" 2>NUL
+timeout /t 3 /nobreak >NUL
 del /Q "%~f0" 2>NUL
 """
 
