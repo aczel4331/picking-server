@@ -98,7 +98,8 @@ DATA_DIR       = _resolver_data_dir()
 LOTE_PATH      = os.path.join(DATA_DIR, "lote_estado.json")
 ML_TOKENS_PATH = os.path.join(DATA_DIR, "ml_tokens.json")
 USUARIOS_PATH  = os.path.join(DATA_DIR, "usuarios.json")
-METRICAS_PATH  = os.path.join(DATA_DIR, "metricas.json")
+METRICAS_PATH   = os.path.join(DATA_DIR, "metricas.json")
+CONFIG_APP_PATH = os.path.join(DATA_DIR, "config_app.json")
 
 RAILWAY_API_TOKEN  = os.environ.get("RAILWAY_API_TOKEN", "")
 RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID", "")
@@ -2565,6 +2566,9 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
     <a href="/estadisticas" style="background:#1E3A5F;color:#93C5FD;
        text-decoration:none;padding:6px 14px;border-radius:8px;
        font-size:12px;font-weight:600">📊 Estadisticas</a>
+    <a href="/config" style="background:#1E3A5F;color:#A78BFA;
+       text-decoration:none;padding:6px 14px;border-radius:8px;
+       font-size:12px;font-weight:600">⚙ Config</a>
     <a href="/admin/logout" style="background:#334155;color:#94A3B8;
        text-decoration:none;padding:6px 14px;border-radius:8px;
        font-size:12px;font-weight:600">🔒 Cerrar sesion</a>
@@ -2660,6 +2664,113 @@ async function eliminar(usuario) {
 # ═══════════════════════════════════════════════════════════════════════════════
 # MÉTRICAS — recibe y sirve datos del logibot_dashboard.py
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIG APP — Excel, etiqueta, código supervisor
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cargar_config_app() -> dict:
+    """Carga la configuración de la app desde /data/config_app.json."""
+    try:
+        if os.path.exists(CONFIG_APP_PATH):
+            with open(CONFIG_APP_PATH, encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"[CONFIG-APP] Error cargando: {e}")
+    return {}
+
+
+def _guardar_config_app(data: dict):
+    """Persiste la configuración en /data/config_app.json."""
+    try:
+        with open(CONFIG_APP_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"[CONFIG-APP] Error guardando: {e}")
+
+
+@app.route("/api/config-app", methods=["GET"])
+@requiere_api_key
+def api_config_app_get():
+    """Devuelve la configuración de la app."""
+    cfg = _cargar_config_app()
+    # No devolver logo en base64 (puede ser grande) — solo metadata
+    cfg_safe = {k: v for k, v in cfg.items() if k != "etiqueta_logo_b64"}
+    return jsonify({"ok": True, "config": cfg_safe})
+
+
+@app.route("/api/config-app", methods=["POST"])
+@requiere_api_key
+def api_config_app_post():
+    """Guarda la configuración de la app."""
+    data = request.get_json(silent=True) or {}
+    cfg  = _cargar_config_app()
+    # Actualizar campos permitidos
+    campos = [
+        "codigo_supervisor",
+        "etiqueta_logo_b64", "etiqueta_logo_ext",
+        "etiqueta_logo_pos", "etiqueta_logo_size",
+        "etiqueta_texto",    "etiqueta_texto_pos",
+        "excel_cache",       "excel_ts",
+    ]
+    for campo in campos:
+        if campo in data:
+            cfg[campo] = data[campo]
+    _guardar_config_app(cfg)
+    logger.info(f"[CONFIG-APP] Actualizado: {[k for k in data if k in campos]}")
+    return jsonify({"ok": True, "msg": "Configuración guardada"})
+
+
+@app.route("/api/config-app/excel", methods=["POST"])
+@requiere_api_key
+def api_config_app_excel():
+    """
+    Recibe el Excel de pasillos en base64 y lo almacena en Railway.
+    La app lo descargará al generar cada lote.
+    """
+    import base64, io
+    data     = request.get_json(silent=True) or {}
+    b64      = data.get("excel_b64","")
+    filename = data.get("filename","planilla.xlsx")
+    if not b64:
+        return jsonify({"ok": False, "msg": "Falta excel_b64"}), 400
+    try:
+        excel_bytes = base64.b64decode(b64)
+        # Guardar en /data/
+        excel_path = os.path.join(DATA_DIR, "planilla_pasillos.xlsx")
+        with open(excel_path, "wb") as f:
+            f.write(excel_bytes)
+        cfg = _cargar_config_app()
+        cfg["excel_filename"] = filename
+        cfg["excel_ts"]       = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M")
+        cfg["excel_size"]     = len(excel_bytes)
+        _guardar_config_app(cfg)
+        logger.info(f"[CONFIG-APP] Excel subido: {filename} ({len(excel_bytes)//1024} KB)")
+        return jsonify({"ok": True, "msg": f"Excel '{filename}' guardado",
+                        "size_kb": len(excel_bytes)//1024,
+                        "ts": cfg["excel_ts"]})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+@app.route("/api/config-app/excel", methods=["GET"])
+@requiere_api_key
+def api_config_app_excel_get():
+    """Devuelve el Excel en base64 para que la app lo descargue."""
+    import base64
+    excel_path = os.path.join(DATA_DIR, "planilla_pasillos.xlsx")
+    if not os.path.exists(excel_path):
+        return jsonify({"ok": False, "msg": "No hay Excel subido aún"}), 404
+    try:
+        with open(excel_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        cfg = _cargar_config_app()
+        return jsonify({"ok": True, "excel_b64": b64,
+                        "filename": cfg.get("excel_filename","planilla.xlsx"),
+                        "ts": cfg.get("excel_ts","")})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
 
 def _cargar_metricas_servidor():
     """Carga métricas desde /data/metricas.json."""
@@ -3096,6 +3207,281 @@ tr:hover td{background:rgba(255,255,255,.03)}
         canal_f=canal_f, ops_opts=ops_opts,
         ranking_html=ranking_html, top5_html=top5_html,
         dias_html=dias_html)
+
+
+
+@app.route("/config")
+def panel_config():
+    """Panel web de configuración de la app — Excel, etiqueta, código supervisor."""
+    usuario_panel = session.get("admin_panel_usuario")
+    if not usuario_panel:
+        return redirect("/admin/usuarios")
+
+    rol_sesion = session.get("admin_panel_rol","supervisor")
+    cfg        = _cargar_config_app()
+    key        = API_KEY
+
+    excel_info = ""
+    if cfg.get("excel_ts"):
+        excel_info = (f"Archivo: <b>{cfg.get('excel_filename','planilla.xlsx')}</b> · "
+                      f"{cfg.get('excel_size',0)//1024} KB · "
+                      f"Subido: {cfg.get('excel_ts','')}")
+
+    return render_template_string("""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logibot — Configuración</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:20px 16px}
+.topbar{display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:24px;flex-wrap:wrap;gap:10px}
+h1{color:#3B82F6;font-size:22px;font-weight:900}
+.sub{color:#64748B;font-size:12px;margin-top:2px}
+.nav{display:flex;gap:8px}
+.nav a{background:#1E293B;color:#94A3B8;text-decoration:none;
+  padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600}
+.nav a.active{background:#3B82F6;color:white}
+.nav a:hover{background:#334155;color:#F1F5F9}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+.card{background:#1E293B;border-radius:12px;padding:20px}
+.card h2{font-size:14px;font-weight:700;color:#94A3B8;text-transform:uppercase;
+  letter-spacing:.05em;margin-bottom:16px}
+label{display:block;color:#94A3B8;font-size:12px;font-weight:600;
+  text-transform:uppercase;margin-bottom:5px;margin-top:12px}
+input,select,textarea{width:100%;padding:9px 12px;background:#0F172A;
+  border:1px solid #334155;color:#F1F5F9;border-radius:8px;
+  font-size:13px;outline:none;font-family:inherit}
+input:focus,select:focus,textarea:focus{border-color:#3B82F6}
+.btn{padding:10px 20px;border:none;border-radius:8px;font-size:13px;
+  font-weight:700;cursor:pointer;transition:background .2s}
+.btn-blue{background:#3B82F6;color:white}.btn-blue:hover{background:#2563EB}
+.btn-green{background:#10B981;color:white}.btn-green:hover{background:#059669}
+.btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+#msg-etiqueta,#msg-excel,#msg-supervisor{margin-top:10px;font-size:13px;
+  min-height:20px;padding:6px 10px;border-radius:6px;display:none}
+.ok-msg{background:rgba(16,185,129,.15);color:#34D399;border:1px solid #059669}
+.err-msg{background:rgba(239,68,68,.15);color:#FCA5A5;border:1px solid #EF4444}
+.info{background:#1E3A5F;border-radius:8px;padding:10px 14px;
+  font-size:12px;color:#93C5FD;margin-bottom:12px}
+.pos-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:6px}
+.pos-btn{padding:8px;background:#0F172A;border:2px solid #334155;
+  color:#94A3B8;border-radius:8px;cursor:pointer;font-size:11px;
+  text-align:center;transition:all .2s}
+.pos-btn.active{border-color:#3B82F6;color:#3B82F6;background:#1E3A5F}
+.pos-btn:hover{border-color:#3B82F6;color:#3B82F6}
+.preview-box{background:#0F172A;border:1px solid #334155;border-radius:8px;
+  padding:16px;margin-top:12px;min-height:80px;position:relative;
+  font-size:11px;color:#64748B}
+</style></head><body>
+
+<div class="topbar">
+  <div>
+    <h1>⚙ Configuración de la App</h1>
+    <div class="sub">Ajustes sincronizados con todas las PCs automáticamente</div>
+  </div>
+  <div class="nav">
+    <a href="/admin/usuarios">👥 Usuarios</a>
+    <a href="/estadisticas">📊 Stats</a>
+    <a href="/config" class="active">⚙ Config</a>
+    <a href="/admin/logout">🔒 Salir</a>
+  </div>
+</div>
+
+<div class="grid">
+
+<!-- ── EXCEL DE PASILLOS ──────────────────────────────────────────────────── -->
+<div class="card">
+  <h2>📋 Excel de Pasillos</h2>
+  <div class="info">{{ excel_info | safe if excel_info else "⚠ No hay Excel subido aún." }}</div>
+  <label>Subir nuevo Excel de pasillos (.xlsx)</label>
+  <input type="file" id="excel-file" accept=".xlsx,.xls">
+  <div class="btn-row">
+    <button class="btn btn-green" onclick="subirExcel()">⬆ Subir Excel</button>
+  </div>
+  <div id="msg-excel"></div>
+</div>
+
+<!-- ── CÓDIGO SUPERVISOR ──────────────────────────────────────────────────── -->
+<div class="card">
+  <h2>🔑 Código Supervisor</h2>
+  <div class="info">
+    El código se pide para pasar a Fase 2 y para imprimir etiquetas individuales.<br>
+    <b>Mínimo 4 caracteres.</b>
+  </div>
+  <label>Código actual</label>
+  <input type="password" id="cod-actual" placeholder="••••">
+  <label>Código nuevo</label>
+  <input type="password" id="cod-nuevo" placeholder="••••">
+  <label>Confirmar nuevo</label>
+  <input type="password" id="cod-confirmar" placeholder="••••">
+  <div class="btn-row">
+    <button class="btn btn-blue" onclick="cambiarCodigo()">💾 Cambiar código</button>
+  </div>
+  <div id="msg-supervisor"></div>
+</div>
+
+</div>
+
+<!-- ── PERSONALIZACIÓN DE ETIQUETAS ──────────────────────────────────────── -->
+<div class="card" style="margin-bottom:20px">
+  <h2>🏷 Personalización de Etiquetas</h2>
+  <div class="grid" style="margin-bottom:0">
+
+    <div>
+      <label>Logo (PNG/JPG)</label>
+      <input type="file" id="logo-file" accept=".png,.jpg,.jpeg"
+             onchange="previsualizarLogo(this)">
+      <div id="logo-preview" style="margin-top:8px"></div>
+
+      <label style="margin-top:12px">Posición del logo</label>
+      <div class="pos-grid" id="pos-grid">
+        <div class="pos-btn" data-pos="superior_izq" onclick="selPos(this)">↖ Sup. Izq</div>
+        <div class="pos-btn" data-pos="superior_centro" onclick="selPos(this)">↑ Sup. Centro</div>
+        <div class="pos-btn" data-pos="superior_der" onclick="selPos(this)">↗ Sup. Der</div>
+        <div class="pos-btn" data-pos="inferior_izq" onclick="selPos(this)">↙ Inf. Izq</div>
+        <div class="pos-btn" data-pos="inferior_centro" onclick="selPos(this)">↓ Inf. Centro</div>
+        <div class="pos-btn" data-pos="inferior_der" onclick="selPos(this)">↘ Inf. Der</div>
+      </div>
+
+      <label>Tamaño del logo (% del ancho, ej: 15)</label>
+      <input type="number" id="logo-size" value="{{ cfg.get('etiqueta_logo_size', 15) }}"
+             min="5" max="50" step="1">
+    </div>
+
+    <div>
+      <label>Texto adicional en la etiqueta</label>
+      <textarea id="etiqueta-texto" rows="3"
+                placeholder="Ej: EVEREST SHOPPING · Tel: 099 000 000"
+                >{{ cfg.get('etiqueta_texto','') }}</textarea>
+
+      <label>Posición del texto</label>
+      <select id="texto-pos">
+        <option value="abajo" {{ 'selected' if cfg.get('etiqueta_texto_pos','abajo')=='abajo' else '' }}>
+          Abajo de la etiqueta</option>
+        <option value="arriba" {{ 'selected' if cfg.get('etiqueta_texto_pos','abajo')=='arriba' else '' }}>
+          Arriba de la etiqueta</option>
+      </select>
+
+      <div class="preview-box" id="preview-etiqueta">
+        <span style="color:#475569;font-size:11px">Vista previa de la etiqueta</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="btn-row" style="margin-top:16px">
+    <button class="btn btn-blue" onclick="guardarEtiqueta()">💾 Guardar personalización</button>
+  </div>
+  <div id="msg-etiqueta"></div>
+</div>
+
+<script>
+const KEY  = '""" + key + """';
+const BASE = window.location.origin;
+let _logob64 = ''; let _logoext = '';
+let _logoPos = '""" + cfg.get('etiqueta_logo_pos','superior_izq') + """';
+
+// Marcar posición actual
+document.querySelectorAll('.pos-btn').forEach(b => {
+  if (b.dataset.pos === _logoPos) b.classList.add('active');
+});
+
+function selPos(el) {
+  document.querySelectorAll('.pos-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  _logoPos = el.dataset.pos;
+}
+
+function previsualizarLogo(input) {
+  const file = input.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    _logob64 = e.target.result.split(',')[1];
+    _logoext = '.' + file.name.split('.').pop().toLowerCase();
+    document.getElementById('logo-preview').innerHTML =
+      '<img src="' + e.target.result + '" style="max-height:60px;border-radius:6px;margin-top:4px">';
+  };
+  reader.readAsDataURL(file);
+}
+
+function mostrar(id, msg, ok) {
+  const el = document.getElementById(id);
+  el.textContent = msg; el.style.display = 'block';
+  el.className = ok ? 'ok-msg' : 'err-msg';
+  setTimeout(() => el.style.display = 'none', 4000);
+}
+
+async function guardarEtiqueta() {
+  const body = {
+    etiqueta_logo_pos:  _logoPos,
+    etiqueta_logo_size: parseInt(document.getElementById('logo-size').value) || 15,
+    etiqueta_texto:     document.getElementById('etiqueta-texto').value.trim(),
+    etiqueta_texto_pos: document.getElementById('texto-pos').value,
+  };
+  if (_logob64) { body.etiqueta_logo_b64 = _logob64; body.etiqueta_logo_ext = _logoext; }
+  try {
+    const r = await fetch(BASE+'/api/config-app', {
+      method:'POST', headers:{'Content-Type':'application/json','X-API-Key':KEY},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    mostrar('msg-etiqueta', d.ok ? '✅ '+d.msg : '❌ '+d.msg, d.ok);
+  } catch(e) { mostrar('msg-etiqueta', 'Error: '+e, false); }
+}
+
+async function subirExcel() {
+  const file = document.getElementById('excel-file').files[0];
+  if (!file) { mostrar('msg-excel','Seleccioná un archivo .xlsx primero', false); return; }
+  const reader = new FileReader();
+  reader.onload = async e => {
+    const b64 = e.target.result.split(',')[1];
+    try {
+      const r = await fetch(BASE+'/api/config-app/excel', {
+        method:'POST', headers:{'Content-Type':'application/json','X-API-Key':KEY},
+        body: JSON.stringify({excel_b64: b64, filename: file.name})
+      });
+      const d = await r.json();
+      if (d.ok) {
+        mostrar('msg-excel', '✅ '+d.msg+' ('+d.size_kb+' KB · '+d.ts+')', true);
+        setTimeout(() => location.reload(), 2000);
+      } else mostrar('msg-excel', '❌ '+d.msg, false);
+    } catch(e) { mostrar('msg-excel', 'Error: '+e, false); }
+  };
+  reader.readAsDataURL(file);
+}
+
+async function cambiarCodigo() {
+  const actual    = document.getElementById('cod-actual').value.trim();
+  const nuevo     = document.getElementById('cod-nuevo').value.trim();
+  const confirmar = document.getElementById('cod-confirmar').value.trim();
+  if (!actual) { mostrar('msg-supervisor','Ingresá el código actual',false); return; }
+  if (!nuevo || nuevo.length < 4) { mostrar('msg-supervisor','Mínimo 4 caracteres',false); return; }
+  if (nuevo !== confirmar) { mostrar('msg-supervisor','Los códigos nuevos no coinciden',false); return; }
+  try {
+    // Verificar código actual
+    const r1 = await fetch(BASE+'/api/config-app', {
+      headers:{'X-API-Key':KEY}});
+    const d1 = await r1.json();
+    const cod_actual_guardado = d1.config?.codigo_supervisor || '1234';
+    if (actual !== cod_actual_guardado) {
+      mostrar('msg-supervisor','❌ El código actual es incorrecto',false); return; }
+    // Guardar nuevo
+    const r2 = await fetch(BASE+'/api/config-app', {
+      method:'POST', headers:{'Content-Type':'application/json','X-API-Key':KEY},
+      body: JSON.stringify({codigo_supervisor: nuevo})
+    });
+    const d2 = await r2.json();
+    if (d2.ok) {
+      mostrar('msg-supervisor','✅ Código supervisor actualizado',true);
+      document.getElementById('cod-actual').value='';
+      document.getElementById('cod-nuevo').value='';
+      document.getElementById('cod-confirmar').value='';
+    } else mostrar('msg-supervisor','❌ '+d2.msg, false);
+  } catch(e) { mostrar('msg-supervisor','Error: '+e, false); }
+}
+</script></body></html>""",
+        cfg=cfg, excel_info=excel_info)
 
 
 def _startup():
