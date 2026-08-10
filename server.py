@@ -3786,7 +3786,7 @@ document.addEventListener('click',()=>{
 
 <script>
 function buscarVenta() {
-  const q = document.getElementById('buscar-venta').value.trim().replace(/\s/g,'');
+  const q = document.getElementById('buscar-venta').value.trim().replace(/ /g,'');
   const res = document.getElementById('res-busqueda');
   if (!q) { res.innerHTML=''; return; }
   res.innerHTML = '<div style="color:#94A3B8;padding:8px">Buscando...</div>';
@@ -3795,7 +3795,7 @@ function buscarVenta() {
   const filas = document.querySelectorAll('#tabla-lotes tbody tr[data-orders]');
   const encontrados = [];
   filas.forEach(f => {
-    if ((f.dataset.orders||'').replace(/\s/g,'').includes(q)) {
+    if ((f.dataset.orders||'').replace(/ /g,'').includes(q)) {
       encontrados.push({
         ts:       f.dataset.ts       || '',
         canal:    f.dataset.canal    || '',
