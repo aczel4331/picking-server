@@ -76,23 +76,38 @@ _SKU_DB_ENV_KEY   = "SKU_DB_JSON"
 
 # ── Directorio de datos persistente ───────────────────────────────────────────
 def _resolver_data_dir():
-    candidato = os.environ.get("DATA_DIR", "").strip()
-    if not candidato:
-        logger.warning("[DATA] DATA_DIR no definido — usando /tmp (VOLATIL)")
-        os.makedirs("/tmp", exist_ok=True)
-        return "/tmp"
-    try:
-        os.makedirs(candidato, exist_ok=True)
-        test = os.path.join(candidato, ".write_test")
-        with open(test, "w") as f:
-            f.write("ok")
-        os.remove(test)
-        logger.info(f"[DATA] Persistencia activa en: {candidato}")
-        return candidato
-    except Exception as e:
-        logger.warning(f"[DATA] No se pudo usar '{candidato}' ({e}) — usando /tmp")
-        os.makedirs("/tmp", exist_ok=True)
-        return "/tmp"
+    """
+    Resuelve el directorio de datos persistentes en orden de prioridad:
+    1. Variable DATA_DIR definida en Railway → la más explícita
+    2. /data → Railway Volume montado por convención (persiste entre redeploys)
+    3. /tmp  → fallback volátil (se borra en cada redeploy)
+    """
+    candidatos = []
+    env_dir = os.environ.get("DATA_DIR", "").strip()
+    if env_dir:
+        candidatos.append(env_dir)
+    candidatos.append("/data")   # Railway Volume estándar
+    candidatos.append("/tmp")    # último recurso — volátil
+
+    for path in candidatos:
+        try:
+            os.makedirs(path, exist_ok=True)
+            test = os.path.join(path, ".write_test")
+            with open(test, "w") as f:
+                f.write("ok")
+            os.remove(test)
+            if path == "/tmp":
+                logger.warning(
+                    "[DATA] ⚠ Usando /tmp — los datos SE PERDERAN en cada redeploy. "
+                    "Para persistencia: Railway → tu servicio → Volumes → mount en /data")
+            else:
+                logger.info(f"[DATA] ✅ Persistencia activa en: {path}")
+            return path
+        except Exception as e:
+            logger.debug(f"[DATA] '{path}' no disponible: {e}")
+
+    os.makedirs("/tmp", exist_ok=True)
+    return "/tmp"
 
 DATA_DIR       = _resolver_data_dir()
 LOTE_PATH      = os.path.join(DATA_DIR, "lote_estado.json")
@@ -649,10 +664,32 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                         ped["substatus"] = substatus
                         ped["tipo"] = _calcular_tipo(logistica, ped.get("tags",[]), ped.get("shipping_id",""))
                         # Regla por tipo de logística
-                        FINS = {"shipped","delivered","not_delivered","cancelled"}
-                        es_fx = logistica in ("self_service","xd_drop_off","drop_off")
+                        FINS   = {"shipped","delivered","not_delivered","cancelled"}
+                        es_fx  = logistica in ("self_service","xd_drop_off","drop_off")
+                        es_col = logistica in ("cross_docking",)
                         if status in FINS:
                             ped["impreso"] = True
+                        elif substatus == "buffered" and es_col:
+                            # Colecta buffered: verificar fecha buffering
+                            import datetime as _dt2
+                            from datetime import timezone as _tz2, timedelta as _td2
+                            _uy2  = _tz2(_td2(hours=-3))
+                            _hoy2 = _dt2.datetime.now(_uy2).date()
+                            try:
+                                lt2  = sd.get("lead_time") or {}
+                                bd2  = (lt2.get("buffering") or {}).get("date","")
+                                if bd2:
+                                    bdt2 = _dt2.datetime.fromisoformat(
+                                        bd2.replace("Z","+00:00"))
+                                    if bdt2.astimezone(_uy2).date() <= _hoy2:
+                                        ped["impreso"]    = False
+                                        ped["substatus"]  = "ready_to_print"
+                                    else:
+                                        ped["impreso"] = True  # futuro → ocultar
+                                else:
+                                    ped["impreso"] = False
+                            except Exception:
+                                ped["impreso"] = False
                         elif es_fx:
                             ped["impreso"] = substatus in (
                                 "printed","ready_for_pickup","in_packing_list",
@@ -826,9 +863,52 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
                 #   ready_for_pickup en adelante → IMPRESO (ML ya retiró)
                 ESTADOS_FINALES = {"shipped","delivered","not_delivered","cancelled"}
                 es_flex = logistica in ("self_service","xd_drop_off","drop_off")
+                es_col  = logistica in ("cross_docking",)
 
                 if status in ESTADOS_FINALES:
                     pp["impreso"] = True
+
+                elif substatus == "buffered" and es_col:
+                    # ── Colecta con substatus "buffered" ─────────────────────
+                    # Según doc ML: la etiqueta NO está disponible todavía.
+                    # Hay que verificar lead_time.buffering.date del shipment.
+                    # Si la fecha de buffering es HOY o ANTERIOR → mostrar (pendiente listo)
+                    # Si es FUTURA → ocultar (no disponible todavía)
+                    import datetime as _dt
+                    from datetime import timezone, timedelta
+                    _uy   = timezone(timedelta(hours=-3))
+                    _hoy  = _dt.datetime.now(_uy).date()
+                    buf_date_str = ""
+                    try:
+                        lt = sd.get("lead_time") or {}
+                        buf = lt.get("buffering") or {}
+                        buf_date_str = buf.get("date","")
+                    except Exception:
+                        pass
+                    if buf_date_str:
+                        try:
+                            # Parsear la fecha de buffering
+                            buf_dt = _dt.datetime.fromisoformat(
+                                buf_date_str.replace("Z","+00:00"))
+                            buf_date = buf_dt.astimezone(_uy).date()
+                            if buf_date <= _hoy:
+                                # Fecha de buffering ya pasó o es hoy → se puede imprimir
+                                pp["impreso"]       = False  # pendiente listo
+                                pp["buffering_ok"]  = True
+                                pp["buffering_date"]= str(buf_date)
+                                pp["substatus"]     = "ready_to_print"  # normalizar
+                            else:
+                                # Fecha futura → no disponible, ocultar del lote
+                                pp["impreso"]       = True   # tratar como impreso para ocultar
+                                pp["buffering_ok"]  = False
+                                pp["buffering_date"]= str(buf_date)
+                                logger.debug(f"[PEDIDOS] #{oid} buffered hasta {buf_date}")
+                        except Exception:
+                            pp["impreso"] = False  # si no parsea, mostrar como pendiente
+                    else:
+                        # Sin fecha de buffering → mostrar como pendiente
+                        pp["impreso"] = False
+
                 elif es_flex:
                     # Flex: desde "printed" en adelante = IMPRESO
                     if substatus in ("printed","ready_for_pickup","in_packing_list",
@@ -838,7 +918,7 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
                     else:
                         pp["impreso"] = False
                 else:
-                    # Colecta: "printed" sigue PENDIENTE, solo desde ready_for_pickup = IMPRESO
+                    # Colecta: "printed" sigue PENDIENTE, desde ready_for_pickup = IMPRESO
                     if substatus in ("ready_for_pickup","in_packing_list","in_hub",
                                      "picked_up","in_pickup_list","ready_for_pkl_creation"):
                         pp["impreso"] = True
@@ -2960,6 +3040,38 @@ def _guardar_metricas_servidor(data: list):
         logger.error(f"[METRICAS] Error guardando: {e}")
 
 
+@app.route("/api/diagnostico")
+@requiere_api_key
+def api_diagnostico():
+    """Diagnóstico del servidor — verifica persistencia y métricas."""
+    import datetime as _dt
+    metricas  = _cargar_metricas_servidor()
+    alertas   = _cargar_alertas()
+    usuarios  = len(_usuarios)
+    es_persistente = DATA_DIR != "/tmp"
+
+    # Última métrica recibida
+    ultima_metrica = metricas[-1] if metricas else {}
+
+    return jsonify({
+        "ok":             True,
+        "data_dir":       DATA_DIR,
+        "persistente":    es_persistente,
+        "advertencia":    None if es_persistente else
+                          "Usando /tmp — datos se pierden en cada redeploy. "
+                          "Montá un Railway Volume en /data",
+        "metricas": {
+            "total":      len(metricas),
+            "ultima_ts":  ultima_metrica.get("ts","nunca"),
+            "ultimo_op":  ultima_metrica.get("operario","—"),
+        },
+        "alertas_pendientes": len([a for a in alertas if not a.get("leida")]),
+        "usuarios":      usuarios,
+        "pedidos_ml":    len(_pedidos_ml),
+        "servidor_ts":   _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
 @app.route("/api/metricas/subir", methods=["POST"])
 @requiere_api_key
 def api_metricas_subir():
@@ -3148,6 +3260,38 @@ def panel_estadisticas():
             </div>
             <span style="font-size:10px;color:#64748B">{pct}%</span>
           </td>
+        </tr>"""
+
+    # ── Tabla de lotes con order_ids ──────────────────────────────────────────
+    lotes_html = ""
+    for d in sorted(data_f, key=lambda x: x.get("ts",""), reverse=True)[:100]:
+        canal     = d.get("canal","")
+        canal_c   = "#8B5CF6" if canal=="flex" else "#2563EB"
+        canal_txt = "⚡ Flex" if canal=="flex" else "🚚 Colecta"
+        op        = d.get("operario","—") or "—"
+        dur_min   = int(d.get("duracion_seg",0)//60)
+        orders    = d.get("order_ids",[]) or []
+        orders_str = " ".join(str(o) for o in orders)
+        # Mostrar hasta 5 order_ids con tooltip para ver todos
+        orders_disp = " ".join(
+            f'<code style="background:#0F172A;padding:1px 5px;border-radius:3px;'
+            f'font-size:10px;color:{canal_c}">{o}</code>'
+            for o in orders[:5]
+        )
+        if len(orders) > 5:
+            orders_disp += f' <span style="color:#64748B;font-size:10px">+{len(orders)-5} más</span>'
+        lotes_html += f"""<tr data-orders="{orders_str}"
+              data-ts="{d.get('ts','')}"
+              data-canal="{canal}"
+              data-operario="{op}">
+          <td style="font-size:12px">{d.get('ts','')}</td>
+          <td><span style="color:{canal_c};font-weight:700">{canal_txt}</span></td>
+          <td style="font-weight:600">{op}</td>
+          <td style="font-weight:700">{d.get('n_pedidos',0)}</td>
+          <td>{d.get('total_uds',0)}</td>
+          <td>{dur_min} min</td>
+          <td style="max-width:300px;overflow:hidden">{orders_disp if orders_disp else
+            '<span style="color:#334155;font-size:11px">Sin datos</span>'}</td>
         </tr>"""
 
     dias_html = ""
@@ -3600,6 +3744,100 @@ document.addEventListener('click',()=>{
   if(!_audio_ctx)_audio_ctx=new(window.AudioContext||window.webkitAudioContext)();
 },{once:true});
 </script>
+<!-- ── Buscador de ventas ML ──────────────────────────────────────────────── -->
+<div class="card" style="margin-bottom:20px">
+  <h2>🔍 Buscar número de venta MeLi</h2>
+  <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+    <input type="text" id="buscar-venta"
+           placeholder="Ej: 2000017587387720"
+           style="background:#0F172A;border:1px solid #334155;color:#F1F5F9;
+                  border-radius:8px;padding:10px 14px;font-size:14px;
+                  flex:1;min-width:200px;outline:none"
+           onkeydown="if(event.key==='Enter')buscarVenta()">
+    <button onclick="buscarVenta()"
+      style="background:#3B82F6;color:white;border:none;padding:10px 20px;
+             border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">
+      🔍 Buscar
+    </button>
+    <button onclick="document.getElementById('buscar-venta').value='';
+                     document.getElementById('res-busqueda').innerHTML=''"
+      style="background:#334155;color:#94A3B8;border:none;padding:10px 14px;
+             border-radius:8px;cursor:pointer;font-size:13px">
+      ✕ Limpiar
+    </button>
+  </div>
+  <div id="res-busqueda"></div>
+</div>
+
+<!-- ── Historial de lotes ─────────────────────────────────────────────────── -->
+<div class="card" style="margin-bottom:20px">
+  <h2>📋 Historial de lotes — quién preparó qué pedido</h2>
+  <div style="overflow-x:auto">
+  <table id="tabla-lotes">
+    <thead><tr>
+      <th>Fecha/Hora</th><th>Canal</th><th>Operario</th>
+      <th>Pedidos</th><th>Uds</th><th>Duración</th>
+      <th>Números de venta MeLi</th>
+    </tr></thead>
+    <tbody>{{ lotes_html | safe }}</tbody>
+  </table>
+  </div>
+</div>
+
+<script>
+function buscarVenta() {
+  const q = document.getElementById('buscar-venta').value.trim().replace(/\s/g,'');
+  const res = document.getElementById('res-busqueda');
+  if (!q) { res.innerHTML=''; return; }
+  res.innerHTML = '<div style="color:#94A3B8;padding:8px">Buscando...</div>';
+
+  // Buscar en todas las filas de la tabla de lotes
+  const filas = document.querySelectorAll('#tabla-lotes tbody tr[data-orders]');
+  const encontrados = [];
+  filas.forEach(f => {
+    if ((f.dataset.orders||'').replace(/\s/g,'').includes(q)) {
+      encontrados.push({
+        ts:       f.dataset.ts       || '',
+        canal:    f.dataset.canal    || '',
+        operario: f.dataset.operario || '—',
+      });
+    }
+  });
+
+  if (encontrados.length === 0) {
+    res.innerHTML = `<div style="background:#1E293B;border:1px solid #EF4444;
+      border-radius:8px;padding:14px;color:#FCA5A5">
+      ❌ Venta <b>#${q}</b> no encontrada en el historial visible.<br>
+      <span style="font-size:11px;color:#64748B">Probá ajustar el filtro de fechas para ampliar la búsqueda.</span>
+    </div>`;
+    return;
+  }
+
+  res.innerHTML = encontrados.map(r => {
+    const cc = r.canal==='flex'?'#8B5CF6':'#2563EB';
+    const ct = r.canal==='flex'?'⚡ Flex':'🚚 Colecta';
+    return `<div style="background:#052E16;border:1px solid #10B981;
+         border-radius:8px;padding:14px;margin-bottom:8px">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:28px">✅</span>
+        <div>
+          <div style="font-weight:800;color:#34D399;font-size:16px">
+            Venta #${q} encontrada
+          </div>
+          <div style="font-size:13px;color:#94A3B8;margin-top:6px">
+            👤 <b style="color:#F1F5F9;font-size:15px">${r.operario}</b>
+            &nbsp;·&nbsp;
+            <span style="color:${cc};font-weight:700">${ct}</span>
+            &nbsp;·&nbsp;
+            📅 ${r.ts}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+</script>
+
 </body></html>""",
         desde=desde, hasta=hasta, total_lotes=total_lotes,
         total_pedidos=total_pedidos, total_uds=total_uds,
@@ -3609,7 +3847,8 @@ document.addEventListener('click',()=>{
         peds_hoy=peds_hoy, flex_hoy=flex_hoy, col_hoy=col_hoy,
         canal_f=canal_f, ops_opts=ops_opts,
         ranking_html=ranking_html, top5_html=top5_html,
-        dias_html=dias_html)
+        dias_html=dias_html,
+        lotes_html=lotes_html)
 
 
 
