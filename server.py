@@ -986,9 +986,11 @@ def api_usuarios_crear():
     if any(u.get("usuario","").lower() == usuario for u in _usuarios):
         return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
 
-    # ── Permisos según sesión del panel ───────────────────────────────────────
-    rol_sesion    = session.get("admin_panel_rol", "")
-    cuenta_sesion = session.get("admin_panel_cuenta_id", "")
+    # ── Permisos: header (fetch) → session (navegador) → rechazar ────────────
+    rol_sesion    = (request.headers.get("X-Panel-Rol","") or
+                     session.get("admin_panel_rol",""))
+    cuenta_sesion = (request.headers.get("X-Panel-Cuenta","") or
+                     session.get("admin_panel_cuenta_id",""))
 
     if rol_sesion == "admin":
         # Admin: puede crear cualquier rol en cualquier tienda
@@ -1061,8 +1063,10 @@ def api_usuarios_eliminar(usuario_id):
     if not u:
         return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
 
-    rol_sesion    = session.get("admin_panel_rol", "")
-    cuenta_sesion = session.get("admin_panel_cuenta_id", "")
+    rol_sesion    = (request.headers.get("X-Panel-Rol","") or
+                     session.get("admin_panel_rol",""))
+    cuenta_sesion = (request.headers.get("X-Panel-Cuenta","") or
+                     session.get("admin_panel_cuenta_id",""))
 
     if rol_sesion == "admin":
         # Admin puede eliminar cualquiera menos el último admin
@@ -2660,12 +2664,11 @@ const BASE = window.location.origin;
 async function crear() {
   const msg = document.getElementById('msg');
   const body = {
-    nombre:        document.getElementById('f-nombre').value.trim(),
-    usuario:       document.getElementById('f-usuario').value.trim().toLowerCase(),
-    clave:         document.getElementById('f-clave').value.trim(),
-    cuenta_id:     document.getElementById('f-cuenta').value.trim(),
-    rol:           document.getElementById('f-rol').value,
-
+    nombre:    document.getElementById('f-nombre').value.trim(),
+    usuario:   document.getElementById('f-usuario').value.trim().toLowerCase(),
+    clave:     document.getElementById('f-clave').value.trim(),
+    cuenta_id: document.getElementById('f-cuenta').value.trim(),
+    rol:       document.getElementById('f-rol').value,
   };
   if (!body.usuario || !body.clave || !body.cuenta_id) {
     msg.textContent='Completa usuario, clave y cuenta_id.';
@@ -2674,7 +2677,12 @@ async function crear() {
   try {
     const r = await fetch(BASE+'/api/auth/usuarios', {
       method:'POST',
-      headers:{'Content-Type':'application/json','X-API-Key':KEY},
+      headers:{
+        'Content-Type':'application/json',
+        'X-API-Key':KEY,
+        'X-Panel-Rol': '{{ "admin" if es_admin else "supervisor" }}',
+        'X-Panel-Cuenta': '{{ cuenta_sesion }}'
+      },
       body:JSON.stringify(body)
     });
     const d = await r.json();
@@ -3474,19 +3482,24 @@ async function _poll() {
     const li=document.getElementById('alertas-lista');
     const bg=document.getElementById('alertas-badge');
     const ts=document.getElementById('alertas-ts');
-    if(d.alertas&&d.alertas.length>0){
+    const alertas_no_leidas = d.alertas ? d.alertas.filter(a=>!a.leida) : [];
+    if(nl > 0){
+      // Solo mostrar el container si hay alertas NO LEÍDAS
       ct.style.display='block';
-      bg.textContent=nl>0?nl+' nuevas':'';
-      bg.style.display=nl>0?'inline-block':'none';
-      li.innerHTML=[...d.alertas].reverse().slice(0,20).map(_card).join('');
-      if(d.alertas.length>0&&d.alertas[d.alertas.length-1].ts)
-        ts.textContent='Última: '+d.alertas[d.alertas.length-1].ts;
+      bg.textContent=nl+' nuevas';
+      bg.style.display='inline-block';
+      li.innerHTML=alertas_no_leidas.slice().reverse().slice(0,20).map(_card).join('');
+      if(alertas_no_leidas.length>0&&alertas_no_leidas[alertas_no_leidas.length-1].ts)
+        ts.textContent='Última: '+alertas_no_leidas[alertas_no_leidas.length-1].ts;
       if(nl>_alertas_previas&&_alertas_previas>=0){
         _beep_alerta();
         document.title='⚠️ ('+nl+') Sin Stock — Logibot';
       }
     } else {
+      // No hay no-leídas → ocultar el container
       ct.style.display='none';
+      bg.textContent='';
+      bg.style.display='none';
       document.title='📊 Estadísticas — Logibot';
     }
     _alertas_previas=nl;
@@ -3494,8 +3507,21 @@ async function _poll() {
 }
 
 async function marcarLeidas(){
-  await fetch(BASE+'/api/alertas/sin-stock/leer',{method:'POST',headers:{'X-API-Key':KEY_ALERTAS}});
-  _alertas_previas=0;document.title='📊 Estadísticas — Logibot';_poll();
+  try {
+    await fetch(BASE+'/api/alertas/sin-stock/leer',{method:'POST',headers:{'X-API-Key':KEY_ALERTAS}});
+    _alertas_previas = 0;
+    document.title = '📊 Estadísticas — Logibot';
+    // Ocultar el container y el badge inmediatamente
+    const ct = document.getElementById('alertas-container');
+    const bg = document.getElementById('alertas-badge');
+    if (ct) ct.style.display = 'none';
+    if (bg) { bg.textContent=''; bg.style.display='none'; }
+    // Actualizar el bell-badge también
+    const bell = document.getElementById('bell-badge');
+    if (bell) { bell.textContent=''; bell.style.display='none'; }
+    const btn = document.getElementById('bell-btn');
+    if (btn) btn.style.color = '';
+  } catch(e) { console.error('Error al marcar leídas:', e); }
 }
 async function limpiarAlertas(){
   if(!confirm('¿Limpiar todas las alertas?'))return;
