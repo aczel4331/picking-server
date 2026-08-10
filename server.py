@@ -303,11 +303,11 @@ def _get_session(cuenta_id: str) -> requests.Session:
         s = requests.Session()
         # Limitar conexiones simultáneas por host para no saturar Railway
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=2,   # conexiones al pool
-            pool_maxsize=4,       # conexiones max por host
+            pool_connections=4,   # conexiones al pool
+            pool_maxsize=8,       # conexiones max por host — evita "pool is full"
             max_retries=requests.adapters.Retry(
                 total=2,
-                backoff_factor=0.5,
+                backoff_factor=1.0,
                 status_forcelist=[429, 500, 502, 503],
             )
         )
@@ -872,24 +872,54 @@ def _sync_pedidos_ml_periodico():
             elif _refresh_lock.acquire(blocking=False):
                 try:
                     with _lock:
-                        # Sincronizar TODOS los pedidos con shipping_id
-                        # sin importar si ya tienen impreso=True
-                        # Así la app siempre muestra el estado real de ML
                         todos_con_ship = [p for p in _pedidos_ml.values()
                                           if p.get("shipping_id","")]
                     if todos_con_ship:
-                        logger.debug(f"[SYNC] Ciclo #{ciclo}: "
-                                     f"{len(todos_con_ship)} pedidos a verificar")
-                        _refrescar_estado_pedidos_bg(todos_con_ship, limite=50)
+                        # Sync adaptativo por horario (7-18 UY)
+                        import datetime as _dt2
+                        from datetime import timezone as _tz2, timedelta as _td2
+                        _hora = _dt2.datetime.now(_tz2(_td2(hours=-3))).hour
+                        _en_horario = 7 <= _hora < 18
+                        if not _en_horario:
+                            # Fuera de horario: solo los pendientes
+                            todos_con_ship = [p for p in todos_con_ship
+                                              if not p.get("impreso", False)]
+                        limite_sync = 50 if _en_horario else 20
+                        if todos_con_ship:
+                            logger.debug(f"[SYNC] Ciclo #{ciclo}: "
+                                         f"{len(todos_con_ship)} pedidos "
+                                         f"({'activo' if _en_horario else 'reducido'})")
+                            _refrescar_estado_pedidos_bg(todos_con_ship, limite=limite_sync)
                 finally:
                     _refresh_lock.release()
         except Exception as e:
             logger.error(f"[SYNC] Error: {e}")
         ciclo += 1
-        time.sleep(60)  # cada 60s en vez de 120s
+        # Horario activo: cada 60s | Fuera: cada 180s (3x menos CPU)
+        import datetime as _dt3
+        from datetime import timezone as _tz3, timedelta as _td3
+        _h2 = _dt3.datetime.now(_tz3(_td3(hours=-3))).hour
+        time.sleep(60 if 7 <= _h2 < 18 else 180)
 
 
 threading.Thread(target=_auto_refresh_loop,  daemon=True).start()
+
+
+def _limpiar_cache_periodico():
+    """Limpia cache de etiquetas PDF cada 2h para liberar memoria RAM."""
+    import gc
+    while True:
+        time.sleep(7200)  # 2 horas
+        try:
+            with _lock:
+                antes = len(_etiquetas_cache)
+                _etiquetas_cache.clear()
+            gc.collect()
+            logger.info(f"[CACHE] Limpieza: {antes} etiquetas liberadas")
+        except Exception as e:
+            logger.error(f"[CACHE] Error en limpieza: {e}")
+
+threading.Thread(target=_limpiar_cache_periodico, daemon=True).start()
 threading.Thread(target=_cache_cleanup_loop, daemon=True).start()
 
 # ═══════════════════════════════════════════════════════════════════════════════
