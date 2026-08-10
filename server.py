@@ -293,12 +293,43 @@ def _renovar_token_cuenta(cuenta_id):
 def _renovar_token():
     _renovar_token_cuenta("cuenta_0")
 
+# Sessions persistentes por cuenta — reutilizan conexiones TCP (keep-alive)
+# Evita el "Cannot assign requested address" por agotamiento de puertos
+_ml_sessions: dict = {}
+
+def _get_session(cuenta_id: str) -> requests.Session:
+    """Devuelve (o crea) una Session reutilizable para cada cuenta."""
+    if cuenta_id not in _ml_sessions:
+        s = requests.Session()
+        # Limitar conexiones simultáneas por host para no saturar Railway
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=2,   # conexiones al pool
+            pool_maxsize=4,       # conexiones max por host
+            max_retries=requests.adapters.Retry(
+                total=2,
+                backoff_factor=0.5,
+                status_forcelist=[429, 500, 502, 503],
+            )
+        )
+        s.mount("https://", adapter)
+        _ml_sessions[cuenta_id] = s
+    return _ml_sessions[cuenta_id]
+
+
 def _ml_get_cuenta(ruta, cuenta_id, params=None):
     tok = _cuentas.get(cuenta_id, {})
     at  = tok.get("access_token", "")
-    return requests.get(ML_API_URL + ruta,
-                        headers={"Authorization": f"Bearer {at}"},
-                        params=params or {}, timeout=12)
+    s   = _get_session(cuenta_id)
+    try:
+        return s.get(ML_API_URL + ruta,
+                     headers={"Authorization": f"Bearer {at}"},
+                     params=params or {}, timeout=12)
+    except Exception as e:
+        # Si hay error de conexión, invalidar la session para que se recree
+        if "Cannot assign" in str(e) or "Connection" in str(e):
+            _ml_sessions.pop(cuenta_id, None)
+            logger.warning(f"[ML] Session invalidada para {cuenta_id}: {e}")
+        raise
 
 def _ml_get(ruta, params=None):
     return _ml_get_cuenta(ruta, "cuenta_0", params)
@@ -600,8 +631,8 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
 
     oids_con_shipping = [oid for oid, p in pedidos.items() if p.get("shipping_id")]
     if oids_con_shipping:
-        # max_workers=4: suficiente para velocidad sin saturar Waitress ni ML
-        with ThreadPoolExecutor(max_workers=4) as ex:
+        # max_workers=2: conservador para no agotar puertos en Railway
+        with ThreadPoolExecutor(max_workers=2) as ex:
             futures = {ex.submit(_fetch_shipment, oid): oid for oid in oids_con_shipping}
             for future in as_completed(futures):
                 try:
@@ -687,7 +718,7 @@ def _warmup_matutino():
                                   if p.get("shipping_id","") and not p.get("impreso", False)]
                 for i in range(0, min(len(pendientes), 60), 15):
                     _refrescar_estado_pedidos_bg(pendientes[i:i+15], limite=15)
-                    time.sleep(20)
+                    time.sleep(25)
                 logger.info("[WARMUP] Listo para las 7:00 AM")
             except Exception as e:
                 logger.error(f"[WARMUP] Error: {e}")
@@ -760,7 +791,7 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
     for i, p in enumerate(pedidos_lista[:limite]):
         # Pausa reducida: 0.3s es suficiente para no saturar
         if i > 0:
-            time.sleep(0.3)
+            time.sleep(0.5)
         try:
             ship_id = p.get("shipping_id","")
             cuenta  = p.get("_cuenta","cuenta_0")
