@@ -2570,6 +2570,11 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
     <a href="/config" style="background:#1E3A5F;color:#A78BFA;
        text-decoration:none;padding:6px 14px;border-radius:8px;
        font-size:12px;font-weight:600">⚙ Config</a>
+    <a href="/estadisticas" id="bell-btn" class="bell-btn"
+       title="Alertas sin stock">
+      🔔
+      <span id="bell-badge" class="bell-badge">0</span>
+    </a>
     <a href="/admin/logout" style="background:#334155;color:#94A3B8;
        text-decoration:none;padding:6px 14px;border-radius:8px;
        font-size:12px;font-weight:600">🔒 Cerrar sesion</a>
@@ -2656,6 +2661,65 @@ async function eliminar(usuario) {
     if (d.ok) location.reload(); else alert('Error: '+d.msg);
   } catch(e) { alert('Error: '+e); }
 }
+
+<style>
+.bell-btn{position:relative;background:#1E293B;border:none;border-radius:8px;
+  padding:7px 12px;cursor:pointer;color:#94A3B8;font-size:16px;
+  transition:background .2s;text-decoration:none;display:inline-flex;
+  align-items:center;gap:4px}
+.bell-btn:hover{background:#334155;color:#F1F5F9}
+.bell-badge{position:absolute;top:-4px;right:-4px;background:#EF4444;
+  color:white;border-radius:10px;font-size:10px;font-weight:800;
+  min-width:18px;height:18px;display:flex;align-items:center;
+  justify-content:center;padding:0 4px;display:none}
+</style>
+<script>
+(function(){
+  const K='' + (API_KEY or '') + '';
+  const B=window.location.origin;
+  let _ac=null;
+  function beep(){
+    try{
+      if(!_ac)_ac=new(window.AudioContext||window.webkitAudioContext)();
+      [440,550,660].forEach((f,i)=>{
+        const o=_ac.createOscillator(),g=_ac.createGain();
+        o.connect(g);g.connect(_ac.destination);o.frequency.value=f;o.type='sine';
+        const t=_ac.currentTime+i*0.18;
+        g.gain.setValueAtTime(0.4,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.15);
+        o.start(t);o.stop(t+0.15);
+      });
+    }catch(e){}
+  }
+  let _prev=0;
+  async function pollBell(){
+    try{
+      const r=await fetch(B+'/api/alertas/sin-stock',{headers:{'X-API-Key':K}});
+      const d=await r.json();
+      const nl=d.no_leidas||0;
+      const badge=document.getElementById('bell-badge');
+      const btn=document.getElementById('bell-btn');
+      if(badge){
+        if(nl>0){
+          badge.textContent=nl;badge.style.display='flex';
+          if(btn)btn.style.color='#EF4444';
+        } else {
+          badge.style.display='none';
+          if(btn)btn.style.color='';
+        }
+      }
+      if(nl>_prev&&_prev>=0)beep();
+      _prev=nl;
+    }catch(e){}
+  }
+  document.addEventListener('DOMContentLoaded',()=>{
+    pollBell();
+    setInterval(pollBell,15000);
+    document.addEventListener('click',()=>{
+      if(!_ac)_ac=new(window.AudioContext||window.webkitAudioContext)();
+    },{once:true});
+  });
+})();
+</script>
 </script></body></html>""", nombre_admin=nombre_admin,
                               es_admin=es_admin,
                               cuenta_sesion=cuenta_sesion)
@@ -3085,6 +3149,28 @@ tr:hover td{background:rgba(255,255,255,.03)}
   </div>
 </div>
 
+<!-- ── AUTORIZACIONES PENDIENTES ────────────────────────────────────────── -->
+<div id="auth-container" style="margin-bottom:16px;display:none">
+  <div style="background:#1E1B4B;border:2px solid #818CF8;border-radius:12px;
+       padding:16px 20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;
+         margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:22px">🔐</span>
+        <div>
+          <div style="font-weight:800;font-size:15px;color:#C7D2FE">
+            Solicitudes de Autorización Pendientes
+          </div>
+          <div style="font-size:11px;color:#818CF8">
+            Un colector necesita tu aprobación para pasar a Fase 2
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="auth-lista" style="display:flex;flex-wrap:wrap;gap:10px"></div>
+  </div>
+</div>
+
 <!-- ── ALERTAS SIN STOCK ────────────────────────────────────────────────── -->
 <div id="alertas-container" style="margin-bottom:20px;display:none">
   <div style="background:#7C2D12;border:2px solid #F97316;border-radius:12px;
@@ -3095,7 +3181,13 @@ tr:hover td{background:rgba(255,255,255,.03)}
         <span style="font-size:24px">⚠️</span>
         <div>
           <div style="font-weight:800;font-size:16px;color:#FED7AA">
-            ALERTA: Productos Sin Stock
+            ⚠️ Alertas del Depósito
+          </div>
+          <div style="font-size:11px;color:#FB923C;margin-top:2px">
+            <span style="background:#F97316;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700">SIN STOCK</span>
+            = producto suspendido &nbsp;|&nbsp;
+            <span style="background:#EF4444;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700">FASE 2</span>
+            = faltante al pasar a packing
           </div>
           <div id="alertas-ts" style="font-size:11px;color:#FB923C"></div>
         </div>
@@ -3254,22 +3346,93 @@ function _beep_alerta() {
 
 function _card(a) {
   const leida=a.leida?'opacity:.5;':'';
+  const esFase2=a.tipo==='faltante_fase2';
+  const border=esFase2?'#EF4444':'#F97316';
+  const bg=esFase2?'#450A0A':'#431407';
+  const badge=esFase2
+    ?`<span style="background:#EF4444;color:white;font-size:9px;font-weight:800;
+        padding:2px 6px;border-radius:4px;margin-left:4px">FASE 2</span>`
+    :`<span style="background:#F97316;color:white;font-size:9px;font-weight:800;
+        padding:2px 6px;border-radius:4px;margin-left:4px">SIN STOCK</span>`;
   const img=a.img_url
     ?`<img src="${a.img_url}" style="width:56px;height:56px;object-fit:cover;border-radius:6px" onerror="this.style.display='none'">`
     :`<div style="width:56px;height:56px;background:#374151;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:22px">📦</div>`;
-  return `<div style="background:#431407;border:1px solid #F97316;border-radius:10px;padding:12px;${leida}">
+  return `<div style="background:${bg};border:1px solid ${border};border-radius:10px;padding:12px;${leida}">
     <div style="display:flex;gap:10px;align-items:flex-start">
       ${img}
       <div style="flex:1;min-width:0">
-        <div style="font-weight:800;font-size:13px;color:#FED7AA;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${a.nombre||a.sku}</div>
-        <code style="background:#1C0A00;padding:2px 6px;border-radius:4px;font-size:11px;color:#F97316">${a.sku}</code>
-        <div style="font-size:11px;color:#9CA3AF;margin-top:3px">×${a.cantidad} · #${a.order_id}</div>
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
+          <span style="font-weight:800;font-size:13px;color:#FED7AA;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+            max-width:120px">${a.nombre||a.sku}</span>${badge}
+        </div>
+        <code style="background:#1C0A00;padding:2px 6px;border-radius:4px;
+              font-size:11px;color:${border}">${a.sku}</code>
+        <div style="font-size:11px;color:#9CA3AF;margin-top:3px">
+          Faltan: <b style="color:${border}">×${a.cantidad}</b>
+          ${!esFase2&&a.order_id?'· #'+a.order_id:''}
+        </div>
         <div style="font-size:10px;color:#6B7280">${a.operario?'👤 '+a.operario+' · ':''}${a.ts?a.ts.slice(11,16):''}</div>
       </div>
     </div>
   </div>`;
 }
 
+// ── AUTORIZACIONES — polling cada 5s ──────────────────────────────────────
+async function _poll_auth() {
+  try {
+    const r = await fetch(BASE+'/api/auth/pendientes',
+      {headers:{'X-API-Key':KEY_ALERTAS}});
+    const d = await r.json();
+    const ct = document.getElementById('auth-container');
+    const li = document.getElementById('auth-lista');
+    if (!ct||!li) return;
+    const pend = d.pendientes||[];
+    if (pend.length>0) {
+      ct.style.display='block';
+      li.innerHTML=pend.map(p=>`
+        <div style="background:#2E1065;border:1px solid #818CF8;border-radius:10px;
+             padding:14px;min-width:220px;flex:1">
+          <div style="font-size:22px;font-weight:900;color:#A5B4FC;
+               letter-spacing:3px;text-align:center;margin-bottom:6px">
+            🔑 ${p.token}
+          </div>
+          <div style="font-size:12px;color:#C7D2FE;margin-bottom:4px">
+            👤 ${p.operario||'Operario'} · ${p.ts}
+          </div>
+          <div style="font-size:11px;color:#818CF8;margin-bottom:10px">
+            ${p.incompletos&&p.incompletos.length>0
+              ?p.incompletos.slice(0,3).map(i=>
+                `<span style="background:#1E1B4B;padding:1px 5px;border-radius:4px;
+                 margin-right:3px">${i.sku} ${i.colectado}/${i.requerido}</span>`
+              ).join(''):'Artículos incompletos'}
+          </div>
+          <button onclick="aprobarAuth('${p.token}')"
+            style="width:100%;background:#4F46E5;color:white;border:none;
+                   padding:9px;border-radius:8px;cursor:pointer;
+                   font-weight:700;font-size:13px">
+            ✅ Autorizar paso a Fase 2
+          </button>
+        </div>`).join('');
+    } else {
+      ct.style.display='none';
+    }
+  } catch(e){}
+}
+
+async function aprobarAuth(token) {
+  try {
+    const r=await fetch(BASE+'/api/auth/aprobar/'+token,
+      {method:'POST',headers:{'X-API-Key':KEY_ALERTAS}});
+    const d=await r.json();
+    if(d.ok) _poll_auth();
+  } catch(e){}
+}
+
+_poll_auth();
+setInterval(_poll_auth, 5000);
+
+// ── ALERTAS SIN STOCK — polling cada 15s ──────────────────────────────────
 async function _poll() {
   try {
     const r=await fetch(BASE+'/api/alertas/sin-stock',{headers:{'X-API-Key':KEY_ALERTAS}});
@@ -3608,6 +3771,67 @@ async function cambiarCodigo() {
 # ALERTAS SIN STOCK — notificaciones en tiempo real para el supervisor
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# AUTORIZACION REMOTA — supervisor aprueba desde el panel web
+# ══════════════════════════════════════════════════════════════════════════════
+
+_auth_pendientes = {}  # {token: {aprobado, ts, operario, incompletos}}
+
+
+@app.route("/api/auth/solicitar", methods=["POST"])
+@requiere_api_key
+def api_auth_solicitar():
+    """
+    La app registra una solicitud de autorización cuando necesita código supervisor.
+    Devuelve un token único que la app usa para hacer polling.
+    """
+    import uuid, datetime as _dt
+    data      = request.get_json(silent=True) or {}
+    token     = str(uuid.uuid4())[:8].upper()
+    operario  = data.get("operario","")
+    incompletos = data.get("incompletos", [])  # [{sku, colectado, requerido}]
+
+    _auth_pendientes[token] = {
+        "token":       token,
+        "aprobado":    False,
+        "ts":          _dt.datetime.now().strftime("%H:%M:%S"),
+        "operario":    operario,
+        "incompletos": incompletos,
+    }
+    logger.info(f"[AUTH-REMOTA] Solicitud {token} de {operario}")
+    return jsonify({"ok": True, "token": token})
+
+
+@app.route("/api/auth/estado/<token>", methods=["GET"])
+@requiere_api_key
+def api_auth_estado(token):
+    """La app hace polling para saber si el supervisor aprobó."""
+    sol = _auth_pendientes.get(token)
+    if not sol:
+        return jsonify({"ok": False, "msg": "Token no encontrado"}), 404
+    return jsonify({"ok": True, "aprobado": sol["aprobado"]})
+
+
+@app.route("/api/auth/aprobar/<token>", methods=["POST"])
+@requiere_api_key
+def api_auth_aprobar(token):
+    """El supervisor aprueba desde el panel web."""
+    sol = _auth_pendientes.get(token)
+    if not sol:
+        return jsonify({"ok": False, "msg": "Solicitud no encontrada"}), 404
+    sol["aprobado"] = True
+    logger.info(f"[AUTH-REMOTA] Token {token} aprobado por panel web")
+    return jsonify({"ok": True, "msg": f"Autorización {token} aprobada"})
+
+
+@app.route("/api/auth/pendientes", methods=["GET"])
+@requiere_api_key
+def api_auth_pendientes():
+    """Lista de solicitudes pendientes para el panel web."""
+    pendientes = [v for v in _auth_pendientes.values() if not v["aprobado"]]
+    return jsonify({"ok": True, "pendientes": pendientes})
+
+
 def _cargar_alertas() -> list:
     try:
         if os.path.exists(ALERTAS_PATH):
@@ -3638,7 +3862,8 @@ def api_alertas_sin_stock():
         return jsonify({"ok": False, "msg": "Sin alertas"}), 400
 
     existentes = _cargar_alertas()
-    ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts   = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    tipo = data.get("tipo","sin_stock")  # "sin_stock" o "faltante_fase2"
     for a in alertas:
         existentes.append({
             "ts":       ts,
@@ -3648,6 +3873,7 @@ def api_alertas_sin_stock():
             "img_url":  a.get("img_url",""),
             "order_id": a.get("order_id",""),
             "operario": operario,
+            "tipo":     a.get("tipo", tipo),  # tipo por alerta o global
             "leida":    False,
         })
     # Conservar solo las últimas 200
