@@ -32,9 +32,10 @@ METRICS_PATH = os.path.join(
 # ── Estado en memoria ─────────────────────────────────────────────────────────
 _lote_inicio  = {}   # { canal: timestamp_inicio }
 _lote_skus    = {}   # { canal: {sku: qty} }
-_lote_pedidos  = {}   # { canal: n_pedidos }
-_lote_cuenta   = {}   # { canal: cuenta_id }
-_lote_operario = {}   # { canal: nombre_operario }
+_lote_pedidos   = {}   # { canal: n_pedidos }
+_lote_cuenta    = {}   # { canal: cuenta_id }
+_lote_operario  = {}   # { canal: nombre_operario }
+_lote_order_ids = {}   # { canal: [order_id, ...] }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -42,13 +43,15 @@ _lote_operario = {}   # { canal: nombre_operario }
 # ─────────────────────────────────────────────────────────────────────────────
 
 def registrar_inicio_lote(canal: str, n_pedidos: int, skus: dict,
-                          operario: str = "", cuenta_id: str = ""):
+                          operario: str = "", cuenta_id: str = "",
+                          order_ids: list = None):
     """Llamar cuando el lote se sube a Railway y empieza la colecta."""
-    _lote_inicio[canal]   = time.time()
-    _lote_skus[canal]     = dict(skus)
-    _lote_pedidos[canal]  = n_pedidos
-    _lote_operario[canal] = operario.strip() if operario else "—"
-    _lote_cuenta[canal]   = cuenta_id.strip() if cuenta_id else "todas"
+    _lote_inicio[canal]    = time.time()
+    _lote_skus[canal]      = dict(skus)
+    _lote_pedidos[canal]   = n_pedidos
+    _lote_operario[canal]  = operario.strip() if operario else "—"
+    _lote_cuenta[canal]    = cuenta_id.strip() if cuenta_id else "todas"
+    _lote_order_ids[canal] = list(order_ids) if order_ids else []
     print(f"[METRICS] Inicio lote canal='{canal}' "
           f"pedidos={n_pedidos} operario='{operario}' cuenta='{cuenta_id}'")
 
@@ -62,8 +65,9 @@ def registrar_fin_lote(canal: str):
     skus    = _lote_skus.pop(canal, {})
     n_peds  = _lote_pedidos.pop(canal, 0)
 
-    operario   = _lote_operario.pop(canal, "—")
-    cuenta_id  = _lote_cuenta.pop(canal,   "todas")
+    operario   = _lote_operario.pop(canal,   "—")
+    cuenta_id  = _lote_cuenta.pop(canal,     "todas")
+    order_ids  = _lote_order_ids.pop(canal,  [])
 
     entrada = {
         "ts":            datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -75,6 +79,7 @@ def registrar_fin_lote(canal: str):
         "skus":          skus,
         "operario":      operario,
         "cuenta_id":     cuenta_id,
+        "order_ids":     order_ids,   # números de venta de MeLi
     }
 
     _guardar_metrica(entrada)
