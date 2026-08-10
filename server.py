@@ -1518,6 +1518,17 @@ def api_etiqueta(order_id):
 
 
 def _api_etiqueta_impl(order_id):
+    # Leer config del body (puede incluir shipping_id directo)
+    body_data = {}
+    try:
+        if request.method == "POST" and request.content_type == "application/json":
+            body_data = request.get_json(silent=True) or {}
+    except Exception:
+        pass
+
+    # Si la app manda shipping_id directo, usarlo sin buscar en memoria
+    shipping_id_directo = str(body_data.get("shipping_id","")).strip()
+
     with _lock:
         cached    = _etiquetas_cache.get(order_id)
         snap      = dict(_pedidos_ml)
@@ -1532,34 +1543,58 @@ def _api_etiqueta_impl(order_id):
                         headers={"Content-Disposition": f"inline; filename=etiqueta_{shid}.pdf",
                                  "X-Cache": "HIT"})
 
-    pedido   = snap.get(order_id) or snap.get(str(order_id))
-    real_oid = order_id
-    if not pedido and len(order_id) >= 8:
-        for k, v in snap.items():
-            if str(k).endswith(order_id[-8:]) or str(k)[:8] == order_id[:8]:
-                pedido = v; real_oid = str(k); break
-    if not pedido:
-        for p_num, p_data in snap_lote.items():
-            if str(p_data.get("_order_id","")) == order_id:
-                pedido = {"shipping_id": str(p_data.get("_shipping_id","")),
-                          "comprador": p_data.get("comprador",""),
-                          "_cuenta": p_data.get("_cuenta","cuenta_0"),
-                          "items": p_data.get("items",[])}; real_oid = order_id; break
-    if not pedido:
-        return _html_error("Pedido no encontrado",
-                           f"El pedido #{order_id} no esta en la lista. "
-                           f"Hay {len(snap)} pedidos ML y {len(snap_lote)} en el lote."), 404
+    # Si tenemos shipping_id directo del body, no buscar en memoria
+    if shipping_id_directo:
+        # Buscar la cuenta asociada al pedido para el token
+        pedido = snap.get(order_id) or snap.get(str(order_id))
+        if not pedido:
+            for p_num, p_data in snap_lote.items():
+                if str(p_data.get("_order_id","")) == order_id:
+                    pedido = p_data; break
+        cuenta_id   = (pedido or {}).get("_cuenta","cuenta_0")
+        at          = _cuentas.get(cuenta_id,{}).get("access_token","")
+        # Intentar con todas las cuentas si no hay token
+        if not at:
+            for cid, ctok in _cuentas.items():
+                tok = ctok.get("access_token","")
+                if tok: at = tok; break
+        if not at:
+            return _html_error("Token ML no disponible",
+                               "Reconecta la cuenta MercadoLibre."), 401
+        shipping_id = shipping_id_directo
+        comprador   = (pedido or {}).get("comprador","")
+        items_txt   = ""
+        real_oid    = order_id
+    else:
+        pedido   = snap.get(order_id) or snap.get(str(order_id))
+        real_oid = order_id
+        if not pedido and len(order_id) >= 8:
+            for k, v in snap.items():
+                if str(k).endswith(order_id[-8:]) or str(k)[:8] == order_id[:8]:
+                    pedido = v; real_oid = str(k); break
+        if not pedido:
+            for p_num, p_data in snap_lote.items():
+                if str(p_data.get("_order_id","")) == order_id:
+                    pedido = {"shipping_id": str(p_data.get("_shipping_id","")),
+                              "comprador": p_data.get("comprador",""),
+                              "_cuenta": p_data.get("_cuenta","cuenta_0"),
+                              "items": p_data.get("items",[])}; real_oid = order_id; break
+        if not pedido:
+            return _html_error("Pedido no encontrado",
+                               f"El pedido #{order_id} no esta en la lista. "
+                               f"Hay {len(snap)} pedidos ML y {len(snap_lote)} en el lote."), 404
 
-    shipping_id = pedido.get("shipping_id","")
-    comprador   = pedido.get("comprador","")
-    items_txt   = " | ".join(f"{it.get('sku','?')}" for it in pedido.get("items",[])[:3])
-    if not shipping_id:
-        return _html_error(f"Pedido #{real_oid} sin envio ML",
-                           f"<b>Comprador:</b> {comprador}<br><b>Productos:</b> {items_txt}"), 200
+        shipping_id = pedido.get("shipping_id","")
+        comprador   = pedido.get("comprador","")
+        items_txt   = " | ".join(f"{it.get('sku','?')}" for it in pedido.get("items",[])[:3])
+        if not shipping_id:
+            return _html_error(f"Pedido #{real_oid} sin envio ML",
+                               f"<b>Comprador:</b> {comprador}<br><b>Productos:</b> {items_txt}"), 200
 
-    at = _cuentas.get(pedido.get("_cuenta","cuenta_0"),{}).get("access_token","")
-    if not at:
-        return _html_error("Token ML no disponible", "Reconecta la cuenta MercadoLibre."), 401
+        at = _cuentas.get(pedido.get("_cuenta","cuenta_0"),{}).get("access_token","")
+        if not at:
+            return _html_error("Token ML no disponible",
+                               "Reconecta la cuenta MercadoLibre."), 401
 
     pdf_content = None; last_status = 0
     for rtype in ["pdf","pdf2"]:
@@ -1575,15 +1610,14 @@ def _api_etiqueta_impl(order_id):
             logger.debug(f"[ETIQUETA] Excepcion {rtype}: {e}")
 
     if pdf_content:
-        config = {}
-        try:
-            if request.method == "POST" and request.content_type == "application/json":
-                config = request.get_json(silent=True) or {}
-            else:
+        # Usar el body_data ya leído (evitar leer el stream dos veces)
+        config = body_data if body_data else {}
+        if not config:
+            try:
                 config_str = request.args.get("config","{}")
                 config = json.loads(config_str) if config_str else {}
-        except Exception:
-            config = {}
+            except Exception:
+                config = {}
         pdf_final = _aplicar_personalizacion_etiqueta(pdf_content, config)
         return Response(pdf_final, status=200, mimetype="application/pdf",
                         headers={"Content-Disposition": f"inline; filename=etiqueta_{shipping_id}.pdf"})
