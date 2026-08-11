@@ -2327,34 +2327,51 @@ def api_imagen_sku(sku):
     if not sku:
         return jsonify({"ok": False, "existe": False, "sku": sku, "imagen_url": None}), 400
     try:
+        # item_id puede venir directo desde la app (más rápido y confiable)
+        item_id_param = request.args.get("item_id","").strip()
         item_id = None; nombre_local = None; cuenta_id = "cuenta_0"
-        with _lock:
-            for canal_name, canal_est in _estados_canal.items():
-                for oid, ped in canal_est.get("pedidos",{}).items():
-                    for item in ped.get("items",[]):
-                        if str(item.get("sku","")).strip().upper() == sku:
-                            item_id = item.get("item_id","")
-                            nombre_local = item.get("nombre","")
+
+        if item_id_param:
+            # La app ya sabe el item_id — usarlo directo sin buscar en memoria
+            item_id = item_id_param
+            # Buscar la cuenta que tenga token válido para este item
+            with _lock:
+                for oid, ped in _pedidos_ml.items():
+                    for it in ped.get("items",[]):
+                        if str(it.get("item_id","")) == item_id:
                             cuenta_id = ped.get("_cuenta","cuenta_0")
-                            if item_id: break
-                    if item_id: break
-                if item_id: break
-            if not item_id:
+                            break
+        else:
+            # Buscar el item_id a partir del SKU en la memoria del servidor
+            with _lock:
                 for canal_name, canal_est in _estados_canal.items():
-                    for grupo in canal_est.get("grupos",[]):
-                        for item in grupo.get("items",[]):
-                            if item.get("sku","").upper() == sku:
+                    for oid, ped in canal_est.get("pedidos",{}).items():
+                        for item in ped.get("items",[]):
+                            if str(item.get("sku","")).strip().upper() == sku:
                                 item_id = item.get("item_id","")
                                 nombre_local = item.get("nombre","")
+                                cuenta_id = ped.get("_cuenta","cuenta_0")
                                 if item_id: break
                         if item_id: break
                     if item_id: break
-            if not item_id:
-                for oid, ped in _pedidos_ml.items():
-                    for it in ped.get("items",[]):
-                        if str(it.get("sku","")).upper() == sku and it.get("item_id"):
-                            item_id = it["item_id"]; cuenta_id = ped.get("_cuenta","cuenta_0"); break
-                    if item_id: break
+                if not item_id:
+                    for canal_name, canal_est in _estados_canal.items():
+                        for grupo in canal_est.get("grupos",[]):
+                            for item in grupo.get("items",[]):
+                                if item.get("sku","").upper() == sku:
+                                    item_id = item.get("item_id","")
+                                    nombre_local = item.get("nombre","")
+                                    if item_id: break
+                            if item_id: break
+                        if item_id: break
+                if not item_id:
+                    for oid, ped in _pedidos_ml.items():
+                        for it in ped.get("items",[]):
+                            if str(it.get("sku","")).upper() == sku and it.get("item_id"):
+                                item_id = it["item_id"]
+                                cuenta_id = ped.get("_cuenta","cuenta_0")
+                                break
+                        if item_id: break
 
         if not item_id:
             return jsonify({"ok": True, "existe": False, "sku": sku, "imagen_url": None}), 200
