@@ -2887,8 +2887,14 @@ async function crear() {
 async function eliminar(usuario) {
   if (!confirm('Eliminar usuario '+usuario+'?')) return;
   try {
-    const r = await fetch(BASE+'/api/auth/usuarios/'+usuario,
-      {method:'DELETE',headers:{'X-API-Key':KEY}});
+    const r = await fetch(BASE+'/api/auth/usuarios/'+usuario,{
+      method:'DELETE',
+      headers:{
+        'X-API-Key':KEY,
+        'X-Panel-Rol': '{{ "admin" if es_admin else "supervisor" }}',
+        'X-Panel-Cuenta': '{{ cuenta_sesion }}'
+      }
+    });
     const d = await r.json();
     if (d.ok) location.reload(); else alert('Error: '+d.msg);
   } catch(e) { alert('Error: '+e); }
