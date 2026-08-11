@@ -659,10 +659,19 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                         logistica = log_new or log_old
                         status    = sd.get("status", "")
                         substatus = sd.get("substatus", "")
-                        ped["logistica"] = logistica
+                        ped["logistica"]    = logistica
                         ped["estado_envio"] = status
-                        ped["substatus"] = substatus
-                        ped["tipo"] = _calcular_tipo(logistica, ped.get("tags",[]), ped.get("shipping_id",""))
+                        ped["substatus"]    = substatus
+                        ped["tipo"]         = _calcular_tipo(logistica, ped.get("tags",[]), ped.get("shipping_id",""))
+
+                        # Horario de corte: estimated_handling_limit.date
+                        # Para Colecta: si esta fecha es hoy → mostrar; si es futura → ocultar
+                        try:
+                            lt = sd.get("lead_time") or {}
+                            hl = (lt.get("estimated_handling_limit") or {}).get("date","")
+                            ped["handling_limit"] = hl  # ISO datetime o ""
+                        except Exception:
+                            ped["handling_limit"] = ""
                         # Regla por tipo de logística
                         FINS   = {"shipped","delivered","not_delivered","cancelled"}
                         es_fx  = logistica in ("self_service","xd_drop_off","drop_off")
@@ -852,6 +861,13 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
                 pp["estado_envio"] = status
                 pp["substatus"]    = substatus
                 pp["tipo"]         = _calcular_tipo(logistica, pp.get("tags",[]), ship_id)
+                # Actualizar horario de corte
+                try:
+                    lt2 = sd.get("lead_time") or {}
+                    hl2 = (lt2.get("estimated_handling_limit") or {}).get("date","")
+                    pp["handling_limit"] = hl2
+                except Exception:
+                    pass
                 antes = pp.get("impreso", False)
 
                 # ── Regla oficial ML diferenciada por tipo ────────────────────
