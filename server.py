@@ -318,11 +318,11 @@ def _get_session(cuenta_id: str) -> requests.Session:
         s = requests.Session()
         # Limitar conexiones simultáneas por host para no saturar Railway
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=4,   # conexiones al pool
-            pool_maxsize=8,       # conexiones max por host — evita "pool is full"
+            pool_connections=8,    # conexiones al pool
+            pool_maxsize=16,       # conexiones max por host
             max_retries=requests.adapters.Retry(
-                total=2,
-                backoff_factor=1.0,
+                total=3,
+                backoff_factor=1.5,
                 status_forcelist=[429, 500, 502, 503],
             )
         )
@@ -646,8 +646,8 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
 
     oids_con_shipping = [oid for oid, p in pedidos.items() if p.get("shipping_id")]
     if oids_con_shipping:
-        # max_workers=2: conservador para no agotar puertos en Railway
-        with ThreadPoolExecutor(max_workers=2) as ex:
+        # max_workers=1: secuencial para no saturar el pool de conexiones
+        with ThreadPoolExecutor(max_workers=1) as ex:
             futures = {ex.submit(_fetch_shipment, oid): oid for oid in oids_con_shipping}
             for future in as_completed(futures):
                 try:
@@ -837,7 +837,7 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
     for i, p in enumerate(pedidos_lista[:limite]):
         # Pausa reducida: 0.3s es suficiente para no saturar
         if i > 0:
-            time.sleep(0.5)
+            time.sleep(1.0)  # 1s pausa — evita saturar pool
         try:
             ship_id = p.get("shipping_id","")
             cuenta  = p.get("_cuenta","cuenta_0")
