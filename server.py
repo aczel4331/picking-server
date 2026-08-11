@@ -318,12 +318,13 @@ def _get_session(cuenta_id: str) -> requests.Session:
         s = requests.Session()
         # Limitar conexiones simultáneas por host para no saturar Railway
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=8,    # conexiones al pool
-            pool_maxsize=16,       # conexiones max por host
+            pool_connections=8,
+            pool_maxsize=16,
             max_retries=requests.adapters.Retry(
-                total=3,
-                backoff_factor=1.5,
+                total=2,               # 2 reintentos max
+                backoff_factor=2.0,    # espera 2s, 4s entre reintentos
                 status_forcelist=[429, 500, 502, 503],
+                raise_on_status=False, # no lanzar excepción en 4xx/5xx
             )
         )
         s.mount("https://", adapter)
@@ -338,7 +339,7 @@ def _ml_get_cuenta(ruta, cuenta_id, params=None):
     try:
         return s.get(ML_API_URL + ruta,
                      headers={"Authorization": f"Bearer {at}"},
-                     params=params or {}, timeout=12)
+                     params=params or {}, timeout=8)
     except Exception as e:
         # Si hay error de conexión, invalidar la session para que se recree
         if "Cannot assign" in str(e) or "Connection" in str(e):
@@ -944,6 +945,13 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
                     marcados_impresos += 1
                     logger.info(f"[PEDIDOS] #{oid} -> impreso (sub={substatus})")
             procesados += 1
+        except requests.exceptions.Timeout:
+            # ML tardó más de 8s — pasar al siguiente pedido sin bloquear
+            logger.debug(f"[PEDIDOS] Timeout en shipment {p.get('shipping_id','')} — continuando")
+            time.sleep(0.5)  # pequeña pausa antes del siguiente
+        except requests.exceptions.ConnectionError as _ce:
+            logger.debug(f"[PEDIDOS] ConnectionError: {_ce} — continuando")
+            time.sleep(1.0)
         except Exception:
             pass
     if marcados_impresos:
