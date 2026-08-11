@@ -1744,6 +1744,20 @@ def _api_etiqueta_impl(order_id):
                 config = json.loads(config_str) if config_str else {}
             except Exception:
                 config = {}
+
+        # Fusionar con la config guardada en Railway (tiene el logo_b64 real)
+        # El body puede traer pos/size/texto pero no el logo (es muy grande)
+        try:
+            cfg_railway = _cargar_config_app()
+            # Railway tiene prioridad para logo; body tiene prioridad para texto/pos
+            merged = dict(cfg_railway)   # base: Railway
+            for k, v in config.items():  # override: lo que mandó la app
+                if v is not None and v != "":
+                    merged[k] = v
+            config = merged
+        except Exception as e:
+            logger.debug(f"[ETIQUETA] No se pudo fusionar config Railway: {e}")
+
         pdf_final = _aplicar_personalizacion_etiqueta(pdf_content, config)
         return Response(pdf_final, status=200, mimetype="application/pdf",
                         headers={"Content-Disposition": f"inline; filename=etiqueta_{shipping_id}.pdf"})
