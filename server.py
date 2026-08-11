@@ -3170,21 +3170,43 @@ def _guardar_metricas_servidor(data: list):
 def api_diagnostico():
     """Diagnóstico del servidor — verifica persistencia y métricas."""
     import datetime as _dt
+    from datetime import timezone, timedelta
     metricas  = _cargar_metricas_servidor()
     alertas   = _cargar_alertas()
     usuarios  = len(_usuarios)
     es_persistente = DATA_DIR != "/tmp"
-
-    # Última métrica recibida
     ultima_metrica = metricas[-1] if metricas else {}
+
+    # Contar pedidos de Colecta por estado para diagnóstico
+    _uy   = timezone(timedelta(hours=-3))
+    _hoy  = _dt.datetime.now(_uy).date()
+    col_total = col_pend = col_hoy = col_futuro = col_sin_hl = 0
+    with _lock:
+        for p in _pedidos_ml.values():
+            if (p.get("logistica","") or "").lower() == "cross_docking":
+                col_total += 1
+                if not p.get("impreso"):
+                    col_pend += 1
+                    hl = (p.get("handling_limit","") or "").strip()
+                    if not hl:
+                        col_sin_hl += 1
+                    else:
+                        try:
+                            hl_d = _dt.datetime.fromisoformat(
+                                hl.replace("Z","+00:00")).astimezone(_uy).date()
+                            if hl_d <= _hoy:
+                                col_hoy += 1
+                            else:
+                                col_futuro += 1
+                        except Exception:
+                            col_sin_hl += 1
 
     return jsonify({
         "ok":             True,
         "data_dir":       DATA_DIR,
         "persistente":    es_persistente,
         "advertencia":    None if es_persistente else
-                          "Usando /tmp — datos se pierden en cada redeploy. "
-                          "Montá un Railway Volume en /data",
+                          "Usando /tmp — datos se pierden en cada redeploy.",
         "metricas": {
             "total":      len(metricas),
             "ultima_ts":  ultima_metrica.get("ts","nunca"),
@@ -3193,6 +3215,14 @@ def api_diagnostico():
         "alertas_pendientes": len([a for a in alertas if not a.get("leida")]),
         "usuarios":      usuarios,
         "pedidos_ml":    len(_pedidos_ml),
+        "colecta_diagnostico": {
+            "total":           col_total,
+            "pendientes":      col_pend,
+            "hoy_o_anterior":  col_hoy,
+            "dia_futuro":      col_futuro,
+            "sin_handling_limit": col_sin_hl,
+            "hoy_uy":          str(_hoy),
+        },
         "servidor_ts":   _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
 
