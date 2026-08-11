@@ -3280,7 +3280,7 @@ def panel_estadisticas():
 
     # ── Tabla de lotes con order_ids ──────────────────────────────────────────
     lotes_html = ""
-    for d in sorted(data_f, key=lambda x: x.get("ts",""), reverse=True)[:100]:
+    for d in sorted(data, key=lambda x: x.get("ts",""), reverse=True)[:100]:
         canal     = d.get("canal","")
         canal_c   = "#8B5CF6" if canal=="flex" else "#2563EB"
         canal_txt = "⚡ Flex" if canal=="flex" else "🚚 Colecta"
