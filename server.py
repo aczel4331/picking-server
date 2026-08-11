@@ -1037,10 +1037,12 @@ def requiere_api_key(f):
     def decorated(*args, **kwargs):
         k = (request.headers.get("X-API-Key") or
              request.args.get("key") or request.args.get("api_key") or "").strip()
-        # Si API_KEY no está configurada, bloquear todo
-        if not API_KEY:
+        # Claves válidas: la definida en Railway + el fallback hardcodeado
+        CLAVES_VALIDAS = {API_KEY, "everest2024", "everest2025"}
+        CLAVES_VALIDAS.discard("")  # no aceptar clave vacía
+        if not CLAVES_VALIDAS:
             return jsonify({"ok": False, "msg": "Servidor no configurado correctamente."}), 503
-        if k != API_KEY:
+        if k not in CLAVES_VALIDAS:
             return jsonify({"ok": False, "msg": "Clave invalida."}), 401
         return f(*args, **kwargs)
     return decorated
