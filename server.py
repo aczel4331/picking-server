@@ -3657,7 +3657,13 @@ function _card(a) {
     :`<span style="background:#F97316;color:white;font-size:9px;font-weight:800;
         padding:2px 6px;border-radius:4px;margin-left:4px">SIN STOCK</span>`;
   const img=a.img_url
-    ?`<img src="${a.img_url}" style="width:56px;height:56px;object-fit:cover;border-radius:6px" onerror="this.style.display='none'">`
+    ?`<img src="${a.img_url}"
+        onclick="abrirLightbox('${a.img_url}','${(a.nombre||a.sku).replace(/'/g,"")}')"
+        style="width:56px;height:56px;object-fit:cover;border-radius:6px;
+               cursor:zoom-in;transition:transform .15s"
+        onmouseover="this.style.transform='scale(1.08)'"
+        onmouseout="this.style.transform='scale(1)'"
+        onerror="this.style.display='none'">`
     :`<div style="width:56px;height:56px;background:#374151;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:22px">📦</div>`;
   return `<div style="background:${bg};border:1px solid ${border};border-radius:10px;padding:12px;${leida}">
     <div style="display:flex;gap:10px;align-items:flex-start">
@@ -3810,6 +3816,46 @@ setInterval(_poll,15000);
 document.addEventListener('click',()=>{
   if(!_audio_ctx)_audio_ctx=new(window.AudioContext||window.webkitAudioContext)();
 },{once:true});
+
+// ── LIGHTBOX — ampliar imagen al hacer clic ───────────────────────────────
+function abrirLightbox(url, titulo) {
+  // Crear overlay si no existe
+  let lb = document.getElementById('lb-overlay');
+  if (!lb) {
+    lb = document.createElement('div');
+    lb.id = 'lb-overlay';
+    lb.style.cssText = [
+      'position:fixed','top:0','left:0','width:100%','height:100%',
+      'background:rgba(0,0,0,.88)','display:flex','flex-direction:column',
+      'align-items:center','justify-content:center',
+      'z-index:9999','cursor:zoom-out','padding:20px','box-sizing:border-box'
+    ].join(';');
+    lb.innerHTML = `
+      <div id="lb-titulo" style="color:#F1F5F9;font-size:14px;font-weight:700;
+           margin-bottom:12px;text-align:center;max-width:90%"></div>
+      <img id="lb-img" src="" alt=""
+           style="max-width:90vw;max-height:80vh;border-radius:12px;
+                  box-shadow:0 8px 40px rgba(0,0,0,.6);object-fit:contain">
+      <div style="color:#64748B;font-size:12px;margin-top:12px">
+        Clic o ESC para cerrar
+      </div>`;
+    lb.addEventListener('click', cerrarLightbox);
+    document.body.appendChild(lb);
+    document.addEventListener('keydown', function(e){
+      if(e.key==='Escape') cerrarLightbox();
+    });
+  }
+  document.getElementById('lb-img').src    = url;
+  document.getElementById('lb-titulo').textContent = titulo || '';
+  lb.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function cerrarLightbox() {
+  const lb = document.getElementById('lb-overlay');
+  if (lb) lb.style.display = 'none';
+  document.body.style.overflow = '';
+}
 </script>
 <!-- ── Buscador de ventas ML ──────────────────────────────────────────────── -->
 <div class="card" style="margin-bottom:20px">
