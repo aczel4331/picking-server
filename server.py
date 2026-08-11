@@ -1177,6 +1177,42 @@ def api_usuarios_editar(usuario_id):
 
 
 
+@app.route("/api/auth/usuarios/<usuario_id>/clave", methods=["PUT"])
+@requiere_api_key
+def api_usuarios_cambiar_clave(usuario_id):
+    """Cambia la clave de un usuario. Admin o supervisor de su tienda."""
+    global _usuarios
+    u = next((x for x in _usuarios
+               if x.get("usuario","").lower() == usuario_id.lower()), None)
+    if not u:
+        return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
+
+    rol_sesion    = (request.headers.get("X-Panel-Rol","") or
+                     session.get("admin_panel_rol",""))
+    cuenta_sesion = (request.headers.get("X-Panel-Cuenta","") or
+                     session.get("admin_panel_cuenta_id",""))
+
+    # Permisos: admin edita cualquiera, supervisor solo operarios de su tienda
+    if rol_sesion == "supervisor":
+        if u.get("rol") != "operario":
+            return jsonify({"ok": False, "msg": "Solo podés editar operarios"}), 403
+        if u.get("cuenta_id","") != cuenta_sesion:
+            return jsonify({"ok": False, "msg": "Usuario de otra tienda"}), 403
+    elif rol_sesion != "admin":
+        return jsonify({"ok": False, "msg": "Sin permiso"}), 403
+
+    data = request.get_json(silent=True) or {}
+    nueva_clave = (data.get("clave","") or "").strip()
+    if len(nueva_clave) < 4:
+        return jsonify({"ok": False, "msg": "Mínimo 4 caracteres"}), 400
+
+    import hashlib
+    u["clave"] = hashlib.sha256(nueva_clave.encode()).hexdigest()
+    _guardar_usuarios()
+    logger.info(f"[USUARIOS] Clave cambiada: {usuario_id} (por {rol_sesion})")
+    return jsonify({"ok": True, "msg": f"Clave de '{usuario_id}' actualizada"})
+
+
 @app.route("/api/auth/usuarios/<usuario_id>", methods=["DELETE"])
 @requiere_api_key
 def api_usuarios_eliminar(usuario_id):
@@ -2737,22 +2773,34 @@ def admin_usuarios_panel():
             rol_color = "#3B82F6"; rol_emoji = "👤"; rol_label = "Operario"
 
         # El supervisor no puede eliminar otros supervisores ni admins
+        puede_editar   = es_admin or rol == "operario"
         puede_eliminar = es_admin or rol == "operario"
         uname_safe = u.get("usuario","")
+
+        btn_editar = (
+            f"<button onclick=\"editar('{uname_safe}')\" "
+            "style='background:#0EA5E9;color:white;border:none;"
+            "padding:4px 10px;border-radius:6px;cursor:pointer;"
+            "font-size:12px;margin-right:6px'>"
+            "✏ Clave</button>"
+        ) if puede_editar else ""
+
         if puede_eliminar:
             btn_eliminar = (
                 f"<button onclick=\"eliminar('{uname_safe}')\" "
                 "style='background:#EF4444;color:white;border:none;"
-                "padding:4px 12px;border-radius:6px;cursor:pointer'>"
+                "padding:4px 12px;border-radius:6px;cursor:pointer;"
+                "font-size:12px'>"
                 "Eliminar</button>")
         else:
             btn_eliminar = "<span style='color:#334155;font-size:11px'>—</span>"
+
         usuarios_html += f"""<tr>
           <td>{u.get('nombre','')}</td>
           <td><code>{u.get('usuario','')}</code></td>
           <td><code>{u.get('cuenta_id','')}</code></td>
           <td><span style='color:{rol_color};font-weight:700'>{rol_emoji} {rol_label}</span></td>
-          <td>{btn_eliminar}</td></tr>"""
+          <td>{btn_editar}{btn_eliminar}</td></tr>"""
 
     nombre_admin = session.get("admin_panel_usuario", "Admin")
 
@@ -2899,6 +2947,28 @@ async function eliminar(usuario) {
     if (d.ok) location.reload(); else alert('Error: '+d.msg);
   } catch(e) { alert('Error: '+e); }
 }
+
+async function editar(usuario, nombre_actual) {
+  const nueva_clave = prompt('Nueva clave para ' + usuario + ' (mínimo 4 caracteres):');
+  if (!nueva_clave) return;
+  if (nueva_clave.length < 4) { alert('La clave debe tener al menos 4 caracteres'); return; }
+  try {
+    const r = await fetch(BASE+'/api/auth/usuarios/'+usuario+'/clave', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': KEY,
+        'X-Panel-Rol': '{{ "admin" if es_admin else "supervisor" }}',
+        'X-Panel-Cuenta': '{{ cuenta_sesion }}'
+      },
+      body: JSON.stringify({ clave: nueva_clave })
+    });
+    const d = await r.json();
+    if (d.ok) alert('✅ Clave actualizada para ' + usuario);
+    else alert('Error: ' + d.msg);
+  } catch(e) { alert('Error: ' + e); }
+}
+</script>
 
 <style>
 .bell-btn{position:relative;background:#1E293B;border:none;border-radius:8px;
