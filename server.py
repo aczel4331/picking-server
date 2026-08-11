@@ -3730,8 +3730,14 @@ async function _poll_auth() {
           <button onclick="aprobarAuth('${p.token}')"
             style="width:100%;background:#4F46E5;color:white;border:none;
                    padding:9px;border-radius:8px;cursor:pointer;
-                   font-weight:700;font-size:13px">
+                   font-weight:700;font-size:13px;margin-bottom:6px">
             ✅ Autorizar paso a Fase 2
+          </button>
+          <button onclick="rechazarAuth('${p.token}')"
+            style="width:100%;background:#1E293B;color:#94A3B8;border:1px solid #334155;
+                   padding:7px;border-radius:8px;cursor:pointer;
+                   font-size:12px">
+            ✕ Cerrar solicitud
           </button>
         </div>`).join('');
     } else {
@@ -3746,6 +3752,14 @@ async function aprobarAuth(token) {
       {method:'POST',headers:{'X-API-Key':KEY_ALERTAS}});
     const d=await r.json();
     if(d.ok) _poll_auth();
+  } catch(e){}
+}
+
+async function rechazarAuth(token) {
+  try {
+    await fetch(BASE+'/api/auth/rechazar/'+token,
+      {method:'POST',headers:{'X-API-Key':KEY_ALERTAS}});
+    _poll_auth();
   } catch(e){}
 }
 
@@ -4303,6 +4317,16 @@ def api_auth_pendientes():
     """Lista de solicitudes pendientes para el panel web."""
     pendientes = [v for v in _auth_pendientes.values() if not v["aprobado"]]
     return jsonify({"ok": True, "pendientes": pendientes})
+
+
+@app.route("/api/auth/rechazar/<token>", methods=["POST"])
+@requiere_api_key
+def api_auth_rechazar(token):
+    """El supervisor cierra/rechaza una solicitud desde el panel web."""
+    if token in _auth_pendientes:
+        _auth_pendientes.pop(token, None)
+        logger.info(f"[AUTH-REMOTA] Token {token} rechazado/cerrado por panel web")
+    return jsonify({"ok": True})
 
 
 def _cargar_alertas() -> list:
