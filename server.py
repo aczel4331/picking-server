@@ -3666,6 +3666,18 @@ function _card(a) {
           Faltan: <b style="color:${border}">×${a.cantidad}</b>
           ${!esFase2&&a.order_id?'· #'+a.order_id:''}
         </div>
+        ${(a.pedidos_afectados&&a.pedidos_afectados.length>0)?`
+        <div style="margin-top:5px;font-size:10px">
+          <div style="color:#94A3B8;margin-bottom:2px">Pedidos afectados:</div>
+          ${a.pedidos_afectados.slice(0,3).map(p=>`
+            <div style="background:rgba(0,0,0,.3);border-radius:4px;
+                 padding:2px 5px;margin-bottom:2px;color:#CBD5E1">
+              <b style="color:${border}">#${p.order_id}</b>
+              <span style="color:#94A3B8;font-size:9px"> — ${p.contenido||''}</span>
+            </div>`).join('')}
+          ${a.pedidos_afectados.length>3?
+            `<div style="color:#64748B;font-size:9px">+${a.pedidos_afectados.length-3} más</div>`:''}
+        </div>`:''}
         <div style="font-size:10px;color:#6B7280">${a.operario?'👤 '+a.operario+' · ':''}${a.ts?a.ts.slice(11,16):''}</div>
       </div>
     </div>
@@ -4270,18 +4282,19 @@ def api_alertas_sin_stock():
 
     existentes = _cargar_alertas()
     ts   = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    tipo = data.get("tipo","sin_stock")  # "sin_stock" o "faltante_fase2"
+    tipo = data.get("tipo","sin_stock")
     for a in alertas:
         existentes.append({
-            "ts":       ts,
-            "sku":      a.get("sku",""),
-            "nombre":   a.get("nombre",""),
-            "cantidad": a.get("cantidad",1),
-            "img_url":  a.get("img_url",""),
-            "order_id": a.get("order_id",""),
-            "operario": operario,
-            "tipo":     a.get("tipo", tipo),  # tipo por alerta o global
-            "leida":    False,
+            "ts":               ts,
+            "sku":              a.get("sku",""),
+            "nombre":           a.get("nombre",""),
+            "cantidad":         a.get("cantidad",1),
+            "img_url":          a.get("img_url",""),
+            "order_id":         a.get("order_id",""),
+            "operario":         operario,
+            "tipo":             a.get("tipo", tipo),
+            "pedidos_afectados": a.get("pedidos_afectados",[]),
+            "leida":            False,
         })
     # Conservar solo las últimas 200
     if len(existentes) > 200:
