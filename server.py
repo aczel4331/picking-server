@@ -835,10 +835,13 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
         "picked_up","returning_to_sender","returned",
     )
     procesados = marcados_impresos = 0
-    for i, p in enumerate(pedidos_lista[:limite]):
-        # Pausa reducida: 0.3s es suficiente para no saturar
+    # Ordenar: primero los pendientes (no impresos) para detectar cambios antes
+    pedidos_ordenados = sorted(pedidos_lista[:limite],
+                               key=lambda x: (1 if x.get("impreso") else 0))
+    for i, p in enumerate(pedidos_ordenados):
+        # 1s pausa — evita saturar pool (no modificar)
         if i > 0:
-            time.sleep(1.0)  # 1s pausa — evita saturar pool
+            time.sleep(1.0)
         try:
             ship_id = p.get("shipping_id","")
             cuenta  = p.get("_cuenta","cuenta_0")
@@ -999,11 +1002,12 @@ def _sync_pedidos_ml_periodico():
         except Exception as e:
             logger.error(f"[SYNC] Error: {e}")
         ciclo += 1
-        # Horario activo: cada 60s | Fuera: cada 180s (3x menos CPU)
+        # Horario activo: cada 30s para detectar impresos más rápido
+        # Fuera de horario: cada 120s para ahorrar recursos
         import datetime as _dt3
         from datetime import timezone as _tz3, timedelta as _td3
         _h2 = _dt3.datetime.now(_tz3(_td3(hours=-3))).hour
-        time.sleep(60 if 7 <= _h2 < 18 else 180)
+        time.sleep(30 if 7 <= _h2 < 18 else 120)
 
 
 threading.Thread(target=_auto_refresh_loop,  daemon=True).start()
@@ -3171,6 +3175,33 @@ def _guardar_metricas_servidor(data: list):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"[METRICAS] Error guardando: {e}")
+
+
+@app.route("/api/pedidos/estados")
+@requiere_api_key
+def api_pedidos_estados():
+    """
+    Devuelve SOLO el estado de impresos/substatus de cada pedido.
+    Más liviano que el refresh completo — la app lo llama cada 30s
+    para actualizar rápido si ML cambió el estado.
+    """
+    import datetime as _dt
+    from datetime import timezone, timedelta
+    _uy  = timezone(timedelta(hours=-3))
+    _hoy = _dt.datetime.now(_uy).date()
+
+    with _lock:
+        pedidos = [
+            {
+                "order_id":    k,
+                "impreso":     v.get("impreso", False),
+                "substatus":   v.get("substatus",""),
+                "estado_envio":v.get("estado_envio",""),
+            }
+            for k, v in _pedidos_ml.items()
+        ]
+    return jsonify({"ok": True, "pedidos": pedidos,
+                    "ts": _dt.datetime.now().strftime("%H:%M:%S")})
 
 
 @app.route("/api/diagnostico")
