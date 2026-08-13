@@ -4840,4 +4840,7 @@ if __name__ == "__main__":
                   cleanup_interval=5)   # antes 10 — limpiar más seguido
         except ImportError:
             logger.info(f"Servidor iniciado (flask dev) en http://0.0.0.0:{port}")
-            app.run(host="0.0.0.0", port=port, debug=False)
+            app.run(host="0.0.0.0", port=port, debug=False) 
+
+
+            
