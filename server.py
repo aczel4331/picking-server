@@ -1696,6 +1696,23 @@ def api_etiqueta(order_id):
 
 
 def _api_etiqueta_impl(order_id):
+    # ── Buscar primero en caché local /data/etiquetas/ ─────────────────────
+    # Si ya fue generada antes, devolverla sin llamar a ML
+    _cached_path = os.path.join(ETIQUETAS_DIR, f"{order_id}.pdf")
+    if os.path.exists(_cached_path):
+        try:
+            with open(_cached_path, "rb") as _fc:
+                _pdf_cached = _fc.read()
+            if _pdf_cached and b"%PDF" in _pdf_cached[:20]:
+                logger.info(f"[ETIQUETA] #{order_id} servida desde caché local")
+                return Response(_pdf_cached, status=200,
+                                mimetype="application/pdf",
+                                headers={"Content-Disposition":
+                                         f"inline; filename=etiqueta_{order_id}.pdf",
+                                         "X-Cache": "HIT"})
+        except Exception as _ec:
+            logger.debug(f"[ETIQUETA] Error leyendo caché {order_id}: {_ec}")
+
     # Leer config del body (puede incluir shipping_id directo)
     body_data = {}
     try:
