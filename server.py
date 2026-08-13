@@ -2604,9 +2604,10 @@ def api_skus_limpiar():
 # API IMAGEN SKU
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.route("/api/imagen-sku/<sku>")
+@app.route("/api/imagen-sku/<path:sku>")
 def api_imagen_sku(sku):
-    sku = str(sku).strip().upper()
+    from urllib.parse import unquote
+    sku = unquote(str(sku)).strip().upper()
     if not sku:
         return jsonify({"ok": False, "existe": False, "sku": sku, "imagen_url": None}), 400
     try:
