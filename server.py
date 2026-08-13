@@ -116,6 +116,8 @@ USUARIOS_PATH  = os.path.join(DATA_DIR, "usuarios.json")
 METRICAS_PATH   = os.path.join(DATA_DIR, "metricas.json")
 CONFIG_APP_PATH  = os.path.join(DATA_DIR, "config_app.json")
 ALERTAS_PATH     = os.path.join(DATA_DIR, "alertas_sin_stock.json")
+ETIQUETAS_DIR    = os.path.join(DATA_DIR, "etiquetas")
+os.makedirs(ETIQUETAS_DIR, exist_ok=True)
 
 RAILWAY_API_TOKEN  = os.environ.get("RAILWAY_API_TOKEN", "")
 RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID", "")
@@ -1809,6 +1811,35 @@ def _api_etiqueta_impl(order_id):
             logger.debug(f"[ETIQUETA] No se pudo fusionar config Railway: {e}")
 
         pdf_final = _aplicar_personalizacion_etiqueta(pdf_content, config)
+
+        # Guardar en /data/etiquetas/ con metadata para el panel web
+        try:
+            import datetime as _dt_etq
+            _etq_path = os.path.join(ETIQUETAS_DIR, f"{real_oid}.pdf")
+            with open(_etq_path, "wb") as _f_etq:
+                _f_etq.write(pdf_final)
+
+            # Guardar metadata (nombre comprador, canal, fecha, shipping_id)
+            _meta_path = os.path.join(ETIQUETAS_DIR, f"{real_oid}.json")
+            _logistica = (pedido.get("logistica","") or "").lower()
+            _canal     = "colecta" if "cross_docking" in _logistica else "flex"
+            _meta = {
+                "order_id":    real_oid,
+                "shipping_id": shipping_id,
+                "comprador":   comprador,
+                "canal":       _canal,
+                "logistica":   _logistica,
+                "items":       items_txt,
+                "ts":          _dt_etq.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "fecha":       pedido.get("fecha",""),
+                "fecha_cierre":pedido.get("fecha_cierre",""),
+            }
+            with open(_meta_path, "w", encoding="utf-8") as _fm:
+                json.dump(_meta, _fm, ensure_ascii=False)
+            logger.info(f"[ETIQUETA] Guardada en /data/etiquetas/{real_oid}.pdf")
+        except Exception as _e_save:
+            logger.debug(f"[ETIQUETA] No se pudo guardar en /data: {_e_save}")
+
         return Response(pdf_final, status=200, mimetype="application/pdf",
                         headers={"Content-Disposition": f"inline; filename=etiqueta_{shipping_id}.pdf"})
 
@@ -1839,6 +1870,163 @@ def _api_etiqueta_impl(order_id):
         f"<b>Pedido:</b> #{real_oid} — {comprador}<br><b>Productos:</b> {items_txt}<br>"
         f"<b>Shipping:</b> {shipping_id}<br><b>Estado ML:</b> {estado}/{substatus or '-'}<br>"
         f"<b>HTTP:</b> {last_status}<br><br>{desc}{btn_alt}"), 200
+
+
+@app.route("/etiquetas")
+def panel_etiquetas():
+    """Panel web para ver y descargar etiquetas guardadas."""
+    # Verificar sesión
+    key = session.get("admin_panel_key","")
+    if not key or key not in {API_KEY,"everest2024","everest2025"}:
+        return redirect("/admin")
+
+    # Leer todas las etiquetas guardadas
+    etiquetas = []
+    try:
+        for fname in sorted(os.listdir(ETIQUETAS_DIR), reverse=True):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(ETIQUETAS_DIR, fname),
+                          encoding="utf-8") as f:
+                    meta = json.load(f)
+                # Verificar que el PDF existe
+                pdf_path = os.path.join(ETIQUETAS_DIR,
+                                        f"{meta['order_id']}.pdf")
+                meta["tiene_pdf"] = os.path.exists(pdf_path)
+                etiquetas.append(meta)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # HTML del panel
+    filas_html = ""
+    for e in etiquetas:
+        canal     = e.get("canal","flex")
+        canal_c   = "#8B5CF6" if canal == "flex" else "#2563EB"
+        canal_txt = "⚡ Flex" if canal == "flex" else "🚚 Colecta"
+        pdf_btn   = (
+            f'<a href="/api/etiqueta/{e["order_id"]}/guardada" '
+            f'target="_blank" style="background:#3B82F6;color:white;'
+            f'padding:4px 10px;border-radius:6px;text-decoration:none;'
+            f'font-size:12px;font-weight:700">📄 Ver</a>'
+            if e.get("tiene_pdf") else
+            '<span style="color:#334155;font-size:11px">Sin PDF</span>'
+        )
+        filas_html += f"""
+        <tr data-canal="{canal}"
+            data-order="{e.get('order_id','')}">
+          <td style="font-size:12px;color:#64748B">{e.get('ts','')}</td>
+          <td><span style="color:{canal_c};font-weight:700">{canal_txt}</span></td>
+          <td style="font-weight:700">#{e.get('order_id','')}</td>
+          <td style="color:#64748B;font-size:11px">{e.get('shipping_id','')}</td>
+          <td style="font-weight:600">{e.get('comprador','—')}</td>
+          <td style="font-size:11px;color:#94A3B8;max-width:200px;
+                     overflow:hidden;text-overflow:ellipsis">
+            {e.get('items','')}</td>
+          <td>{pdf_btn}</td>
+        </tr>"""
+
+    return render_template_string("""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Logibot — Etiquetas</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:20px}
+.card{background:#1E293B;border-radius:12px;padding:20px;margin-bottom:20px}
+h1{font-size:22px;font-weight:800;color:#38BDF8;margin-bottom:4px}
+h2{font-size:15px;font-weight:700;color:#94A3B8;margin-bottom:16px}
+table{width:100%;border-collapse:collapse}
+th{background:#0F172A;padding:10px 8px;text-align:left;font-size:12px;
+   color:#64748B;font-weight:600;border-bottom:1px solid #334155}
+td{padding:10px 8px;border-bottom:1px solid #1E293B;vertical-align:middle}
+tr:hover td{background:rgba(255,255,255,.03)}
+input,select{background:#0F172A;border:1px solid #334155;color:#F1F5F9;
+  border-radius:8px;padding:8px 12px;font-size:13px;outline:none}
+.nav{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;align-items:center}
+.nav a{background:#1E293B;color:#94A3B8;padding:8px 16px;border-radius:8px;
+       text-decoration:none;font-size:13px;font-weight:600}
+.nav a:hover{background:#334155;color:#F1F5F9}
+.nav a.active{background:#3B82F6;color:white}
+</style></head><body>
+
+<div class="nav">
+  <a href="/admin/usuarios">👥 Usuarios</a>
+  <a href="/estadisticas">📊 Estadísticas</a>
+  <a href="/config">⚙ Config</a>
+  <a href="/etiquetas">🏷 Etiquetas</a>
+  <a href="/etiquetas" class="active">🏷 Etiquetas</a>
+  <a href="/admin" style="margin-left:auto">🔒 Cerrar sesión</a>
+</div>
+
+<div class="card">
+  <h1>🏷 Etiquetas generadas</h1>
+  <h2>PDFs guardados en el servidor — buscá por número de venta</h2>
+
+  <!-- Filtros -->
+  <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+    <input type="text" id="buscador"
+           placeholder="🔍 Número de venta o comprador..."
+           oninput="filtrar()"
+           style="flex:1;min-width:200px">
+    <select id="filtro-canal" onchange="filtrar()">
+      <option value="todos">Todos los canales</option>
+      <option value="flex">⚡ Flex</option>
+      <option value="colecta">🚚 Colecta</option>
+    </select>
+    <span id="contador" style="color:#64748B;font-size:13px;
+          align-self:center"></span>
+  </div>
+
+  <div style="overflow-x:auto">
+  <table id="tabla-etiq">
+    <thead><tr>
+      <th>Fecha/Hora</th><th>Canal</th><th>N° Venta</th>
+      <th>Shipping ID</th><th>Comprador</th><th>Productos</th>
+      <th>Etiqueta</th>
+    </tr></thead>
+    <tbody id="tbody">{{ filas_html | safe }}</tbody>
+  </table>
+  </div>
+</div>
+
+<script>
+function filtrar() {
+  const q      = document.getElementById('buscador').value.toLowerCase().trim();
+  const canal  = document.getElementById('filtro-canal').value;
+  const filas  = document.querySelectorAll('#tbody tr');
+  let vis = 0;
+  filas.forEach(tr => {
+    const order  = (tr.dataset.order  || '').toLowerCase();
+    const canalF = (tr.dataset.canal  || '');
+    const txt    = tr.textContent.toLowerCase();
+    const okQ    = !q || order.includes(q) || txt.includes(q);
+    const okC    = canal === 'todos' || canalF === canal;
+    tr.style.display = (okQ && okC) ? '' : 'none';
+    if (okQ && okC) vis++;
+  });
+  document.getElementById('contador').textContent =
+    vis + ' etiqueta' + (vis !== 1 ? 's' : '');
+}
+filtrar();
+</script>
+</body></html>""", filas_html=filas_html)
+
+
+@app.route("/api/etiqueta/<order_id>/guardada")
+def api_etiqueta_guardada(order_id):
+    """Sirve el PDF guardado en /data/etiquetas/."""
+    order_id = str(order_id).strip()
+    pdf_path = os.path.join(ETIQUETAS_DIR, f"{order_id}.pdf")
+    if not os.path.exists(pdf_path):
+        return f"Etiqueta #{order_id} no encontrada en el servidor", 404
+    with open(pdf_path, "rb") as f:
+        pdf = f.read()
+    return Response(pdf, status=200, mimetype="application/pdf",
+                    headers={"Content-Disposition":
+                             f"inline; filename=etiqueta_{order_id}.pdf"})
 
 
 @app.route("/api/etiqueta/<order_id>/descargar")
@@ -2858,6 +3046,9 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
     <a href="/config" style="background:#1E3A5F;color:#A78BFA;
        text-decoration:none;padding:6px 14px;border-radius:8px;
        font-size:12px;font-weight:600">⚙ Config</a>
+  <a href="/etiquetas" style="background:#1E293B;color:#94A3B8;padding:8px 16px;
+     border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">
+     🏷 Etiquetas</a>
     <a href="/estadisticas" id="bell-btn" class="bell-btn"
        title="Alertas sin stock">
       🔔
