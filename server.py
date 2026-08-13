@@ -1704,6 +1704,34 @@ def _api_etiqueta_impl(order_id):
             with open(_cached_path, "rb") as _fc:
                 _pdf_cached = _fc.read()
             if _pdf_cached and b"%PDF" in _pdf_cached[:20]:
+                # Verificar si falta el JSON de metadata — generarlo si no existe
+                _meta_path = os.path.join(ETIQUETAS_DIR, f"{order_id}.json")
+                if not os.path.exists(_meta_path):
+                    try:
+                        import datetime as _dt_chk
+                        with _lock:
+                            _ped_chk = _pedidos_ml.get(str(order_id), {})
+                        _log_chk  = (_ped_chk.get("logistica","") or "").lower()
+                        _meta_chk = {
+                            "order_id":    str(order_id),
+                            "shipping_id": _ped_chk.get("shipping_id",""),
+                            "comprador":   _ped_chk.get("comprador",""),
+                            "canal":       "colecta" if "cross_docking" in _log_chk else "flex",
+                            "logistica":   _log_chk,
+                            "items":       ", ".join(
+                                f"{it.get('titulo','')[:30]}×{it.get('cantidad',1)}"
+                                for it in _ped_chk.get("items",[])
+                            ),
+                            "ts":          _dt_chk.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "fecha":       _ped_chk.get("fecha",""),
+                            "fecha_cierre":_ped_chk.get("fecha_cierre",""),
+                        }
+                        with open(_meta_path, "w", encoding="utf-8") as _fm:
+                            json.dump(_meta_chk, _fm, ensure_ascii=False)
+                        logger.info(f"[ETIQUETA] JSON metadata generado para #{order_id}")
+                    except Exception as _em:
+                        logger.debug(f"[ETIQUETA] No se pudo generar metadata: {_em}")
+
                 logger.info(f"[ETIQUETA] #{order_id} servida desde caché local")
                 return Response(_pdf_cached, status=200,
                                 mimetype="application/pdf",
