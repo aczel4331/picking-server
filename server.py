@@ -2082,8 +2082,8 @@ input,select{background:#0F172A;border:1px solid #334155;color:#F1F5F9;
   <h1>🏷 Etiquetas generadas</h1>
   <h2>PDFs guardados en el servidor — buscá por número de venta</h2>
 
-  <!-- Filtros -->
-  <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+  <!-- Filtros y descarga ZIP -->
+  <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
     <input type="text" id="buscador"
            placeholder="🔍 Número de venta o comprador..."
            oninput="filtrar()"
@@ -2095,6 +2095,25 @@ input,select{background:#0F172A;border:1px solid #334155;color:#F1F5F9;
     </select>
     <span id="contador" style="color:#64748B;font-size:13px;
           align-self:center"></span>
+  </div>
+  <!-- Botones descarga ZIP -->
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+    <button onclick="descargarZip('todos')"
+      style="background:#334155;color:#F1F5F9;border:none;padding:9px 16px;
+             border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">
+      📦 Descargar todo (ZIP)
+    </button>
+    <button onclick="descargarZip('flex')"
+      style="background:#7C3AED;color:white;border:none;padding:9px 16px;
+             border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">
+      ⚡ Descargar Flex (ZIP)
+    </button>
+    <button onclick="descargarZip('colecta')"
+      style="background:#2563EB;color:white;border:none;padding:9px 16px;
+             border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">
+      🚚 Descargar Colecta (ZIP)
+    </button>
+    <span id="msg-zip" style="color:#94A3B8;font-size:12px;align-self:center"></span>
   </div>
 
   <div style="overflow-x:auto">
@@ -2110,6 +2129,31 @@ input,select{background:#0F172A;border:1px solid #334155;color:#F1F5F9;
 </div>
 
 <script>
+function descargarZip(canal) {
+  const msg = document.getElementById('msg-zip');
+  msg.textContent = '⏳ Generando ZIP...';
+  const KEY = '""" + (API_KEY or "everest2024") + """';
+  const url = BASE + '/api/etiquetas/descargar-zip?canal=' + canal + '&key=' + KEY;
+  fetch(url)
+    .then(r => {
+      if (!r.ok) return r.json().then(d => { throw new Error(d.msg||'Error'); });
+      return r.blob();
+    })
+    .then(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      const ts = new Date().toISOString().slice(0,16).replace('T','_').replace(':','');
+      a.download = 'etiquetas_' + canal + '_' + ts + '.zip';
+      a.click();
+      msg.textContent = '✅ ZIP descargado';
+      setTimeout(() => msg.textContent = '', 3000);
+    })
+    .catch(e => {
+      msg.textContent = '❌ ' + e.message;
+      setTimeout(() => msg.textContent = '', 4000);
+    });
+}
+
 function filtrar() {
   const q      = document.getElementById('buscador').value.toLowerCase().trim();
   const canal  = document.getElementById('filtro-canal').value;
@@ -2361,6 +2405,72 @@ def _procesar_notificacion_shipment(shipment_id, user_id):
 # ═══════════════════════════════════════════════════════════════════════════════
 # API CACHE, TOKENS, PICKING
 # ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/etiquetas/descargar-zip")
+@requiere_api_key
+def api_etiquetas_zip():
+    """
+    Genera un ZIP con todos los PDFs de etiquetas del canal seleccionado.
+    Parámetros: ?canal=flex|colecta|todos
+    """
+    import zipfile, io, datetime as _dt
+    canal_filtro = request.args.get("canal","todos").lower().strip()
+
+    # Leer metadata de todas las etiquetas
+    pdfs_incluidos = []
+    try:
+        for fname in sorted(os.listdir(ETIQUETAS_DIR)):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                meta_path = os.path.join(ETIQUETAS_DIR, fname)
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
+                canal = meta.get("canal","flex")
+                if canal_filtro != "todos" and canal != canal_filtro:
+                    continue
+                pdf_path = os.path.join(ETIQUETAS_DIR,
+                                        f"{meta['order_id']}.pdf")
+                if os.path.exists(pdf_path):
+                    pdfs_incluidos.append({
+                        "path":     pdf_path,
+                        "order_id": meta["order_id"],
+                        "canal":    canal,
+                        "comprador":meta.get("comprador",""),
+                        "ts":       meta.get("ts",""),
+                    })
+            except Exception:
+                continue
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+    if not pdfs_incluidos:
+        return jsonify({"ok": False,
+                        "msg": f"No hay etiquetas de {canal_filtro}"}), 404
+
+    # Generar ZIP en memoria
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for item in pdfs_incluidos:
+            # Nombre legible: canal_comprador_orderid.pdf
+            comprador_clean = (item["comprador"] or "").replace(" ","_")[:20]
+            nombre_zip = (f"{item['canal']}_{comprador_clean}_"
+                          f"{item['order_id']}.pdf")
+            with open(item["path"], "rb") as f:
+                zf.writestr(nombre_zip, f.read())
+
+    zip_buffer.seek(0)
+    ts_now   = _dt.datetime.now().strftime("%Y-%m-%d_%H%M")
+    zip_name = f"etiquetas_{canal_filtro}_{ts_now}.zip"
+    logger.info(f"[ETIQUETAS-ZIP] {len(pdfs_incluidos)} PDFs → {zip_name}")
+
+    return Response(
+        zip_buffer.read(),
+        status=200,
+        mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={zip_name}"}
+    )
+
 
 @app.route("/api/etiquetas_cache")
 def api_etiquetas_cache():
