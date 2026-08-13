@@ -1875,10 +1875,10 @@ def _api_etiqueta_impl(order_id):
 @app.route("/etiquetas")
 def panel_etiquetas():
     """Panel web para ver y descargar etiquetas guardadas."""
-    # Verificar sesión
-    key = session.get("admin_panel_key","")
-    if not key or key not in {API_KEY,"everest2024","everest2025"}:
-        return redirect("/admin")
+    # Verificar sesión — usar admin_panel_rol que sí se guarda al loguearse
+    rol = session.get("admin_panel_rol","")
+    if not rol:
+        return redirect("/admin/usuarios")
 
     # Leer todas las etiquetas guardadas
     etiquetas = []
@@ -2906,6 +2906,12 @@ input:focus{border-color:#3B82F6}
 </div>
 </body>
 </html>"""
+
+
+@app.route("/admin")
+def admin_redirect():
+    """Redirige /admin a /admin/usuarios."""
+    return redirect("/admin/usuarios")
 
 
 @app.route("/admin/logout")
@@ -4840,7 +4846,4 @@ if __name__ == "__main__":
                   cleanup_interval=5)   # antes 10 — limpiar más seguido
         except ImportError:
             logger.info(f"Servidor iniciado (flask dev) en http://0.0.0.0:{port}")
-            app.run(host="0.0.0.0", port=port, debug=False) 
-
-
-            
+            app.run(host="0.0.0.0", port=port, debug=False)
