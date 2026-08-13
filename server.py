@@ -117,7 +117,41 @@ METRICAS_PATH   = os.path.join(DATA_DIR, "metricas.json")
 CONFIG_APP_PATH  = os.path.join(DATA_DIR, "config_app.json")
 ALERTAS_PATH     = os.path.join(DATA_DIR, "alertas_sin_stock.json")
 ETIQUETAS_DIR    = os.path.join(DATA_DIR, "etiquetas")
+LOTES_DIR        = os.path.join(DATA_DIR, "lotes_backup")
 os.makedirs(ETIQUETAS_DIR, exist_ok=True)
+os.makedirs(LOTES_DIR, exist_ok=True)
+
+
+def _limpiar_archivos_viejos():
+    """
+    Borra automáticamente archivos con más de 5 días en:
+    - /data/etiquetas/ (PDFs y JSONs de etiquetas)
+    - /data/lotes_backup/ (backups de lotes)
+    Se ejecuta al iniciar el servidor y cada 24 horas.
+    """
+    import datetime as _dt, threading as _th
+    def _borrar():
+        while True:
+            try:
+                _limite = _dt.datetime.now() - _dt.timedelta(days=5)
+                for _dir in [ETIQUETAS_DIR, LOTES_DIR]:
+                    for _fname in os.listdir(_dir):
+                        _fpath = os.path.join(_dir, _fname)
+                        try:
+                            _mtime = _dt.datetime.fromtimestamp(os.path.getmtime(_fpath))
+                            if _mtime < _limite:
+                                os.remove(_fpath)
+                                logger.info(f"[LIMPIEZA] Borrado: {_fpath}")
+                        except Exception as _ef:
+                            logger.debug(f"[LIMPIEZA] Error borrando {_fpath}: {_ef}")
+            except Exception as _e:
+                logger.debug(f"[LIMPIEZA] Error general: {_e}")
+            import time as _t; _t.sleep(86400)  # cada 24 horas
+    _th.Thread(target=_borrar, daemon=True, name="LimpiezaArchivos").start()
+    logger.info("[LIMPIEZA] Hilo de limpieza automática iniciado (cada 24h, >5 días)")
+
+
+_limpiar_archivos_viejos()
 
 RAILWAY_API_TOKEN  = os.environ.get("RAILWAY_API_TOKEN", "")
 RAILWAY_PROJECT_ID = os.environ.get("RAILWAY_PROJECT_ID", "")
@@ -2060,7 +2094,55 @@ filtrar();
 </body></html>""", filas_html=filas_html)
 
 
-@app.route("/api/etiqueta/<order_id>/guardada")
+@app.route("/api/lote-backup", methods=["POST"])
+@requiere_api_key
+def api_lote_backup():
+    """
+    Recibe el lote_backup.json desde la app de escritorio
+    y lo guarda en /data/lotes_backup/{ts}_{canal}.json.
+    Se borra automáticamente después de 5 días.
+    """
+    import datetime as _dt
+    try:
+        data = request.get_json(silent=True) or {}
+        if not data:
+            return jsonify({"ok": False, "msg": "Sin datos"}), 400
+
+        canal = data.get("canal", "lote")
+        ts    = _dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        fname = f"{ts}_{canal}.json"
+        fpath = os.path.join(LOTES_DIR, fname)
+
+        with open(fpath, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+
+        logger.info(f"[LOTE-BACKUP] Guardado: {fname} "
+                    f"({len(data.get('pedidos',{}))} pedidos)")
+        return jsonify({"ok": True, "archivo": fname})
+    except Exception as e:
+        logger.error(f"[LOTE-BACKUP] Error: {e}")
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+@app.route("/api/lote-backup/ultimo", methods=["GET"])
+@requiere_api_key
+def api_lote_backup_ultimo():
+    """Devuelve el último lote_backup guardado (para recuperación)."""
+    try:
+        archivos = sorted([
+            f for f in os.listdir(LOTES_DIR) if f.endswith(".json")
+        ], reverse=True)
+        if not archivos:
+            return jsonify({"ok": True, "backup": None})
+        ultimo = archivos[0]
+        with open(os.path.join(LOTES_DIR, ultimo), encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify({"ok": True, "backup": data, "archivo": ultimo})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+@app.route("/api/etiqueta/<order_id>/guardada", methods=["GET","POST"])
 def api_etiqueta_guardada(order_id):
     """Sirve el PDF guardado en /data/etiquetas/."""
     order_id = str(order_id).strip()
