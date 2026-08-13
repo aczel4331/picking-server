@@ -1917,33 +1917,45 @@ def _api_etiqueta_impl(order_id):
 
         pdf_final = _aplicar_personalizacion_etiqueta(pdf_content, config)
 
+        logger.info(f"[ETIQUETA] PDF obtenido para #{real_oid} "
+                    f"({len(pdf_final)} bytes) — guardando en /data/etiquetas/")
+
         # Guardar en /data/etiquetas/ con metadata para el panel web
         try:
             import datetime as _dt_etq
+            os.makedirs(ETIQUETAS_DIR, exist_ok=True)  # por si acaso
             _etq_path = os.path.join(ETIQUETAS_DIR, f"{real_oid}.pdf")
             with open(_etq_path, "wb") as _f_etq:
                 _f_etq.write(pdf_final)
+            logger.info(f"[ETIQUETA] ✅ PDF guardado: {_etq_path}")
 
             # Guardar metadata (nombre comprador, canal, fecha, shipping_id)
             _meta_path = os.path.join(ETIQUETAS_DIR, f"{real_oid}.json")
-            _logistica = (pedido.get("logistica","") or "").lower()
-            _canal     = "colecta" if "cross_docking" in _logistica else "flex"
+            _pedido_safe = pedido or {}
+            _logistica = (_pedido_safe.get("logistica","") or "").lower()
+            # Detectar canal por logistica O por shipping_id de Colecta
+            _canal = "colecta" if "cross_docking" in _logistica else "flex"
             _meta = {
                 "order_id":    real_oid,
                 "shipping_id": shipping_id,
-                "comprador":   comprador,
+                "comprador":   comprador or _pedido_safe.get("comprador",""),
                 "canal":       _canal,
                 "logistica":   _logistica,
-                "items":       items_txt,
+                "items":       items_txt or " | ".join(
+                    it.get("titulo","") or it.get("sku","")
+                    for it in _pedido_safe.get("items",[])[:3]
+                ),
                 "ts":          _dt_etq.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "fecha":       pedido.get("fecha",""),
-                "fecha_cierre":pedido.get("fecha_cierre",""),
+                "fecha":       _pedido_safe.get("fecha",""),
+                "fecha_cierre":_pedido_safe.get("fecha_cierre",""),
             }
             with open(_meta_path, "w", encoding="utf-8") as _fm:
                 json.dump(_meta, _fm, ensure_ascii=False)
             logger.info(f"[ETIQUETA] Guardada en /data/etiquetas/{real_oid}.pdf")
         except Exception as _e_save:
-            logger.debug(f"[ETIQUETA] No se pudo guardar en /data: {_e_save}")
+            import traceback as _tb_save
+            logger.error(f"[ETIQUETA] ❌ No se pudo guardar en /data: {_e_save}\n"
+                         f"{_tb_save.format_exc()}")
 
         return Response(pdf_final, status=200, mimetype="application/pdf",
                         headers={"Content-Disposition": f"inline; filename=etiqueta_{shipping_id}.pdf"})
