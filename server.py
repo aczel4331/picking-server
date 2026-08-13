@@ -1854,17 +1854,43 @@ def _api_etiqueta_impl(order_id):
                                "Reconecta la cuenta MercadoLibre."), 401
 
     pdf_content = None; last_status = 0
-    for rtype in ["pdf","pdf2"]:
+    for rtype in ["pdf","pdf2","zpl"]:
         try:
             r = requests.get(f"{ML_API_URL}/shipment_labels",
                              headers={"Authorization": f"Bearer {at}"},
                              params={"shipment_ids": shipping_id, "response_type": rtype},
                              timeout=15)
             last_status = r.status_code
-            if r.status_code == 200 and r.content[:4] == b"%PDF":
-                pdf_content = r.content; break
+            content_type = r.headers.get("Content-Type","")
+            if r.status_code == 200 and b"%PDF" in r.content[:20]:
+                pdf_content = r.content
+                break
+            elif r.status_code != 200:
+                logger.warning(f"[ETIQUETA] ML devolvio {r.status_code} "
+                               f"para shipping_id={shipping_id} rtype={rtype}")
+            else:
+                # ML devolvio HTML en vez de PDF — loguear para diagnóstico
+                logger.warning(f"[ETIQUETA] ML devolvio HTML para "
+                               f"shipping_id={shipping_id} rtype={rtype} "
+                               f"status={r.status_code} "
+                               f"primeros_bytes={r.content[:80]!r}")
         except Exception as e:
             logger.debug(f"[ETIQUETA] Excepcion {rtype}: {e}")
+
+    # Si no se pudo obtener el PDF, intentar con el pack_id si existe
+    if not pdf_content and pedido and pedido.get("pack_id"):
+        pack_id = str(pedido["pack_id"])
+        logger.info(f"[ETIQUETA] Intentando con pack_id={pack_id}")
+        try:
+            r_pack = requests.get(f"{ML_API_URL}/shipment_labels",
+                                  headers={"Authorization": f"Bearer {at}"},
+                                  params={"shipment_ids": pack_id, "response_type": "pdf"},
+                                  timeout=15)
+            if r_pack.status_code == 200 and b"%PDF" in r_pack.content[:20]:
+                pdf_content = r_pack.content
+                logger.info(f"[ETIQUETA] OK con pack_id={pack_id}")
+        except Exception as e:
+            logger.debug(f"[ETIQUETA] Error con pack_id: {e}")
 
     if pdf_content:
         # Usar el body_data ya leído (evitar leer el stream dos veces)
