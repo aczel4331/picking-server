@@ -201,12 +201,25 @@ def _hora_uruguay():
     from datetime import timezone
     return datetime.now(timezone(timedelta(hours=-3)))
 
+def _en_modo_descanso() -> bool:
+    """
+    True si estamos fuera del horario laboral (19:00 → 06:45 UY).
+    Durante el descanso el servidor reduce al mínimo el consumo:
+    - No consulta ML
+    - No sincroniza estados
+    - No procesa métricas
+    """
+    ahora = _hora_uruguay()
+    hora  = ahora.hour
+    mins  = ahora.minute
+    return hora >= 19 or hora < 6 or (hora == 6 and mins < 45)
+
+
 def _sync_pausado() -> bool:
     ahora    = _hora_uruguay()
     hora     = ahora.hour
     mins     = ahora.minute
-    es_noche = hora >= 19 or hora < 6 or (hora == 6 and mins < 45)
-    if es_noche:
+    if _en_modo_descanso():
         return True
     if hora == 6 and mins >= 45:
         return False
@@ -1002,6 +1015,37 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
         logger.info(f"[PEDIDOS] {marcados_impresos} nuevos impresos de {procesados} consultados")
 
 
+def _mantener_tokens_vivos():
+    """
+    Hilo dedicado que renueva los tokens de ML periódicamente.
+    Corre SIEMPRE — incluso en modo descanso — para que el token nunca expire.
+    Los tokens de ML duran 6 horas; renovamos cada 3 horas por seguridad.
+    Consumo mínimo: 1 request cada 3h por cuenta.
+    """
+    import time as _t_tok
+    while True:
+        try:
+            for cid in list(_cuentas.keys()):
+                tok = _cuentas.get(cid, {})
+                if not tok.get("refresh_token"):
+                    continue
+                exp = tok.get("expires_at")
+                # Renovar si faltan menos de 90 minutos para expirar
+                if exp and isinstance(exp, datetime):
+                    faltan = (exp - datetime.now()).total_seconds()
+                    if faltan < 5400:   # 90 min
+                        logger.info(f"[TOKEN] Renovando {cid} "
+                                    f"(faltan {int(faltan//60)} min)")
+                        _renovar_token_cuenta(cid)
+                else:
+                    # Sin fecha de expiración conocida → renovar por las dudas
+                    _renovar_token_cuenta(cid)
+        except Exception as e:
+            logger.error(f"[TOKEN] Error en mantenimiento: {e}")
+        # Verificar cada 30 minutos — muy poco consumo
+        _t_tok.sleep(1800)
+
+
 def _sync_pedidos_ml_periodico():
     """
     Sincroniza estado de envíos con ML.
@@ -1043,12 +1087,12 @@ def _sync_pedidos_ml_periodico():
         except Exception as e:
             logger.error(f"[SYNC] Error: {e}")
         ciclo += 1
-        # Horario activo: cada 30s para detectar impresos más rápido
-        # Fuera de horario: cada 120s para ahorrar recursos
-        import datetime as _dt3
-        from datetime import timezone as _tz3, timedelta as _td3
-        _h2 = _dt3.datetime.now(_tz3(_td3(hours=-3))).hour
-        time.sleep(30 if 7 <= _h2 < 18 else 120)
+        # Horario activo (7-19 UY): cada 30s para detectar impresos rápido
+        # Modo descanso (19-6:45): cada 15 minutos — mínimo consumo Railway
+        if _en_modo_descanso():
+            time.sleep(900)   # 15 min en descanso
+        else:
+            time.sleep(30)    # 30s en horario laboral
 
 
 threading.Thread(target=_auto_refresh_loop,  daemon=True).start()
@@ -2655,8 +2699,13 @@ def api_lote_en_vivo():
     """
     Devuelve el estado del lote activo para el panel del supervisor.
     Incluye progreso, últimos escaneos y tiempo estimado basado en histórico.
+    En modo descanso devuelve vacío sin procesar nada (ahorra CPU).
     """
     import datetime as _dt_lv
+
+    # Modo descanso: no hay operación, devolver vacío sin procesar
+    if _en_modo_descanso():
+        return jsonify({"ok": True, "lotes": [], "descanso": True})
 
     lotes_activos = []
     for canal, est in _estados_canal.items():
@@ -5324,6 +5373,10 @@ def _startup():
                 _cuentas[cid] = tok
         threading.Thread(target=_refresh_pedidos_worker,    daemon=True).start()
         threading.Thread(target=_sync_pedidos_ml_periodico, daemon=True).start()
+        # Hilo de mantenimiento de tokens — corre SIEMPRE (incluso en descanso)
+        threading.Thread(target=_mantener_tokens_vivos, daemon=True,
+                         name="TokenKeepAlive").start()
+        logger.info("[TOKEN] Hilo de mantenimiento de tokens iniciado (cada 30min)")
         threading.Thread(target=_warmup_matutino,           daemon=True).start()
         logger.info("[STARTUP] Threads activos: sync ML + warmup 6:45AM")
     else:
