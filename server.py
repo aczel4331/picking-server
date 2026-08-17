@@ -169,6 +169,11 @@ def _estado_vacio():
         "fase": 1, "grupos": [], "colecta": {}, "colecta_completa": False,
         "total_skus": 0, "total_uds": 0, "ultima_actualizacion": "",
         "cargado": False, "pedidos": {}, "etiquetas_impresas": [],
+        # Tracking en vivo para el panel del supervisor
+        "operario":       "",
+        "canal":          "",
+        "inicio_ts":      "",   # ISO datetime cuando se generó el lote
+        "ultimos_scans":  [],   # últimos 5 SKUs escaneados con timestamp
     }
 
 _estados_canal = {
@@ -2588,12 +2593,47 @@ def subir_estado():
     est   = _get_estado(canal)
     with _lock:
         nueva_fase = data.get("fase",1)
+        import datetime as _dt_est
+        # Detectar si es un lote NUEVO (antes no estaba cargado, o cambió el total)
+        es_lote_nuevo = (not est.get("cargado")
+                         or est.get("total_skus",0) != data.get("total_skus",0))
+
         est.update({
             "fase": nueva_fase, "grupos": data.get("grupos",[]),
             "total_skus": data.get("total_skus",0), "total_uds": data.get("total_uds",0),
             "colecta": data.get("colecta",{}), "colecta_completa": data.get("colecta_completa",False),
             "ultima_actualizacion": _ts(), "cargado": True, "canal": canal,
+            "operario": data.get("operario","") or est.get("operario",""),
         })
+        # Marcar el inicio del lote la primera vez
+        if es_lote_nuevo and data.get("total_skus",0) > 0:
+            est["inicio_ts"]     = _dt_est.datetime.now().isoformat()
+            est["ultimos_scans"] = []
+
+        # Registrar últimos escaneos comparando la colecta anterior con la nueva
+        try:
+            colecta_ant = est.get("_colecta_prev", {})
+            colecta_new = data.get("colecta", {})
+            scans = est.get("ultimos_scans", [])
+            for sku, qty in colecta_new.items():
+                if int(qty) > int(colecta_ant.get(sku, 0)):
+                    # Buscar el nombre del SKU en los grupos
+                    nombre = sku
+                    for g in data.get("grupos", []):
+                        for it in g.get("items", []):
+                            if it.get("sku") == sku:
+                                nombre = it.get("nombre","") or sku
+                                break
+                    scans.insert(0, {
+                        "sku":    sku,
+                        "nombre": nombre[:40],
+                        "qty":    qty,
+                        "ts":     _dt_est.datetime.now().strftime("%H:%M:%S"),
+                    })
+            est["ultimos_scans"] = scans[:5]   # solo los últimos 5
+            est["_colecta_prev"] = dict(colecta_new)
+        except Exception as _e_scan:
+            logger.debug(f"[LOTE] Error registrando scans: {_e_scan}")
         if "pedidos" in data and isinstance(data["pedidos"], dict):
             est["pedidos"] = data["pedidos"]
         if nueva_fase == 1 and not data.get("colecta"):
@@ -2607,6 +2647,101 @@ def subir_estado():
     logger.info(f"[LOTE] Canal '{canal}' cargado: {est['total_skus']} SKUs, fase {nueva_fase}")
     return jsonify({"ok": True, "canal": canal,
                     "msg": f"Canal '{canal}': {est['total_skus']} SKUs"})
+
+
+@app.route("/api/lote-en-vivo")
+@requiere_api_key
+def api_lote_en_vivo():
+    """
+    Devuelve el estado del lote activo para el panel del supervisor.
+    Incluye progreso, últimos escaneos y tiempo estimado basado en histórico.
+    """
+    import datetime as _dt_lv
+
+    lotes_activos = []
+    for canal, est in _estados_canal.items():
+        if not est.get("cargado") or est.get("total_skus", 0) == 0:
+            continue
+
+        colecta   = est.get("colecta", {})
+        grupos    = est.get("grupos", [])
+        fase      = est.get("fase", 1)
+
+        # Contar SKUs completados
+        total_skus = 0
+        skus_ok    = 0
+        faltantes  = []
+        for g in grupos:
+            for it in g.get("items", []):
+                total_skus += 1
+                sku = it.get("sku","")
+                req = int(it.get("req", 1))
+                col = int(colecta.get(sku, 0))
+                if col >= req:
+                    skus_ok += 1
+                else:
+                    faltantes.append({
+                        "sku":    sku,
+                        "nombre": (it.get("nombre","") or sku)[:35],
+                        "falta":  req - col,
+                    })
+
+        pct = round(skus_ok / total_skus * 100) if total_skus else 0
+
+        # Tiempo transcurrido
+        inicio_ts = est.get("inicio_ts", "")
+        mins_transcurridos = 0
+        if inicio_ts:
+            try:
+                inicio = _dt_lv.datetime.fromisoformat(inicio_ts)
+                mins_transcurridos = int(
+                    (_dt_lv.datetime.now() - inicio).total_seconds() // 60)
+            except Exception:
+                pass
+
+        # ── Tiempo estimado basado en histórico de métricas ──────────────
+        est_mins  = 0
+        est_fuente = "sin datos"
+        try:
+            metricas = _cargar_metricas_servidor()
+            # Filtrar lotes del mismo canal con datos válidos
+            similares = [
+                m for m in metricas
+                if m.get("canal") == canal
+                and m.get("duracion_seg", 0) > 60
+                and m.get("n_skus", 0) > 0
+            ]
+            if similares:
+                # Calcular segundos promedio por SKU
+                segs_por_sku = [
+                    m["duracion_seg"] / m["n_skus"]
+                    for m in similares[-20:]   # últimos 20 lotes
+                ]
+                promedio = sum(segs_por_sku) / len(segs_por_sku)
+                est_mins = int((promedio * total_skus) // 60)
+                est_fuente = f"basado en {len(similares[-20:])} lotes previos"
+        except Exception as _e_est:
+            logger.debug(f"[EN-VIVO] Error calculando estimado: {_e_est}")
+
+        lotes_activos.append({
+            "canal":              canal,
+            "operario":           est.get("operario","") or "—",
+            "fase":               fase,
+            "total_skus":         total_skus,
+            "skus_ok":            skus_ok,
+            "pct":                pct,
+            "total_uds":          est.get("total_uds", 0),
+            "mins_transcurridos": mins_transcurridos,
+            "mins_estimados":     est_mins,
+            "est_fuente":         est_fuente,
+            "ultimos_scans":      est.get("ultimos_scans", [])[:5],
+            "faltantes":          faltantes[:8],
+            "n_faltantes":        len(faltantes),
+            "n_pedidos":          len(est.get("pedidos", {})),
+            "ultima_act":         est.get("ultima_actualizacion",""),
+        })
+
+    return jsonify({"ok": True, "lotes": lotes_activos})
 
 
 @app.route("/api/estado")
@@ -4483,6 +4618,137 @@ function cerrarLightbox() {
   document.body.style.overflow = '';
 }
 </script>
+<!-- ── LOTE EN VIVO — panel del supervisor ────────────────────────────────── -->
+<div id="lote-vivo-container" style="margin-bottom:20px;display:none"></div>
+
+<script>
+async function _poll_lote_vivo() {
+  try {
+    const r = await fetch(BASE + '/api/lote-en-vivo', {
+      headers: {'X-API-Key': KEY_ALERTAS}});
+    const d = await r.json();
+    const ct = document.getElementById('lote-vivo-container');
+    if (!d.ok || !d.lotes || d.lotes.length === 0) {
+      ct.style.display = 'none';
+      return;
+    }
+    ct.style.display = 'block';
+    ct.innerHTML = d.lotes.map(L => {
+      const canalColor = L.canal === 'flex' ? '#8B5CF6' : '#2563EB';
+      const canalTxt   = L.canal === 'flex' ? '⚡ Flex' : '🚚 Colecta';
+      const faseTxt    = L.fase === 1 ? 'FASE 1: COLECTA' : 'FASE 2: PACKING';
+      const faseColor  = L.fase === 1 ? '#F59E0B' : '#10B981';
+
+      // Barra de progreso
+      const barra = `
+        <div style="background:#0F172A;border-radius:8px;height:22px;
+             overflow:hidden;position:relative;margin:8px 0">
+          <div style="background:linear-gradient(90deg,${canalColor},${faseColor});
+               height:100%;width:${L.pct}%;transition:width .4s"></div>
+          <div style="position:absolute;inset:0;display:flex;align-items:center;
+               justify-content:center;font-size:12px;font-weight:800;color:#F1F5F9;
+               text-shadow:0 1px 3px rgba(0,0,0,.8)">
+            ${L.skus_ok} / ${L.total_skus} SKUs  ·  ${L.pct}%
+          </div>
+        </div>`;
+
+      // Tiempo estimado
+      let tiempoTxt = '';
+      if (L.mins_estimados > 0) {
+        const restante = Math.max(0, L.mins_estimados - L.mins_transcurridos);
+        const colorT = restante > 0 ? '#94A3B8' : '#F59E0B';
+        tiempoTxt = `
+          <div style="font-size:12px;color:${colorT};margin-top:4px">
+            ⏱ ${L.mins_transcurridos} min transcurridos
+            &nbsp;·&nbsp; estimado ${L.mins_estimados} min
+            ${restante > 0 ? `&nbsp;·&nbsp; <b>~${restante} min restantes</b>` :
+                             '&nbsp;·&nbsp; <b>excedido</b>'}
+          </div>
+          <div style="font-size:10px;color:#475569">${L.est_fuente}</div>`;
+      } else {
+        tiempoTxt = `<div style="font-size:12px;color:#94A3B8;margin-top:4px">
+          ⏱ ${L.mins_transcurridos} min transcurridos</div>`;
+      }
+
+      // Últimos escaneos
+      const scans = (L.ultimos_scans || []).map(s => `
+        <div style="display:flex;gap:8px;align-items:center;padding:3px 0;
+             font-size:11px;color:#CBD5E1">
+          <span style="color:#10B981">✔</span>
+          <code style="color:${canalColor};font-size:10px">${s.sku}</code>
+          <span style="color:#94A3B8;flex:1;overflow:hidden;
+                text-overflow:ellipsis;white-space:nowrap">${s.nombre}</span>
+          <span style="color:#475569;font-size:10px">${s.ts}</span>
+        </div>`).join('') || '<div style="color:#475569;font-size:11px">Sin escaneos aún</div>';
+
+      // Faltantes
+      const falt = (L.faltantes || []).slice(0,5).map(f => `
+        <div style="font-size:11px;color:#94A3B8;padding:2px 0">
+          <code style="color:#F59E0B;font-size:10px">${f.sku}</code>
+          &nbsp;${f.nombre}&nbsp;
+          <b style="color:#EF4444">×${f.falta}</b>
+        </div>`).join('');
+      const faltExtra = L.n_faltantes > 5 ?
+        `<div style="color:#475569;font-size:10px">+${L.n_faltantes-5} más</div>` : '';
+
+      return `
+      <div class="card" style="border-left:4px solid ${canalColor};padding:16px">
+        <div style="display:flex;justify-content:space-between;
+             align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:6px">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span style="background:#EF4444;color:white;font-size:10px;
+                    font-weight:800;padding:2px 8px;border-radius:10px;
+                    animation:pulso 2s infinite">● EN VIVO</span>
+              <span style="font-size:16px;font-weight:800;color:#F1F5F9">
+                👤 ${L.operario}</span>
+              <span style="color:${canalColor};font-weight:700">${canalTxt}</span>
+              <span style="background:${faseColor};color:white;font-size:10px;
+                    font-weight:700;padding:2px 8px;border-radius:6px">
+                ${faseTxt}</span>
+            </div>
+            ${tiempoTxt}
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:22px;font-weight:800;color:${faseColor}">
+              ${L.pct}%</div>
+            <div style="font-size:11px;color:#64748B">
+              ${L.n_pedidos} pedidos · ${L.total_uds} uds</div>
+          </div>
+        </div>
+
+        ${barra}
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;
+             margin-top:10px">
+          <div>
+            <div style="font-size:10px;font-weight:700;color:#64748B;
+                 margin-bottom:4px">ÚLTIMOS ESCANEADOS</div>
+            ${scans}
+          </div>
+          <div>
+            <div style="font-size:10px;font-weight:700;color:#64748B;
+                 margin-bottom:4px">FALTAN (${L.n_faltantes})</div>
+            ${falt || '<div style="color:#10B981;font-size:11px">✅ Todo colectado</div>'}
+            ${faltExtra}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    // silencioso
+  }
+}
+_poll_lote_vivo();
+setInterval(_poll_lote_vivo, 5000);
+</script>
+<style>
+@keyframes pulso {
+  0%,100% { opacity: 1; }
+  50%     { opacity: .4; }
+}
+</style>
+
 <!-- ── Buscador de ventas ML ──────────────────────────────────────────────── -->
 <div class="card" style="margin-bottom:20px">
   <h2>🔍 Buscar número de venta MeLi</h2>
