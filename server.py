@@ -245,7 +245,9 @@ _usuarios            = []   # lista de usuarios cargada desde /data/usuarios.jso
 _pkce_store          = {}
 
 def _ts():
-    return datetime.now().strftime("%d/%m %H:%M:%S")
+    """Timestamp en hora de Uruguay (UTC-3), no la del servidor."""
+    from datetime import timezone
+    return datetime.now(timezone(timedelta(hours=-3))).strftime("%d/%m %H:%M:%S")
 
 # ── Persistencia de tokens ─────────────────────────────────────────────────────
 
@@ -1805,7 +1807,7 @@ def _api_etiqueta_impl(order_id):
                                 f"{it.get('titulo','')[:30]}×{it.get('cantidad',1)}"
                                 for it in _ped_chk.get("items",[])
                             ),
-                            "ts":          _dt_chk.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "ts":          _dt_chk.datetime.now(_dt_chk.timezone(_dt_chk.timedelta(hours=-3))).strftime("%Y-%m-%d %H:%M:%S"),
                             "fecha":       _ped_chk.get("fecha",""),
                             "fecha_cierre":_ped_chk.get("fecha_cierre",""),
                         }
@@ -1994,7 +1996,7 @@ def _api_etiqueta_impl(order_id):
                     it.get("titulo","") or it.get("sku","")
                     for it in _pedido_safe.get("items",[])[:3]
                 ),
-                "ts":          _dt_etq.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ts":          _dt_etq.datetime.now(_dt_etq.timezone(_dt_etq.timedelta(hours=-3))).strftime("%Y-%m-%d %H:%M:%S"),
                 "fecha":       _pedido_safe.get("fecha",""),
                 "fecha_cierre":_pedido_safe.get("fecha_cierre",""),
             }
@@ -2240,7 +2242,7 @@ def api_lote_backup():
             return jsonify({"ok": False, "msg": "Sin datos"}), 400
 
         canal = data.get("canal", "lote")
-        ts    = _dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        ts    = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-3))).strftime("%Y-%m-%d_%H%M%S")
         fname = f"{ts}_{canal}.json"
         fpath = os.path.join(LOTES_DIR, fname)
 
@@ -2509,7 +2511,7 @@ def api_etiquetas_zip():
                 zf.writestr(nombre_zip, f.read())
 
     zip_buffer.seek(0)
-    ts_now   = _dt.datetime.now().strftime("%Y-%m-%d_%H%M")
+    ts_now   = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-3))).strftime("%Y-%m-%d_%H%M")
     zip_name = f"etiquetas_{canal_filtro}_{ts_now}.zip"
     logger.info(f"[ETIQUETAS-ZIP] {len(pdfs_incluidos)} PDFs → {zip_name}")
 
@@ -2572,7 +2574,7 @@ def marcar_impreso(order_id):
             borrado_kb = round(pdf_size / 1024, 1)
             _etiquetas_cache[order_id]["pdf"]        = None
             _etiquetas_cache[order_id]["impreso"]    = True
-            _etiquetas_cache[order_id]["impreso_ts"] = datetime.now().strftime("%d/%m %H:%M:%S")
+            _etiquetas_cache[order_id]["impreso_ts"] = _ts()
     logger.info(f"[CACHE] PDF borrado para {order_id} ({borrado_kb} KB liberados)")
     return jsonify({"ok": True, "liberado_kb": borrado_kb})
 
@@ -2672,7 +2674,7 @@ def subir_estado():
                         "sku":    sku,
                         "nombre": nombre[:40],
                         "qty":    qty,
-                        "ts":     _dt_est.datetime.now().strftime("%H:%M:%S"),
+                        "ts":     _dt_est.datetime.now(_dt_est.timezone(_dt_est.timedelta(hours=-3))).strftime("%H:%M:%S"),
                     })
             est["ultimos_scans"] = scans[:5]   # solo los últimos 5
             est["_colecta_prev"] = dict(colecta_new)
@@ -3257,7 +3259,7 @@ def _descargar_etiqueta_bg(order_id, reintentos=3):
                         "shipping_id": shipping_id,
                         "logistica":   logistic,
                         "estado":      estado,
-                        "ts":          datetime.now().strftime("%d/%m %H:%M:%S"),
+                        "ts":          _ts(),
                         "intentos":    intento + 1,
                     }
                 if order_id in _cola_etiquetas:
@@ -3858,7 +3860,7 @@ def api_pedidos_estados():
             for k, v in _pedidos_ml.items()
         ]
     return jsonify({"ok": True, "pedidos": pedidos,
-                    "ts": _dt.datetime.now().strftime("%H:%M:%S")})
+                    "ts": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-3))).strftime("%H:%M:%S")})
 
 
 @app.route("/api/diagnostico")
@@ -5208,7 +5210,7 @@ def api_auth_solicitar():
     _auth_pendientes[token] = {
         "token":       token,
         "aprobado":    False,
-        "ts":          _dt.datetime.now().strftime("%H:%M:%S"),
+        "ts":          _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-3))).strftime("%H:%M:%S"),
         "operario":    operario,
         "incompletos": incompletos,
     }
