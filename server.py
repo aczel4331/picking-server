@@ -4498,10 +4498,13 @@ function _card(a) {
 
 // ── AUTORIZACIONES — polling cada 5s ──────────────────────────────────────
 async function _poll_auth() {
+  // Ajustar intervalo según modo descanso (se setea abajo)
   try {
     const r = await fetch(BASE+'/api/auth/pendientes',
       {headers:{'X-API-Key':KEY_ALERTAS}});
     const d = await r.json();
+    // Modo descanso: espaciar polling a 60s
+    _int_auth = d.descanso ? 60000 : 5000;
     const ct = document.getElementById('auth-container');
     const li = document.getElementById('auth-lista');
     if (!ct||!li) return;
@@ -4562,7 +4565,12 @@ async function rechazarAuth(token) {
 }
 
 _poll_auth();
-setInterval(_poll_auth, 5000);
+// Auth: 5s en horario laboral, 60s en descanso
+let _int_auth = 5000;
+function _ciclo_auth() {
+  _poll_auth().finally(() => setTimeout(_ciclo_auth, _int_auth));
+}
+_ciclo_auth();
 
 // ── ALERTAS SIN STOCK — polling cada 15s ──────────────────────────────────
 async function _poll() {
@@ -4624,7 +4632,12 @@ async function limpiarAlertas(){
 }
 
 _poll();
-setInterval(_poll,15000);
+// Alertas: 15s en horario laboral, 120s en descanso
+let _int_alertas = 15000;
+function _ciclo_alertas() {
+  _poll().finally(() => setTimeout(_ciclo_alertas, _int_alertas));
+}
+_ciclo_alertas();
 document.addEventListener('click',()=>{
   if(!_audio_ctx)_audio_ctx=new(window.AudioContext||window.webkitAudioContext)();
 },{once:true});
@@ -4679,6 +4692,13 @@ async function _poll_lote_vivo() {
       headers: {'X-API-Key': KEY_ALERTAS}});
     const d = await r.json();
     const ct = document.getElementById('lote-vivo-container');
+    // Modo descanso: espaciar el polling a 5 minutos
+    if (d.descanso) {
+      _intervalo_vivo = 300000;   // 5 min
+      ct.style.display = 'none';
+      return;
+    }
+    _intervalo_vivo = 5000;        // 5s en horario laboral
     if (!d.ok || !d.lotes || d.lotes.length === 0) {
       ct.style.display = 'none';
       return;
@@ -4791,7 +4811,16 @@ async function _poll_lote_vivo() {
   }
 }
 _poll_lote_vivo();
-setInterval(_poll_lote_vivo, 5000);
+// Polling adaptativo: 5s en horario laboral, 5min en descanso
+let _intervalo_vivo = 5000;
+function _ciclo_vivo() {
+  _poll_lote_vivo().then(() => {
+    setTimeout(_ciclo_vivo, _intervalo_vivo);
+  }).catch(() => {
+    setTimeout(_ciclo_vivo, _intervalo_vivo);
+  });
+}
+_ciclo_vivo();
 </script>
 <style>
 @keyframes pulso {
@@ -5244,6 +5273,8 @@ def api_auth_aprobar(token):
 @requiere_api_key
 def api_auth_pendientes():
     """Lista de solicitudes pendientes para el panel web."""
+    if _en_modo_descanso():
+        return jsonify({"ok": True, "pendientes": [], "descanso": True})
     pendientes = [v for v in _auth_pendientes.values() if not v["aprobado"]]
     return jsonify({"ok": True, "pendientes": pendientes})
 
