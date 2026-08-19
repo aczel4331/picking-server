@@ -7,7 +7,7 @@ VERSION: 2.1.0 — Auto-token + Persistencia Railway
 SERVER_VERSION = "2.1.0"
 
 import os, json, threading, time, requests, logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import (Flask, jsonify, request, render_template_string,
                    session, redirect, url_for, Response)
 from functools import wraps
@@ -864,7 +864,7 @@ def _refresh_pedidos_worker_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None
                     pass  # el valor de _enriquecer ya es el default correcto
 
             _pedidos_ml.update(pedidos)
-            _ultimo_refresh_pedidos = datetime.now()
+            _ultimo_refresh_pedidos = datetime.now(timezone(timedelta(hours=-3)))
 
             if nuevos_ids:
                 logger.info(f"[REFRESH] {cuenta_id}: {len(nuevos_ids)} pedidos NUEVOS "
