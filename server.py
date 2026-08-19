@@ -4290,6 +4290,21 @@ def api_diagnostico():
         "usuarios":      usuarios,
         "pedidos_ml":    len(_pedidos_ml),
         "canales": _diagnostico_canales(),
+        "ml_tokens": {
+            cid: {
+                "nickname":      t.get("nickname",""),
+                "user_id":       t.get("user_id",""),
+                "tiene_access":  bool(t.get("access_token")),
+                "tiene_refresh": bool(t.get("refresh_token")),
+                "expira_en_min": (
+                    int((t["expires_at"] - datetime.now()).total_seconds() // 60)
+                    if isinstance(t.get("expires_at"), datetime) else None),
+            }
+            for cid, t in _cuentas.items()
+        },
+        "n_cuentas_ml": len(_cuentas),
+        "ultimo_refresh": (_ultimo_refresh_pedidos.strftime("%H:%M:%S")
+                           if _ultimo_refresh_pedidos else "nunca"),
         "colecta_diagnostico": {
             "total":           col_total,
             "pendientes":      col_pend,
