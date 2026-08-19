@@ -3907,21 +3907,58 @@ def api_verificar_ahora():
             substatus = (sd.get("substatus","") or "").lower()
             logistica = ((sd.get("logistic") or {}).get("type","") or "").lower()
 
-            # Calcular impreso según la lógica correcta
+            # ── Cálculo de disponibilidad según canal (doc oficial ML) ────
             es_flex = logistica in ("self_service","xd_drop_off","drop_off","turbo")
             es_col  = logistica in ("cross_docking",)
             FINS    = {"shipped","delivered","not_delivered","cancelled"}
+            # Substatus que indican que ML ya retiró — aplica a ambos canales
+            YA_RETIRADO = ("ready_for_pickup","in_packing_list","in_hub",
+                           "picked_up","in_pickup_list","ready_for_pkl_creation",
+                           "ready_to_ship_wt_route")
 
+            motivo = ""
             if status in FINS:
                 impreso = True
+                motivo  = f"estado final: {status}"
+
+            elif substatus in YA_RETIRADO:
+                impreso = True
+                motivo  = f"ML ya retiró: {substatus}"
+
             elif es_flex:
-                impreso = substatus in ("printed","ready_for_pickup","in_packing_list",
-                                        "in_hub","picked_up","in_pickup_list",
-                                        "ready_for_pkl_creation")
+                # ── FLEX: printed = el vendedor YA imprimió → no disponible
+                #    ready_to_print = disponible para despachar HOY
+                if substatus == "printed":
+                    impreso = True
+                    motivo  = "Flex: ya impreso por el vendedor"
+                elif substatus == "ready_to_print":
+                    impreso = False
+                    motivo  = "Flex: listo para imprimir"
+                else:
+                    # pending, vacío u otro → no disponible todavía
+                    impreso = True
+                    motivo  = f"Flex: no disponible ({substatus or 'sin substatus'})"
+
+            elif es_col:
+                # ── COLECTA: printed = etiqueta lista pero ML AÚN NO retiró
+                #    → SÍ está disponible para preparar
+                if substatus == "printed":
+                    impreso = False
+                    motivo  = "Colecta: etiqueta lista, ML no retiró aún"
+                elif substatus == "ready_to_print":
+                    impreso = False
+                    motivo  = "Colecta: listo para preparar"
+                elif substatus == "buffered":
+                    impreso = True
+                    motivo  = "Colecta: buffered, etiqueta no disponible aún"
+                else:
+                    impreso = False
+                    motivo  = f"Colecta: disponible ({substatus or 'sin substatus'})"
+
             else:
-                impreso = substatus in ("ready_for_pickup","in_packing_list","in_hub",
-                                        "picked_up","in_pickup_list",
-                                        "ready_for_pkl_creation")
+                # Otro tipo de logística (ME1, Full) → el depósito no lo prepara
+                impreso = True
+                motivo  = f"logística no soportada: {logistica or 'desconocida'}"
 
             # Actualizar memoria con el dato fresco
             with _lock:
@@ -3936,8 +3973,10 @@ def api_verificar_ahora():
                 "status":       status,
                 "substatus":    substatus,
                 "logistica":    logistica,
+                "canal":        "flex" if es_flex else ("colecta" if es_col else "otro"),
                 "impreso":      impreso,
                 "disponible":   not impreso,
+                "motivo":       motivo,
             }
         except Exception as e:
             resultados[oid] = {"existe": True, "error": str(e)[:100]}
