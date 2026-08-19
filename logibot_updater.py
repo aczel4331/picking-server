@@ -175,12 +175,21 @@ def reiniciar_con_nueva_version():
     ts_backup   = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir  = os.path.join(install_dir, f"_backup_v{ts_backup}")
     desktop_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+    # Acceso directo: borra el anterior y crea uno nuevo apuntando al exe actual
     shortcut_ps = (
+        f"$lnk = '{desktop_dir}\\Logibot.lnk'; "
+        f"if (Test-Path $lnk) {{ Remove-Item $lnk -Force -ErrorAction SilentlyContinue }}; "
+        f"$exe = '{exe_dest}'; "
+        f"if (-not (Test-Path $exe)) {{ "
+        f"  $f = Get-ChildItem -Path '{install_dir}' -Filter 'Logibot.exe' "
+        f"       -Recurse -ErrorAction SilentlyContinue ^| Select-Object -First 1; "
+        f"  if ($f) {{ $exe = $f.FullName }} }}; "
         f"$ws = New-Object -ComObject WScript.Shell; "
-        f"$s = $ws.CreateShortcut('{desktop_dir}\\Logibot.lnk'); "
-        f"$s.TargetPath = '{exe_dest}'; "
-        f"$s.WorkingDirectory = '{install_dir}'; "
+        f"$s = $ws.CreateShortcut($lnk); "
+        f"$s.TargetPath = $exe; "
+        f"$s.WorkingDirectory = (Split-Path $exe); "
         f"$s.Description = 'Logibot Picking Pro'; "
+        f"$s.IconLocation = $exe; "
         f"$s.Save()"
     )
 
@@ -234,13 +243,29 @@ if errorlevel 1 (
 echo Instalacion OK.
 echo.
 
+:: Borrar residuos de la version anterior (caches de Python, temporales)
+echo Limpiando archivos residuales...
+if exist "{install_dir}\\__pycache__" rd /S /Q "{install_dir}\\__pycache__" 2>NUL
+del /Q "{install_dir}\\*.pyc" 2>NUL
+del /Q "{install_dir}\\*.pyo" 2>NUL
+del /Q "{install_dir}\\*.log" 2>NUL
+del /Q "{install_dir}\\_update_pending.txt" 2>NUL
+echo.
+
+:: Limpiar backups viejos — dejar solo el mas reciente
+echo Limpiando versiones anteriores...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$d='{install_dir}'; $b=Get-ChildItem -Path $d -Directory -Filter '_backup_v*' ^| Sort-Object Name -Descending; if ($b.Count -gt 1) {{ $b ^| Select-Object -Skip 1 ^| ForEach-Object {{ Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue; Write-Host ('  Borrado: ' + $_.Name) }} }}"
+echo.
+
 :: Crear acceso directo en el escritorio
 echo Creando acceso directo en el escritorio...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "{shortcut_ps}"
-if not errorlevel 1 (
-    echo Acceso directo creado en el escritorio.
+if exist "{desktop_dir}\\Logibot.lnk" (
+    echo Acceso directo creado OK en el escritorio.
 ) else (
-    echo Nota: No se pudo crear el acceso directo automaticamente.
+    echo ADVERTENCIA: No se pudo crear el acceso directo.
+    echo Podes crearlo manualmente desde: {exe_dest}
 )
 echo.
 

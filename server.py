@@ -4679,11 +4679,27 @@ def panel_estadisticas():
         op        = d.get("operario","—") or "—"
         dur_min   = int(d.get("duracion_seg",0)//60)
         orders    = d.get("order_ids",[]) or []
-        orders_str = " ".join(str(o) for o in orders)
-        # Mostrar hasta 5 order_ids con tooltip para ver todos
+        # Compatibilidad: los lotes viejos guardaban strings, los nuevos dicts
+        _norm = []
+        for o in orders:
+            if isinstance(o, dict):
+                _norm.append(o)
+            else:
+                _norm.append({"order_id": str(o), "pack_id": "",
+                              "shipping_id": "", "comprador": ""})
+        orders = _norm
+
+        # String para el buscador: incluye order_id, pack_id y shipping_id
+        orders_str = " ".join(
+            f"{o.get('order_id','')} {o.get('pack_id','')} "
+            f"{o.get('shipping_id','')}" for o in orders)
+
+        # Mostrar hasta 5 con order_id + shipping_id
         orders_disp = " ".join(
             f'<code style="background:#0F172A;padding:1px 5px;border-radius:3px;'
-            f'font-size:10px;color:{canal_c}">{o}</code>'
+            f'font-size:10px;color:{canal_c}" '
+            f'title="pack: {o.get("pack_id","-")} | envío: {o.get("shipping_id","-")}">'
+            f'{o.get("order_id","")}</code>'
             for o in orders[:5]
         )
         if len(orders) > 5:
