@@ -655,7 +655,16 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
                         if ex["sku"] == it["sku"] and ex["item_id"] != it["item_id"]:
                             ex["cantidad"] += it["cantidad"]; break
             ped_principal["total"] = ped_principal.get("total", 0) + ped.get("total", 0)
+            # Registrar las órdenes que componen este pack
+            ped_principal.setdefault("_orders_agrupadas", [oid_principal])
+            ped_principal["_orders_agrupadas"].append(oid)
             logger.debug(f"[PACK] Agrupado {oid} -> {oid_principal} (pack {pack_id})")
+
+    _n_orig  = len(pedidos)
+    _n_final = len(pedidos_agrupados)
+    if _n_orig != _n_final:
+        logger.info(f"[PACK] {_n_orig} órdenes de ML → {_n_final} paquetes "
+                    f"({_n_orig - _n_final} agrupadas por carrito)")
     return pedidos_agrupados
 
 
@@ -4026,6 +4035,75 @@ def api_pedidos_estados():
                     "ts": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-3))).strftime("%H:%M:%S")})
 
 
+def _diagnostico_canales():
+    """Cuenta pedidos por canal y estado — para verificar contra ML."""
+    import datetime as _dc
+    from datetime import timezone as _tzc, timedelta as _tdc
+    _uy  = _tzc(_tdc(hours=-3))
+    _hoy = _dc.datetime.now(_uy).date()
+
+    def _fecha(v):
+        v = (v or "").strip()
+        if not v: return None
+        try:
+            if "T" in v:
+                return _dc.datetime.fromisoformat(
+                    v.replace("Z","+00:00")).astimezone(_uy).date()
+            return _dc.date.fromisoformat(v[:10])
+        except Exception:
+            return None
+
+    res = {
+        "flex":    {"total":0,"ready_to_print":0,"printed":0,
+                    "sin_substatus":0,"visibles_hoy":0,"otros_dias":0,
+                    "ordenes_ml":0},
+        "colecta": {"total":0,"ready_to_print":0,"printed":0,
+                    "sin_substatus":0,"visibles_hoy":0,"otros_dias":0,
+                    "ordenes_ml":0},
+    }
+
+    with _lock:
+        for p in _pedidos_ml.values():
+            log = (p.get("logistica","") or "").lower()
+            if log in ("self_service","xd_drop_off","drop_off","turbo"):
+                k = "flex"
+            elif log == "cross_docking":
+                k = "colecta"
+            else:
+                continue
+
+            res[k]["total"] += 1
+            # Contar órdenes reales de ML (los carritos agrupan varias)
+            res[k]["ordenes_ml"] += max(1, len(p.get("_orders_agrupadas",[])))
+
+            sub = (p.get("substatus","") or "").lower()
+            est = (p.get("estado_envio","") or "").lower()
+            if not sub:
+                res[k]["sin_substatus"] += 1
+            elif sub == "ready_to_print":
+                res[k]["ready_to_print"] += 1
+            elif sub == "printed":
+                res[k]["printed"] += 1
+
+            # ¿Sería visible hoy?
+            if est in ("shipped","delivered","cancelled","not_delivered"):
+                continue
+            if sub and sub != "ready_to_print":
+                continue
+            fechas = [f for f in (
+                _fecha(p.get("handling_limit","")),
+                _fecha(p.get("delivery_time","")),
+                _fecha(p.get("fecha_cierre","") or p.get("fecha","")),
+            ) if f]
+            if not fechas or any(f <= _hoy for f in fechas):
+                res[k]["visibles_hoy"] += 1
+            else:
+                res[k]["otros_dias"] += 1
+
+    res["hoy_uy"] = str(_hoy)
+    return res
+
+
 @app.route("/api/diagnostico")
 @requiere_api_key
 def api_diagnostico():
@@ -4076,6 +4154,7 @@ def api_diagnostico():
         "alertas_pendientes": len([a for a in alertas if not a.get("leida")]),
         "usuarios":      usuarios,
         "pedidos_ml":    len(_pedidos_ml),
+        "canales": _diagnostico_canales(),
         "colecta_diagnostico": {
             "total":           col_total,
             "pendientes":      col_pend,
