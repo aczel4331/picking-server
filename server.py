@@ -870,8 +870,13 @@ def _auto_refresh_loop():
     Usa semáforo para evitar dos refresh simultáneos que saturen Waitress.
     """
     while True:
-        time.sleep(480)  # 8 minutos — antes era 2, demasiado frecuente
-        if not _cuentas or _sync_pausado():
+        time.sleep(480)  # 8 minutos
+        if not _cuentas:
+            continue
+        # Excepción: si la memoria está vacía, refrescar aunque sea descanso
+        with _lock:
+            _vacio = len(_pedidos_ml) == 0
+        if _sync_pausado() and not _vacio:
             continue
         if _refresh_lock.acquire(blocking=False):
             try:
@@ -1091,12 +1096,52 @@ def _mantener_tokens_vivos():
         _t_tok.sleep(1800)
 
 
+def _carga_inicial_pedidos():
+    """
+    Carga los pedidos UNA VEZ al arrancar el servidor, sin importar el horario.
+    Necesario porque después de un redeploy la memoria queda vacía y si es
+    modo descanso el sync no arrancaría hasta las 6:45 AM.
+    Es una sola pasada: consumo mínimo.
+    """
+    time.sleep(20)   # esperar a que los tokens estén cargados
+    try:
+        if not _cuentas:
+            logger.info("[CARGA-INICIAL] Sin cuentas ML conectadas — omitiendo")
+            return
+        with _lock:
+            ya_hay = len(_pedidos_ml)
+        if ya_hay > 0:
+            logger.info(f"[CARGA-INICIAL] Ya hay {ya_hay} pedidos — omitiendo")
+            return
+
+        logger.info("[CARGA-INICIAL] Memoria vacía tras reinicio — "
+                    "cargando pedidos desde ML...")
+        _refresh_pedidos_worker()
+
+        with _lock:
+            n = len(_pedidos_ml)
+        logger.info(f"[CARGA-INICIAL] ✅ {n} pedidos cargados")
+
+        # Consultar shipments de los pendientes para llenar el substatus
+        with _lock:
+            pend = [p for p in _pedidos_ml.values()
+                    if p.get("shipping_id") and not p.get("substatus")]
+        if pend:
+            logger.info(f"[CARGA-INICIAL] Consultando shipments de "
+                        f"{min(len(pend),120)} pedidos...")
+            for i in range(0, min(len(pend), 120), 40):
+                _refrescar_estado_pedidos_bg(pend[i:i+40], limite=40)
+                time.sleep(3)
+            logger.info("[CARGA-INICIAL] ✅ Shipments actualizados")
+    except Exception as e:
+        logger.error(f"[CARGA-INICIAL] Error: {e}")
+
+
 def _sync_pedidos_ml_periodico():
     """
     Sincroniza estado de envíos con ML.
-    - Ciclo: 120s (antes 90s)
-    - Límite por ciclo: 20 pedidos (antes 60) — evita cola profunda en Waitress
-    - Pausa de 1s entre cada request individual para no saturar
+    - Horario laboral: cada 30s
+    - Modo descanso (19:00-06:45): cada 15 min
     - No corre si hay un refresh completo en curso (_refresh_lock)
     """
     time.sleep(45)
@@ -4163,7 +4208,9 @@ def api_diagnostico():
             "sin_handling_limit": col_sin_hl,
             "hoy_uy":          str(_hoy),
         },
-        "servidor_ts":   _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "servidor_ts":   _dt.datetime.now(
+            _dt.timezone(_dt.timedelta(hours=-3))).strftime("%Y-%m-%d %H:%M:%S"),
+        "modo_descanso": _en_modo_descanso(),
     })
 
 
@@ -5647,6 +5694,9 @@ def _startup():
                     tok["expires_at"] = datetime.now() + timedelta(hours=1)
                 _cuentas[cid] = tok
         threading.Thread(target=_refresh_pedidos_worker,    daemon=True).start()
+        # Carga inicial — corre UNA VEZ aunque sea modo descanso
+        threading.Thread(target=_carga_inicial_pedidos, daemon=True,
+                         name="CargaInicial").start()
         threading.Thread(target=_sync_pedidos_ml_periodico, daemon=True).start()
         # Hilo de mantenimiento de tokens — corre SIEMPRE (incluso en descanso)
         threading.Thread(target=_mantener_tokens_vivos, daemon=True,
