@@ -790,14 +790,33 @@ def _refresh_pedidos_worker_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None
         for p in pedidos.values():
             p["_cuenta"] = cuenta_id
         with _lock:
-            to_del = [oid for oid, p in _pedidos_ml.items() if p.get("_cuenta") == cuenta_id]
+            # Contar pedidos nuevos ANTES de reemplazar
+            antes_ids  = {oid for oid, p in _pedidos_ml.items()
+                          if p.get("_cuenta") == cuenta_id}
+            nuevos_ids = set(pedidos.keys()) - antes_ids
+
+            # Eliminar los viejos de esta cuenta
+            to_del = [oid for oid, p in _pedidos_ml.items()
+                      if p.get("_cuenta") == cuenta_id]
             for oid in to_del:
                 del _pedidos_ml[oid]
+
+            # IMPORTANTE: NO pisar el estado que acaba de traer ML.
+            # El campo "impreso" viene calculado desde el substatus real
+            # en _enriquecer_skus_cuenta — ese es el dato correcto.
+            # Solo conservar el flag local si el pedido NO tiene substatus
+            # (caso raro: ML no devolvió el shipment todavía)
             for oid, p in pedidos.items():
-                if oid in _pedidos_ml:
-                    p["impreso"] = _pedidos_ml[oid].get("impreso", False)
+                if not p.get("substatus") and oid in antes_ids:
+                    # Sin substatus de ML → conservar lo que teníamos
+                    pass  # el valor de _enriquecer ya es el default correcto
+
             _pedidos_ml.update(pedidos)
             _ultimo_refresh_pedidos = datetime.now()
+
+            if nuevos_ids:
+                logger.info(f"[REFRESH] {cuenta_id}: {len(nuevos_ids)} pedidos NUEVOS "
+                            f"de {len(pedidos)} totales")
     except Exception as e:
         logger.error(f"[REFRESH] Error cuenta {cuenta_id}: {e}")
 
@@ -891,9 +910,18 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
         "picked_up","returning_to_sender","returned",
     )
     procesados = marcados_impresos = 0
-    # Ordenar: primero los pendientes (no impresos) para detectar cambios antes
-    pedidos_ordenados = sorted(pedidos_lista[:limite],
-                               key=lambda x: (1 if x.get("impreso") else 0))
+    # Prioridad de consulta a ML:
+    #   1° Sin substatus (nunca consultados) — son los más importantes
+    #   2° Pendientes (no impresos) — pueden haber cambiado
+    #   3° Impresos — solo verificación
+    def _prioridad(p):
+        if not p.get("substatus"):
+            return 0   # máxima prioridad: nunca se consultó
+        if not p.get("impreso"):
+            return 1   # pendiente: puede cambiar
+        return 2       # impreso: baja prioridad
+
+    pedidos_ordenados = sorted(pedidos_lista, key=_prioridad)[:limite]
     for i, p in enumerate(pedidos_ordenados):
         # 1s pausa — evita saturar pool (no modificar)
         if i > 0:
@@ -3834,6 +3862,98 @@ def _guardar_metricas_servidor(data: list):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"[METRICAS] Error guardando: {e}")
+
+
+@app.route("/api/pedidos/verificar-ahora", methods=["POST"])
+@requiere_api_key
+def api_verificar_ahora():
+    """
+    Consulta ML EN EL MOMENTO para verificar el estado real de los pedidos.
+    Se usa antes de generar un lote para asegurar que los pedidos
+    están realmente pendientes y no fueron impresos por otra vía.
+
+    Body: {"order_ids": ["2000017...", ...]}  (máx 30)
+    Devuelve el estado REAL desde ML, no desde memoria.
+    """
+    data = request.get_json(silent=True) or {}
+    order_ids = data.get("order_ids", [])[:30]
+
+    if not order_ids:
+        return jsonify({"ok": False, "msg": "Sin order_ids"}), 400
+
+    resultados = {}
+    for oid in order_ids:
+        oid = str(oid).strip()
+        with _lock:
+            ped = _pedidos_ml.get(oid)
+        if not ped:
+            resultados[oid] = {"existe": False}
+            continue
+
+        ship_id = ped.get("shipping_id","")
+        cuenta  = ped.get("_cuenta","cuenta_0")
+        if not ship_id:
+            resultados[oid] = {"existe": True, "sin_shipping": True}
+            continue
+
+        # Consultar ML directamente — dato fresco
+        try:
+            sd = _ml_get_cuenta(f"/shipments/{ship_id}", cuenta)
+            if not sd:
+                resultados[oid] = {"existe": True, "error": "sin respuesta ML"}
+                continue
+
+            status    = (sd.get("status","")    or "").lower()
+            substatus = (sd.get("substatus","") or "").lower()
+            logistica = ((sd.get("logistic") or {}).get("type","") or "").lower()
+
+            # Calcular impreso según la lógica correcta
+            es_flex = logistica in ("self_service","xd_drop_off","drop_off","turbo")
+            es_col  = logistica in ("cross_docking",)
+            FINS    = {"shipped","delivered","not_delivered","cancelled"}
+
+            if status in FINS:
+                impreso = True
+            elif es_flex:
+                impreso = substatus in ("printed","ready_for_pickup","in_packing_list",
+                                        "in_hub","picked_up","in_pickup_list",
+                                        "ready_for_pkl_creation")
+            else:
+                impreso = substatus in ("ready_for_pickup","in_packing_list","in_hub",
+                                        "picked_up","in_pickup_list",
+                                        "ready_for_pkl_creation")
+
+            # Actualizar memoria con el dato fresco
+            with _lock:
+                if oid in _pedidos_ml:
+                    _pedidos_ml[oid]["estado_envio"] = status
+                    _pedidos_ml[oid]["substatus"]    = substatus
+                    _pedidos_ml[oid]["logistica"]    = logistica
+                    _pedidos_ml[oid]["impreso"]      = impreso
+
+            resultados[oid] = {
+                "existe":       True,
+                "status":       status,
+                "substatus":    substatus,
+                "logistica":    logistica,
+                "impreso":      impreso,
+                "disponible":   not impreso,
+            }
+        except Exception as e:
+            resultados[oid] = {"existe": True, "error": str(e)[:100]}
+
+        time.sleep(0.2)   # no saturar ML
+
+    n_disponibles = sum(1 for r in resultados.values() if r.get("disponible"))
+    logger.info(f"[VERIFICAR] {len(order_ids)} consultados → "
+                f"{n_disponibles} disponibles")
+
+    return jsonify({
+        "ok": True,
+        "resultados": resultados,
+        "disponibles": n_disponibles,
+        "consultados": len(order_ids),
+    })
 
 
 @app.route("/api/pedidos/estados")
