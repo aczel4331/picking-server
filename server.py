@@ -1098,43 +1098,62 @@ def _mantener_tokens_vivos():
 
 def _carga_inicial_pedidos():
     """
-    Carga los pedidos UNA VEZ al arrancar el servidor, sin importar el horario.
-    Necesario porque después de un redeploy la memoria queda vacía y si es
-    modo descanso el sync no arrancaría hasta las 6:45 AM.
-    Es una sola pasada: consumo mínimo.
+    Carga los pedidos al arrancar el servidor, sin importar el horario.
+    Reintenta hasta que haya cuentas ML disponibles.
+    Necesario porque tras un redeploy la memoria queda vacía y en modo
+    descanso el sync no arrancaría hasta las 6:45 AM.
     """
-    time.sleep(20)   # esperar a que los tokens estén cargados
-    try:
-        if not _cuentas:
-            logger.info("[CARGA-INICIAL] Sin cuentas ML conectadas — omitiendo")
-            return
-        with _lock:
-            ya_hay = len(_pedidos_ml)
-        if ya_hay > 0:
-            logger.info(f"[CARGA-INICIAL] Ya hay {ya_hay} pedidos — omitiendo")
-            return
+    intentos = 0
+    MAX_INTENTOS = 12   # 12 intentos × 15s = hasta 3 minutos esperando tokens
 
-        logger.info("[CARGA-INICIAL] Memoria vacía tras reinicio — "
-                    "cargando pedidos desde ML...")
-        _refresh_pedidos_worker()
+    while intentos < MAX_INTENTOS:
+        time.sleep(15)
+        intentos += 1
+        try:
+            # ¿Ya hay cuentas ML conectadas?
+            if not _cuentas:
+                logger.info(f"[CARGA-INICIAL] Intento {intentos}/{MAX_INTENTOS}: "
+                            f"esperando tokens ML...")
+                continue
 
-        with _lock:
-            n = len(_pedidos_ml)
-        logger.info(f"[CARGA-INICIAL] ✅ {n} pedidos cargados")
+            with _lock:
+                ya_hay = len(_pedidos_ml)
+            if ya_hay > 0:
+                logger.info(f"[CARGA-INICIAL] Ya hay {ya_hay} pedidos — listo")
+                return
 
-        # Consultar shipments de los pendientes para llenar el substatus
-        with _lock:
-            pend = [p for p in _pedidos_ml.values()
-                    if p.get("shipping_id") and not p.get("substatus")]
-        if pend:
-            logger.info(f"[CARGA-INICIAL] Consultando shipments de "
-                        f"{min(len(pend),120)} pedidos...")
-            for i in range(0, min(len(pend), 120), 40):
-                _refrescar_estado_pedidos_bg(pend[i:i+40], limite=40)
-                time.sleep(3)
-            logger.info("[CARGA-INICIAL] ✅ Shipments actualizados")
-    except Exception as e:
-        logger.error(f"[CARGA-INICIAL] Error: {e}")
+            logger.info(f"[CARGA-INICIAL] Cuentas: {list(_cuentas.keys())} — "
+                        f"cargando pedidos desde ML...")
+            _refresh_pedidos_worker()
+
+            with _lock:
+                n = len(_pedidos_ml)
+
+            if n == 0:
+                logger.warning(f"[CARGA-INICIAL] ML devolvió 0 pedidos "
+                               f"(intento {intentos}) — reintentando...")
+                continue
+
+            logger.info(f"[CARGA-INICIAL] ✅ {n} pedidos cargados")
+
+            # Consultar shipments de los pendientes para llenar el substatus
+            with _lock:
+                pend = [p for p in _pedidos_ml.values()
+                        if p.get("shipping_id") and not p.get("substatus")]
+            if pend:
+                total_a_consultar = min(len(pend), 150)
+                logger.info(f"[CARGA-INICIAL] Consultando shipments de "
+                            f"{total_a_consultar} pedidos...")
+                for i in range(0, total_a_consultar, 40):
+                    _refrescar_estado_pedidos_bg(pend[i:i+40], limite=40)
+                    time.sleep(2)
+                logger.info("[CARGA-INICIAL] ✅ Shipments actualizados")
+            return   # listo, salir del loop
+
+        except Exception as e:
+            logger.error(f"[CARGA-INICIAL] Error intento {intentos}: {e}")
+
+    logger.warning("[CARGA-INICIAL] Agotados los reintentos sin cargar pedidos")
 
 
 def _sync_pedidos_ml_periodico():
@@ -4147,6 +4166,77 @@ def _diagnostico_canales():
 
     res["hoy_uy"] = str(_hoy)
     return res
+
+
+@app.route("/api/forzar-carga", methods=["GET","POST"])
+@requiere_api_key
+def api_forzar_carga():
+    """
+    Fuerza la carga de pedidos desde ML inmediatamente.
+    Útil tras un redeploy o si la memoria quedó vacía.
+    Devuelve el resultado con detalle para diagnóstico.
+    """
+    import datetime as _dfc
+    detalle = {
+        "cuentas_conectadas": list(_cuentas.keys()),
+        "tokens_validos":     {},
+        "pedidos_antes":      0,
+        "pedidos_despues":    0,
+        "error":              None,
+    }
+
+    with _lock:
+        detalle["pedidos_antes"] = len(_pedidos_ml)
+
+    if not _cuentas:
+        detalle["error"] = "No hay cuentas ML conectadas. Conectá desde /auth/login"
+        return jsonify({"ok": False, "detalle": detalle}), 400
+
+    # Verificar tokens
+    for cid in _cuentas:
+        tok = _cuentas.get(cid, {})
+        exp = tok.get("expires_at")
+        valido = bool(tok.get("access_token"))
+        expira_en = ""
+        if exp and isinstance(exp, datetime):
+            mins = int((exp - datetime.now()).total_seconds() // 60)
+            expira_en = f"{mins} min"
+            if mins < 5:
+                valido = False
+        detalle["tokens_validos"][cid] = {
+            "tiene_token":   bool(tok.get("access_token")),
+            "tiene_refresh": bool(tok.get("refresh_token")),
+            "expira_en":     expira_en,
+            "nickname":      tok.get("nickname",""),
+            "valido":        valido,
+        }
+
+    # Forzar la carga
+    try:
+        _refresh_pedidos_worker()
+        with _lock:
+            detalle["pedidos_despues"] = len(_pedidos_ml)
+
+        # Si cargó pedidos, consultar shipments de los pendientes
+        if detalle["pedidos_despues"] > 0:
+            with _lock:
+                pend = [p for p in _pedidos_ml.values()
+                        if p.get("shipping_id") and not p.get("substatus")]
+            detalle["sin_substatus"] = len(pend)
+            if pend:
+                _refrescar_estado_pedidos_bg(pend[:60], limite=60)
+                detalle["shipments_consultados"] = min(len(pend), 60)
+    except Exception as e:
+        import traceback
+        detalle["error"] = f"{e}\n{traceback.format_exc()[:400]}"
+        return jsonify({"ok": False, "detalle": detalle}), 500
+
+    return jsonify({
+        "ok": detalle["pedidos_despues"] > 0,
+        "detalle": detalle,
+        "ts": _dfc.datetime.now(
+            _dfc.timezone(_dfc.timedelta(hours=-3))).strftime("%Y-%m-%d %H:%M:%S"),
+    })
 
 
 @app.route("/api/diagnostico")
