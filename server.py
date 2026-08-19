@@ -1112,7 +1112,14 @@ def _sync_pedidos_ml_periodico():
                             # Fuera de horario: solo los pendientes
                             todos_con_ship = [p for p in todos_con_ship
                                               if not p.get("impreso", False)]
-                        limite_sync = 50 if _en_horario else 20
+                        # Contar cuántos pedidos NO tienen substatus todavía
+                        _sin_sub = sum(1 for p in todos_con_ship
+                                       if not p.get("substatus"))
+                        if _sin_sub > 0:
+                            # Hay pedidos sin consultar → procesar más por ciclo
+                            limite_sync = 80 if _en_horario else 30
+                        else:
+                            limite_sync = 50 if _en_horario else 20
                         if todos_con_ship:
                             logger.debug(f"[SYNC] Ciclo #{ciclo}: "
                                          f"{len(todos_con_ship)} pedidos "
