@@ -6,7 +6,7 @@ VERSION: 2.1.0 — Auto-token + Persistencia Railway
 
 SERVER_VERSION = "2.1.0"
 
-import os, json, threading, time, requests, logging
+import os, json, threading, time, requests, logging, re
 from datetime import datetime, timedelta, timezone
 from flask import (Flask, jsonify, request, render_template_string,
                    session, redirect, url_for, Response)
@@ -2348,23 +2348,57 @@ function descargarZip(canal) {
   msg.textContent = '⏳ Generando ZIP...';
   const KEY = '""" + (API_KEY or "everest2024") + """';
   const url = BASE + '/api/etiquetas/descargar-zip?canal=' + canal + '&key=' + KEY;
-  fetch(url)
+
+  // Timeout de seguridad — si tarda más de 90s, avisar
+  const ctrl = new AbortController();
+  const tmo  = setTimeout(() => ctrl.abort(), 90000);
+
+  fetch(url, { signal: ctrl.signal })
     .then(r => {
-      if (!r.ok) return r.json().then(d => { throw new Error(d.msg||'Error'); });
+      clearTimeout(tmo);
+      if (!r.ok) {
+        return r.json()
+          .then(d => { throw new Error(d.msg || ('HTTP ' + r.status)); })
+          .catch(() => { throw new Error('HTTP ' + r.status); });
+      }
       return r.blob();
     })
     .then(blob => {
+      if (!blob || blob.size === 0) throw new Error('El ZIP llegó vacío');
+
+      const objUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      const ts = new Date().toISOString().slice(0,16).replace('T','_').replace(':','');
+      a.style.display = 'none';
+      a.href = objUrl;
+      const now = new Date();
+      const ts  = now.getFullYear() + '-' +
+                  String(now.getMonth()+1).padStart(2,'0') + '-' +
+                  String(now.getDate()).padStart(2,'0') + '_' +
+                  String(now.getHours()).padStart(2,'0') +
+                  String(now.getMinutes()).padStart(2,'0');
       a.download = 'etiquetas_' + canal + '_' + ts + '.zip';
+
+      // CLAVE: agregar al DOM antes de hacer click (Chrome/Firefox lo exigen)
+      document.body.appendChild(a);
       a.click();
-      msg.textContent = '✅ ZIP descargado';
-      setTimeout(() => msg.textContent = '', 3000);
+
+      // Limpiar después de que el browser tome el archivo
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(objUrl);
+      }, 1000);
+
+      const kb = Math.round(blob.size / 1024);
+      msg.textContent = '✅ ZIP descargado (' + kb + ' KB)';
+      setTimeout(() => msg.textContent = '', 4000);
     })
     .catch(e => {
-      msg.textContent = '❌ ' + e.message;
-      setTimeout(() => msg.textContent = '', 4000);
+      clearTimeout(tmo);
+      const txt = (e.name === 'AbortError')
+        ? '❌ Tardó demasiado — probá con menos etiquetas'
+        : '❌ ' + e.message;
+      msg.textContent = txt;
+      setTimeout(() => msg.textContent = '', 6000);
     });
 }
 
@@ -2662,16 +2696,34 @@ def api_etiquetas_zip():
         return jsonify({"ok": False,
                         "msg": f"No hay etiquetas de {canal_filtro}"}), 404
 
-    # Generar ZIP en memoria
+    # Tope de seguridad — un ZIP gigante hace timeout en el browser
+    MAX_PDFS = 200
+    if len(pdfs_incluidos) > MAX_PDFS:
+        logger.warning(f"[ETIQUETAS-ZIP] {len(pdfs_incluidos)} PDFs → "
+                       f"limitando a los {MAX_PDFS} más recientes")
+        pdfs_incluidos = sorted(pdfs_incluidos,
+                                key=lambda x: x.get("ts",""),
+                                reverse=True)[:MAX_PDFS]
+
+    # Generar ZIP en memoria — ZIP_STORED es mucho más rápido que DEFLATED
+    # y los PDFs ya vienen comprimidos, no se gana casi nada comprimiendo
     zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+    _errores = 0
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_STORED) as zf:
         for item in pdfs_incluidos:
-            # Nombre legible: canal_comprador_orderid.pdf
-            comprador_clean = (item["comprador"] or "").replace(" ","_")[:20]
-            nombre_zip = (f"{item['canal']}_{comprador_clean}_"
-                          f"{item['order_id']}.pdf")
-            with open(item["path"], "rb") as f:
-                zf.writestr(nombre_zip, f.read())
+            try:
+                # Nombre legible y seguro: canal_comprador_orderid.pdf
+                comp = re.sub(r'[^A-Za-z0-9_.-]', '_',
+                              (item["comprador"] or "sincomprador"))[:20]
+                nombre_zip = f"{item['canal']}_{comp}_{item['order_id']}.pdf"
+                with open(item["path"], "rb") as f:
+                    zf.writestr(nombre_zip, f.read())
+            except Exception as _ez:
+                _errores += 1
+                logger.debug(f"[ETIQUETAS-ZIP] Error con {item.get('order_id')}: {_ez}")
+
+    if _errores:
+        logger.warning(f"[ETIQUETAS-ZIP] {_errores} PDFs no se pudieron incluir")
 
     zip_buffer.seek(0)
     ts_now   = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-3))).strftime("%Y-%m-%d_%H%M")
