@@ -721,14 +721,18 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                         ped["substatus"]    = substatus
                         ped["tipo"]         = _calcular_tipo(logistica, ped.get("tags",[]), ped.get("shipping_id",""))
 
-                        # Horario de corte: estimated_handling_limit.date
-                        # Para Colecta: si esta fecha es hoy → mostrar; si es futura → ocultar
+                        # Fechas de compromiso (doc oficial ML — nodo lead_time)
+                        #   estimated_handling_limit → límite para DESPACHAR
+                        #   estimated_delivery_time  → entrega al comprador
                         try:
                             lt = sd.get("lead_time") or {}
-                            hl = (lt.get("estimated_handling_limit") or {}).get("date","")
-                            ped["handling_limit"] = hl  # ISO datetime o ""
+                            ped["handling_limit"] = (
+                                lt.get("estimated_handling_limit") or {}).get("date","")
+                            ped["delivery_time"]  = (
+                                lt.get("estimated_delivery_time") or {}).get("date","")
                         except Exception:
                             ped["handling_limit"] = ""
+                            ped["delivery_time"]  = ""
                         # Regla por tipo de logística
                         FINS   = {"shipped","delivered","not_delivered","cancelled"}
                         es_fx  = logistica in ("self_service","xd_drop_off","drop_off")
@@ -949,11 +953,13 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
                 pp["estado_envio"] = status
                 pp["substatus"]    = substatus
                 pp["tipo"]         = _calcular_tipo(logistica, pp.get("tags",[]), ship_id)
-                # Actualizar horario de corte
+                # Actualizar fechas de compromiso (lead_time)
                 try:
                     lt2 = sd.get("lead_time") or {}
-                    hl2 = (lt2.get("estimated_handling_limit") or {}).get("date","")
-                    pp["handling_limit"] = hl2
+                    pp["handling_limit"] = (
+                        lt2.get("estimated_handling_limit") or {}).get("date","")
+                    pp["delivery_time"]  = (
+                        lt2.get("estimated_delivery_time") or {}).get("date","")
                 except Exception:
                     pass
                 antes = pp.get("impreso", False)
@@ -3916,8 +3922,16 @@ def api_verificar_ahora():
                            "picked_up","in_pickup_list","ready_for_pkl_creation",
                            "ready_to_ship_wt_route")
 
+            # ══ REGLA OFICIAL ML — igual para Flex y Colecta ═══════════════
+            # Doc: solo status=ready_to_ship + substatus=ready_to_print
+            # permite descargar la etiqueta. Otro estado → not_printable_status
             motivo = ""
-            if status in FINS:
+            if logistica not in ("self_service","xd_drop_off","drop_off",
+                                 "turbo","cross_docking"):
+                impreso = True
+                motivo  = f"logística no soportada: {logistica or 'desconocida'}"
+
+            elif status in FINS:
                 impreso = True
                 motivo  = f"estado final: {status}"
 
@@ -3925,40 +3939,23 @@ def api_verificar_ahora():
                 impreso = True
                 motivo  = f"ML ya retiró: {substatus}"
 
-            elif es_flex:
-                # ── FLEX: printed = el vendedor YA imprimió → no disponible
-                #    ready_to_print = disponible para despachar HOY
-                if substatus == "printed":
-                    impreso = True
-                    motivo  = "Flex: ya impreso por el vendedor"
-                elif substatus == "ready_to_print":
-                    impreso = False
-                    motivo  = "Flex: listo para imprimir"
-                else:
-                    # pending, vacío u otro → no disponible todavía
-                    impreso = True
-                    motivo  = f"Flex: no disponible ({substatus or 'sin substatus'})"
+            elif substatus == "printed":
+                impreso = True
+                motivo  = "etiqueta ya impresa (no descargable)"
 
-            elif es_col:
-                # ── COLECTA: printed = etiqueta lista pero ML AÚN NO retiró
-                #    → SÍ está disponible para preparar
-                if substatus == "printed":
-                    impreso = False
-                    motivo  = "Colecta: etiqueta lista, ML no retiró aún"
-                elif substatus == "ready_to_print":
-                    impreso = False
-                    motivo  = "Colecta: listo para preparar"
-                elif substatus == "buffered":
-                    impreso = True
-                    motivo  = "Colecta: buffered, etiqueta no disponible aún"
-                else:
-                    impreso = False
-                    motivo  = f"Colecta: disponible ({substatus or 'sin substatus'})"
+            elif substatus == "buffered":
+                impreso = True
+                motivo  = "buffered: etiqueta no disponible todavía"
+
+            elif substatus == "ready_to_print" and status == "ready_to_ship":
+                impreso = False
+                canal_n = "Flex" if es_flex else "Colecta"
+                motivo  = f"{canal_n}: listo para imprimir ✓"
 
             else:
-                # Otro tipo de logística (ME1, Full) → el depósito no lo prepara
                 impreso = True
-                motivo  = f"logística no soportada: {logistica or 'desconocida'}"
+                motivo  = (f"no imprimible: status={status or '?'} "
+                           f"substatus={substatus or '?'}")
 
             # Actualizar memoria con el dato fresco
             with _lock:
