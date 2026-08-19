@@ -669,18 +669,22 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
         if offset >= total:
             break
 
-    # Agrupar por pack_id
+    # ══ Agrupar por SHIPPING_ID — 1 shipping_id = 1 etiqueta ══════════════
+    # La etiqueta se descarga con /shipment_labels?shipment_ids=XXX
+    # Si dos órdenes comparten shipping_id → misma etiqueta → mismo paquete.
+    # Si tienen shipping_id distinto → son 2 etiquetas aunque compartan pack_id.
     pedidos_agrupados = {}
     packs_vistos = {}
     for oid, ped in pedidos.items():
-        pack_id = ped.get("pack_id", "")
-        if not pack_id:
+        ship_id = ped.get("shipping_id", "")
+        if not ship_id:
+            # Sin shipping_id no hay etiqueta posible — mantener separado
             pedidos_agrupados[oid] = ped
-        elif pack_id not in packs_vistos:
-            packs_vistos[pack_id] = oid
+        elif ship_id not in packs_vistos:
+            packs_vistos[ship_id] = oid
             pedidos_agrupados[oid] = ped
         else:
-            oid_principal = packs_vistos[pack_id]
+            oid_principal = packs_vistos[ship_id]
             ped_principal = pedidos_agrupados[oid_principal]
             skus_existentes = {it["sku"] for it in ped_principal["items"]}
             for it in ped.get("items", []):
@@ -695,13 +699,14 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
             # Registrar las órdenes que componen este pack
             ped_principal.setdefault("_orders_agrupadas", [oid_principal])
             ped_principal["_orders_agrupadas"].append(oid)
-            logger.debug(f"[PACK] Agrupado {oid} -> {oid_principal} (pack {pack_id})")
+            logger.debug(f"[PACK] Agrupado {oid} -> {oid_principal} "
+                         f"(mismo shipping_id {ship_id})")
 
     _n_orig  = len(pedidos)
     _n_final = len(pedidos_agrupados)
     if _n_orig != _n_final:
-        logger.info(f"[PACK] {_n_orig} órdenes de ML → {_n_final} paquetes "
-                    f"({_n_orig - _n_final} agrupadas por carrito)")
+        logger.info(f"[PACK] {_n_orig} órdenes de ML → {_n_final} etiquetas "
+                    f"({_n_orig - _n_final} órdenes comparten shipping_id)")
     return pedidos_agrupados
 
 
@@ -4213,6 +4218,64 @@ def _diagnostico_canales():
 
     res["hoy_uy"] = str(_hoy)
     return res
+
+
+@app.route("/api/verificar-etiquetas")
+@requiere_api_key
+def api_verificar_etiquetas():
+    """
+    Verifica que cada pedido tenga UN shipping_id único.
+    Lista los que agrupan varias órdenes para que puedas confirmar
+    contra ML que efectivamente comparten etiqueta.
+    """
+    import datetime as _dve
+    with _lock:
+        snap = list(_pedidos_ml.values())
+
+    ships = {}
+    for p in snap:
+        s = p.get("shipping_id","")
+        if s:
+            ships.setdefault(s, []).append(str(p.get("order_id","")))
+
+    # Pedidos que agrupan más de una orden
+    agrupados = []
+    for p in snap:
+        ag = p.get("_orders_agrupadas", [])
+        if len(ag) > 1:
+            log = (p.get("logistica","") or "").lower()
+            canal = "flex" if log in ("self_service","xd_drop_off",
+                                      "drop_off","turbo") else (
+                    "colecta" if log == "cross_docking" else "otro")
+            agrupados.append({
+                "order_id_principal": str(p.get("order_id","")),
+                "shipping_id":        p.get("shipping_id",""),
+                "pack_id":            p.get("pack_id",""),
+                "canal":              canal,
+                "comprador":          p.get("comprador",""),
+                "ordenes":            ag,
+                "n_ordenes":          len(ag),
+                "n_items":            len(p.get("items",[])),
+            })
+
+    # Shipping_ids duplicados (no debería haber tras agrupar)
+    duplicados = {s: o for s, o in ships.items() if len(o) > 1}
+
+    return jsonify({
+        "ok": True,
+        "resumen": {
+            "paquetes_totales":     len(snap),
+            "shipping_ids_unicos":  len(ships),
+            "sin_shipping_id":      sum(1 for p in snap if not p.get("shipping_id")),
+            "pedidos_agrupados":    len(agrupados),
+            "ordenes_ml_totales":   sum(max(1, len(p.get("_orders_agrupadas",[])))
+                                        for p in snap),
+        },
+        "agrupados": agrupados[:20],
+        "shipping_duplicados": duplicados,
+        "ts": _dve.datetime.now(
+            _dve.timezone(_dve.timedelta(hours=-3))).strftime("%H:%M:%S"),
+    })
 
 
 @app.route("/api/tokens-estado")
