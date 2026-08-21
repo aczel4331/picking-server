@@ -118,9 +118,11 @@ CONFIG_APP_PATH  = os.path.join(DATA_DIR, "config_app.json")
 ALERTAS_PATH     = os.path.join(DATA_DIR, "alertas_sin_stock.json")
 ETIQUETAS_DIR    = os.path.join(DATA_DIR, "etiquetas")
 LOTES_DIR        = os.path.join(DATA_DIR, "lotes_backup")
+SESIONES_DIR     = os.path.join(DATA_DIR, "sesiones")
 try:
     os.makedirs(ETIQUETAS_DIR, exist_ok=True)
     os.makedirs(LOTES_DIR, exist_ok=True)
+    os.makedirs(SESIONES_DIR, exist_ok=True)
 except Exception as _e_dir:
     print(f"[STARTUP] No se pudieron crear directorios: {_e_dir}")
 
@@ -138,8 +140,11 @@ def _limpiar_archivos_viejos():
         _t_lim.sleep(300)   # esperar 5 min tras arrancar — no competir con el boot
         while True:
             try:
-                _limite = _dt.datetime.now() - _dt.timedelta(days=5)
-                for _dir in [ETIQUETAS_DIR, LOTES_DIR]:
+                _lim_5d = _dt.datetime.now() - _dt.timedelta(days=5)
+                _lim_1d = _dt.datetime.now() - _dt.timedelta(days=1)
+                for _dir in [ETIQUETAS_DIR, LOTES_DIR, SESIONES_DIR]:
+                    # Las sesiones caducan en 1 día, el resto en 5
+                    _limite = _lim_1d if _dir == SESIONES_DIR else _lim_5d
                     for _fname in os.listdir(_dir):
                         _fpath = os.path.join(_dir, _fname)
                         try:
@@ -2422,6 +2427,116 @@ function filtrar() {
 filtrar();
 </script>
 </body></html>""", filas_html=filas_html)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SESIONES DE TRABAJO — cada operario retoma su lote donde lo dejó
+# ══════════════════════════════════════════════════════════════════════════
+def _ruta_sesion(usuario: str) -> str:
+    """Ruta del archivo de sesión de un usuario (nombre saneado)."""
+    seguro = re.sub(r'[^A-Za-z0-9_.-]', '_', str(usuario).strip().lower())[:40]
+    return os.path.join(SESIONES_DIR, f"{seguro}.json")
+
+
+@app.route("/api/sesion/guardar", methods=["POST"])
+@requiere_api_key
+def api_sesion_guardar():
+    """
+    Guarda el estado del lote en curso de un operario.
+    La app llama esto cada vez que hay un cambio (escaneo, impresión).
+    Si la PC se apaga, el operario retoma exactamente donde quedó.
+    """
+    import datetime as _dsg
+    data = request.get_json(silent=True) or {}
+    usuario = (data.get("usuario","") or "").strip()
+    if not usuario:
+        return jsonify({"ok": False, "msg": "Falta el usuario"}), 400
+
+    estado = {
+        "usuario":         usuario,
+        "canal":           data.get("canal",""),
+        "fase":            data.get("fase", 1),
+        "pedidos":         data.get("pedidos", {}),
+        "colecta_global":  data.get("colecta_global", {}),
+        "cola_pack":       data.get("cola_pack", []),
+        "ts":              _dsg.datetime.now(
+                              _dsg.timezone(_dsg.timedelta(hours=-3))
+                           ).strftime("%Y-%m-%d %H:%M:%S"),
+        "n_pedidos":       len(data.get("pedidos", {})),
+    }
+
+    # Lote vacío → borrar la sesión (terminó el trabajo)
+    if not estado["pedidos"]:
+        try:
+            p = _ruta_sesion(usuario)
+            if os.path.exists(p):
+                os.remove(p)
+                logger.info(f"[SESION] {usuario}: sesión cerrada (lote vacío)")
+        except Exception:
+            pass
+        return jsonify({"ok": True, "msg": "Sesión cerrada"})
+
+    try:
+        with open(_ruta_sesion(usuario), "w", encoding="utf-8") as f:
+            json.dump(estado, f, ensure_ascii=False)
+        return jsonify({"ok": True, "n_pedidos": estado["n_pedidos"]})
+    except Exception as e:
+        logger.error(f"[SESION] Error guardando {usuario}: {e}")
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+@app.route("/api/sesion/recuperar/<usuario>")
+@requiere_api_key
+def api_sesion_recuperar(usuario):
+    """
+    Devuelve el lote pendiente de un operario, si lo hay.
+    La app llama esto al iniciar sesión para ofrecer retomar el trabajo.
+    Solo devuelve sesiones de menos de 24 horas.
+    """
+    import datetime as _dsr
+    p = _ruta_sesion(usuario)
+    if not os.path.exists(p):
+        return jsonify({"ok": True, "hay_sesion": False})
+
+    try:
+        with open(p, encoding="utf-8") as f:
+            estado = json.load(f)
+
+        # Descartar sesiones viejas (más de 24h)
+        try:
+            ts = _dsr.datetime.strptime(estado.get("ts",""), "%Y-%m-%d %H:%M:%S")
+            _uy = _dsr.datetime.now(
+                _dsr.timezone(_dsr.timedelta(hours=-3))).replace(tzinfo=None)
+            horas = (_uy - ts).total_seconds() / 3600
+            if horas > 24:
+                os.remove(p)
+                logger.info(f"[SESION] {usuario}: sesión de {int(horas)}h "
+                            f"descartada por antigüedad")
+                return jsonify({"ok": True, "hay_sesion": False,
+                                "msg": "Sesión vencida"})
+            estado["horas_antiguedad"] = round(horas, 1)
+        except Exception:
+            pass
+
+        logger.info(f"[SESION] {usuario}: recuperando lote de "
+                    f"{estado.get('n_pedidos',0)} pedidos")
+        return jsonify({"ok": True, "hay_sesion": True, "estado": estado})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+@app.route("/api/sesion/borrar/<usuario>", methods=["POST","DELETE"])
+@requiere_api_key
+def api_sesion_borrar(usuario):
+    """Borra la sesión de un operario (al terminar el lote o descartarlo)."""
+    try:
+        p = _ruta_sesion(usuario)
+        if os.path.exists(p):
+            os.remove(p)
+            logger.info(f"[SESION] {usuario}: sesión borrada")
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)}), 500
 
 
 @app.route("/api/lote-backup", methods=["POST"])
