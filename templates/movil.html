@@ -324,10 +324,20 @@ async function detectarCanalActivo() {
       E = dC; _loteTimestamp = dC.ultima_actualizacion || ''; render(); return;
     }
 
-    // Caso 3: Ambas PCs tienen lote activo simultáneamente (caso normal de operación)
-    // → Respetar el canal que el operario eligió (localStorage)
-    // El operario ya eligió su canal con los botones FLEX / COLECTA
+    // Caso 3: Ambos canales tienen lote → RESPETAR el canal elegido por el operario.
+    // El colector de Flex NO debe ver el lote de Colecta y viceversa.
+    // El operario elige su canal con los botones ⚡ FLEX / 🚚 COLECTA al entrar.
     const d = _canalActivo === 'flex' ? dF : dC;
+
+    // Avisar SOLO si llegó un lote NUEVO en el PROPIO canal (no en el otro)
+    const habiaLote = E && E.cargado && (E.grupos || []).length > 0;
+    const hayLoteNuevo = !habiaLote && d.cargado && (d.grupos || []).length > 0;
+    if (hayLoteNuevo) {
+      const ico = _canalActivo === 'flex' ? '⚡' : '🚚';
+      toast(ico + ' Lote nuevo: ' + (d.total_skus || 0) + ' SKUs', 'ok');
+      try { navigator.vibrate && navigator.vibrate([120, 60, 120]); } catch(e) {}
+    }
+
     E = d; _loteTimestamp = d.ultima_actualizacion || ''; render(); return;
 
     // Caso 4: Ninguno tiene lote → mostrar pantalla de espera
@@ -928,8 +938,24 @@ document.addEventListener('DOMContentLoaded', () => {
     detectarCanalActivo().finally(()=>setTimeout(()=>$('fab').classList.remove('spin'),500));
   });
 
-  // Auto-refresh cada 5 segundos (silencioso)
-  setInterval(loadQ, 5000);
+  // ── Auto-refresh ────────────────────────────────────────────────────────
+  // Cada 5s: recarga el canal actual (rápido, liviano)
+  // Cada 15s: verifica AMBOS canales por si el desktop generó un lote nuevo
+  //           en el otro canal. Así el móvil se entera sin tocar nada.
+  let _ciclos = 0;
+  setInterval(() => {
+    _ciclos++;
+    const sinLote = !E || !E.cargado || !(E.grupos || []).length;
+
+    // Verificar ambos canales si:
+    //   a) el canal actual está vacío (probablemente el lote está en el otro)
+    //   b) o cada 3 ciclos (15s) como chequeo periódico
+    if (sinLote || _ciclos % 3 === 0) {
+      detectarCanalActivo();
+    } else {
+      loadQ();
+    }
+  }, 5000);
 });
 </script>
 </body>
