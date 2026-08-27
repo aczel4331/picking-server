@@ -4771,10 +4771,22 @@ def panel_estadisticas():
     top_ops = sorted(ranking.items(), key=lambda x: x[1], reverse=True)[:10]
 
     # ── Top 5 productos ────────────────────────────────────────────────────────
+    # Usa data_all (sin filtro de operario/canal) pero respetando el rango de fechas
+    # para no mostrar datos de meses atrás como si fueran actuales
     conteo_skus = {}
-    for d in data:
-        for sku, qty in (d.get("skus") or {}).items():
-            conteo_skus[sku] = conteo_skus.get(sku,0) + qty
+    for d in data_all:
+        # Solo dentro del rango de fechas seleccionado
+        if not (desde <= d.get("ts","")[:10] <= hasta):
+            continue
+        skus_d = d.get("skus") or {}
+        if not isinstance(skus_d, dict):
+            continue
+        for sku, qty in skus_d.items():
+            try:
+                conteo_skus[sku] = conteo_skus.get(sku, 0) + int(qty)
+            except (TypeError, ValueError):
+                pass
+
     top5_skus = sorted(conteo_skus.items(), key=lambda x: x[1], reverse=True)[:5]
     total_all  = sum(conteo_skus.values()) or 1
 
@@ -4818,16 +4830,54 @@ def panel_estadisticas():
           </td>
         </tr>"""
 
+    # Intentar cargar nombres de SKUs desde el Excel guardado en /data
+    _sku_nombres_top5 = {}
+    try:
+        _cfg_xl = _cargar_config_app()
+        _b64_xl = _cfg_xl.get("excel_b64","")
+        if _b64_xl:
+            import openpyxl as _opxl, io as _io2, base64 as _b64m
+            _wb5 = _opxl.load_workbook(
+                _io2.BytesIO(_b64m.b64decode(_b64_xl)), read_only=True)
+            _hoja5 = next((s for s in _wb5.sheetnames
+                           if s.strip().lower() == "productos"), None)
+            if _hoja5:
+                _ws5 = _wb5[_hoja5]
+                _csku = 1; _cnom = 2
+                for _fh in _ws5.iter_rows(max_row=5, values_only=True):
+                    if not _fh: continue
+                    _hh = [str(v).strip().upper() if v else "" for v in _fh]
+                    if "SKU" in _hh:
+                        _csku = _hh.index("SKU")
+                        for _ni, _hn in enumerate(_hh):
+                            if _hn in ("NOMBRE","PRODUCTO","TITULO","TÍTULO"):
+                                _cnom = _ni; break
+                        break
+                for _fila5 in _ws5.iter_rows(min_row=2, values_only=True):
+                    if not _fila5 or len(_fila5) <= _csku: continue
+                    _sk5 = str(_fila5[_csku] or "").strip().upper()
+                    _nm5 = str(_fila5[_cnom] if len(_fila5) > _cnom else "").strip()
+                    if _sk5 and _nm5:
+                        _sku_nombres_top5[_sk5] = _nm5[:40]
+    except Exception:
+        pass
+
     top5_html = ""
     COLORS5 = ["#F59E0B","#94A3B8","#CD7F32","#3B82F6","#8B5CF6"]
     for i,(sku,qty) in enumerate(top5_skus):
         pct = int(qty/total_all*100)
         col = COLORS5[i]
+        nombre_sku = _sku_nombres_top5.get(sku.upper(), "")
+        nom_html   = (f'<div style="font-size:11px;color:#94A3B8">{nombre_sku}</div>'
+                      if nombre_sku else "")
         top5_html += f"""
         <tr>
           <td style="color:{col};font-weight:800;font-size:20px;width:40px">{MEDAL[i]}</td>
-          <td><code style="background:#0F172A;padding:3px 8px;border-radius:4px;
-              color:{col};font-size:13px">{sku}</code></td>
+          <td>
+            <code style="background:#0F172A;padding:3px 8px;border-radius:4px;
+                color:{col};font-size:13px">{sku}</code>
+            {nom_html}
+          </td>
           <td style="font-weight:700;font-size:15px">{qty:,}</td>
           <td style="width:150px">
             <div style="background:#1E293B;border-radius:4px;height:8px">
