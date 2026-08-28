@@ -4,7 +4,7 @@ server.py — Sistema de Picking integrado con MercadoLibre (Uruguay)
 VERSION: 2.1.0 — Auto-token + Persistencia Railway
 """
 
-SERVER_VERSION = "2.1.0"
+SERVER_VERSION = "4.0.0"
 
 import os, json, threading, time, requests, logging, re
 from datetime import datetime, timedelta, timezone
