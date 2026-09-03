@@ -4,7 +4,7 @@ server.py — Sistema de Picking integrado con MercadoLibre (Uruguay)
 VERSION: 2.1.0 — Auto-token + Persistencia Railway
 """
 
-SERVER_VERSION = "4.0.0"
+SERVER_VERSION = "2.1.0"
 
 import os, json, threading, time, requests, logging, re
 from datetime import datetime, timedelta, timezone
@@ -2981,10 +2981,15 @@ def subir_estado():
             "ultima_actualizacion": _ts(), "cargado": True, "canal": canal,
             "operario": data.get("operario","") or est.get("operario",""),
         })
-        # Marcar el inicio del lote la primera vez
-        if es_lote_nuevo and data.get("total_skus",0) > 0:
+        # Si es un lote nuevo → limpiar la colecta anterior para que el móvil
+        # no muestre como "ya buscado" lo que era del lote previo
+        if es_lote_nuevo and data.get("total_skus", 0) > 0:
+            est["colecta"]       = {}  # reset explícito
             est["inicio_ts"]     = _dt_est.datetime.now().isoformat()
             est["ultimos_scans"] = []
+            est["_colecta_prev"] = {}
+            logger.info(f"[LOTE] Canal '{canal}': lote nuevo detectado "
+                        f"— colecta reseteada a 0")
 
         # Registrar últimos escaneos comparando la colecta anterior con la nueva
         try:
