@@ -1840,19 +1840,52 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         if tiene_logo:
             try:
                 logo_bytes = base64.b64decode(config["etiqueta_logo_b64"])
-                img  = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
-                pct  = max(5, min(40, int(config.get("etiqueta_logo_size", 20))))
-                w_pt = (pw * pct) / 100
-                h_pt = w_pt * (img.height / img.width)
-                if h_pt > ph * 0.25:
-                    h_pt = ph * 0.25; w_pt = h_pt * (img.width / img.height)
-                img_r = img.resize((max(1,int(w_pt)), max(1,int(h_pt))), Image.Resampling.LANCZOS)
+                img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
+
+                # Tamaño: el usuario ingresa % del ancho de la etiqueta
+                # Límite real: entre 5% y 20% del ancho para que no tape el contenido
+                pct_raw = int(config.get("etiqueta_logo_size", 15) or 15)
+                pct     = max(5, min(20, pct_raw))
+
+                # Calcular dimensiones RESPETANDO LA PROPORCIÓN ORIGINAL
+                ratio   = img.width / img.height   # ancho/alto original
+                w_pt    = (pw * pct) / 100          # ancho en puntos PDF
+                h_pt    = w_pt / ratio              # alto proporcional
+
+                # Tope de altura: máximo 18% del alto de la página
+                MAX_H = ph * 0.18
+                if h_pt > MAX_H:
+                    h_pt = MAX_H
+                    w_pt = h_pt * ratio   # recalcular ancho manteniendo proporción
+
+                # Resamplear a la resolución correcta sin distorsión
+                px_w = max(1, int(w_pt * 2))   # ×2 para mejor resolución en PDF
+                px_h = max(1, int(h_pt * 2))
+                img_r = img.resize((px_w, px_h), Image.Resampling.LANCZOS)
+
                 MARGEN = 6
-                pos = config.get("etiqueta_logo_pos","superior_der")
-                x = MARGEN if pos == "superior_izq" else pw - w_pt - MARGEN
-                y = ph - h_pt - MARGEN
-                tmp = io.BytesIO(); img_r.save(tmp, format="PNG"); tmp.seek(0)
-                c2.drawImage(ImageReader(tmp), x, y, width=w_pt, height=h_pt, mask="auto")
+                pos    = config.get("etiqueta_logo_pos", "superior_izq")
+                # Posición horizontal
+                if "der" in pos.lower():
+                    x = pw - w_pt - MARGEN
+                elif "centro" in pos.lower():
+                    x = (pw - w_pt) / 2
+                else:  # izquierda (default)
+                    x = MARGEN
+                # Posición vertical
+                if "inf" in pos.lower():
+                    y = MARGEN
+                else:  # superior (default)
+                    y = ph - h_pt - MARGEN
+
+                tmp = io.BytesIO()
+                img_r.save(tmp, format="PNG")
+                tmp.seek(0)
+                # mask="auto" respeta la transparencia del PNG
+                c2.drawImage(ImageReader(tmp), x, y,
+                             width=w_pt, height=h_pt, mask="auto")
+                logger.debug(f"[LOGO] {img.width}×{img.height}px → "
+                             f"{w_pt:.1f}×{h_pt:.1f}pt ({pct}% ancho)")
             except Exception as e:
                 logger.error(f"[ETIQUETA-PERS] Error logo: {e}")
 
@@ -5865,8 +5898,12 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
         <div class="pos-btn" data-pos="inferior_der" onclick="selPos(this)">↘ Inf. Der</div>
       </div>
 
-      <label>Tamaño del logo (% del ancho, ej: 15)</label>
-      <input type="number" id="logo-size" value="{{ cfg.get('etiqueta_logo_size', 15) }}"
+      <label>Tamaño del logo (% del ancho de la etiqueta)</label>
+      <div style="font-size:11px;color:#94A3B8;margin-bottom:6px">
+        Recomendado: <b>10-15%</b>. Máximo 20%. El logo mantiene su proporción original.
+      </div>
+      <input type="number" id="logo-size" value="{{ [cfg.get('etiqueta_logo_size', 15), 20]|min }}"
+             min="5" max="20" step="1"
              min="5" max="50" step="1">
     </div>
 
