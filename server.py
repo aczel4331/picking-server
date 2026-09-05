@@ -1815,8 +1815,35 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         pw = float(reader.pages[0].mediabox.width)
         ph = float(reader.pages[0].mediabox.height)
 
-        FRANJA_LOGO  = 50 if tiene_logo  else 0
+        # ── Calcular franja del logo ANTES de escalar el PDF ────────────────
+        # El logo se coloca SOBRE el contenido en una franja superior dedicada.
+        # Así no tapa nada y se ve grande y claro.
+        logo_img   = None
+        logo_w_pt  = 0
+        logo_h_pt  = 0
+        FRANJA_LOGO = 0
+
+        if tiene_logo:
+            try:
+                logo_bytes = base64.b64decode(config["etiqueta_logo_b64"])
+                logo_img   = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
+                ratio      = logo_img.width / logo_img.height
+
+                # Tamaño: % del ancho ingresado por el usuario (5-80%)
+                # El usuario controla cuán grande lo quiere.
+                pct_raw  = int(config.get("etiqueta_logo_size", 40) or 40)
+                pct      = max(5, min(80, pct_raw))
+                logo_w_pt = (pw * pct) / 100
+                logo_h_pt = logo_w_pt / ratio
+
+                # Franja superior dedicada al logo + margen
+                FRANJA_LOGO = logo_h_pt + 12
+            except Exception as e:
+                logger.error(f"[ETIQUETA-PERS] Error pre-calculando logo: {e}")
+                logo_img = None
+
         FRANJA_TEXTO = 16 if tiene_texto else 0
+        # El contenido original se escala para dejar espacio al logo arriba
         escala = min((pw - FRANJA_TEXTO) / pw, (ph - FRANJA_LOGO) / ph)
 
         bg_buf = io.BytesIO()
@@ -1837,55 +1864,27 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
         ov_buf = io.BytesIO()
         c2 = rl_canvas.Canvas(ov_buf, pagesize=(pw, ph))
 
-        if tiene_logo:
+        if tiene_logo and logo_img is not None:
             try:
-                logo_bytes = base64.b64decode(config["etiqueta_logo_b64"])
-                img = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
+                # El logo va CENTRADO en la franja superior
+                # Franja: desde (ph - FRANJA_LOGO) hasta ph
+                MARGEN_V = 6
+                x = (pw - logo_w_pt) / 2           # centrado horizontal siempre
+                y = ph - logo_h_pt - MARGEN_V      # parte superior con margen
 
-                # Tamaño: el usuario ingresa % del ancho de la etiqueta
-                # Límite real: entre 5% y 20% del ancho para que no tape el contenido
-                pct_raw = int(config.get("etiqueta_logo_size", 15) or 15)
-                pct     = max(5, min(20, pct_raw))
-
-                # Calcular dimensiones RESPETANDO LA PROPORCIÓN ORIGINAL
-                ratio   = img.width / img.height   # ancho/alto original
-                w_pt    = (pw * pct) / 100          # ancho en puntos PDF
-                h_pt    = w_pt / ratio              # alto proporcional
-
-                # Tope de altura: máximo 18% del alto de la página
-                MAX_H = ph * 0.18
-                if h_pt > MAX_H:
-                    h_pt = MAX_H
-                    w_pt = h_pt * ratio   # recalcular ancho manteniendo proporción
-
-                # Resamplear a la resolución correcta sin distorsión
-                px_w = max(1, int(w_pt * 2))   # ×2 para mejor resolución en PDF
-                px_h = max(1, int(h_pt * 2))
-                img_r = img.resize((px_w, px_h), Image.Resampling.LANCZOS)
-
-                MARGEN = 6
-                pos    = config.get("etiqueta_logo_pos", "superior_izq")
-                # Posición horizontal
-                if "der" in pos.lower():
-                    x = pw - w_pt - MARGEN
-                elif "centro" in pos.lower():
-                    x = (pw - w_pt) / 2
-                else:  # izquierda (default)
-                    x = MARGEN
-                # Posición vertical
-                if "inf" in pos.lower():
-                    y = MARGEN
-                else:  # superior (default)
-                    y = ph - h_pt - MARGEN
+                # Resamplear a alta resolución para que quede nítido en impresión
+                px_w  = max(1, int(logo_w_pt * 3))   # ×3 para impresión nítida
+                px_h  = max(1, int(logo_h_pt * 3))
+                img_r = logo_img.resize((px_w, px_h), Image.Resampling.LANCZOS)
 
                 tmp = io.BytesIO()
                 img_r.save(tmp, format="PNG")
                 tmp.seek(0)
-                # mask="auto" respeta la transparencia del PNG
                 c2.drawImage(ImageReader(tmp), x, y,
-                             width=w_pt, height=h_pt, mask="auto")
-                logger.debug(f"[LOGO] {img.width}×{img.height}px → "
-                             f"{w_pt:.1f}×{h_pt:.1f}pt ({pct}% ancho)")
+                             width=logo_w_pt, height=logo_h_pt, mask="auto")
+                logger.info(f"[LOGO] {logo_img.width}×{logo_img.height}px → "
+                            f"{logo_w_pt:.1f}×{logo_h_pt:.1f}pt "
+                            f"({pct}% ancho, centrado en franja superior)")
             except Exception as e:
                 logger.error(f"[ETIQUETA-PERS] Error logo: {e}")
 
@@ -3017,12 +3016,16 @@ def subir_estado():
         # Si es un lote nuevo → limpiar la colecta anterior para que el móvil
         # no muestre como "ya buscado" lo que era del lote previo
         if es_lote_nuevo and data.get("total_skus", 0) > 0:
+            import time as _t_lid
             est["colecta"]       = {}  # reset explícito
+            est["colecta_completa"] = False
             est["inicio_ts"]     = _dt_est.datetime.now().isoformat()
             est["ultimos_scans"] = []
             est["_colecta_prev"] = {}
-            logger.info(f"[LOTE] Canal '{canal}': lote nuevo detectado "
-                        f"— colecta reseteada a 0")
+            # ID único del lote — para que la app desktop lo compare
+            est["lote_id"] = f"{canal}_{int(_t_lid.time())}"
+            logger.info(f"[LOTE] Canal '{canal}': lote nuevo "
+                        f"(id={est['lote_id']}) — colecta reseteada a 0")
 
         # Registrar últimos escaneos comparando la colecta anterior con la nueva
         try:
@@ -3060,6 +3063,7 @@ def subir_estado():
         logger.error(f"[LOTE] Error persistiendo: {e}")
     logger.info(f"[LOTE] Canal '{canal}' cargado: {est['total_skus']} SKUs, fase {nueva_fase}")
     return jsonify({"ok": True, "canal": canal,
+                    "lote_id": est.get("lote_id",""),
                     "msg": f"Canal '{canal}': {est['total_skus']} SKUs"})
 
 
@@ -5900,10 +5904,11 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
 
       <label>Tamaño del logo (% del ancho de la etiqueta)</label>
       <div style="font-size:11px;color:#94A3B8;margin-bottom:6px">
-        Recomendado: <b>10-15%</b>. Máximo 20%. El logo mantiene su proporción original.
+        Recomendado: <b>40-60%</b>. El logo se centra automáticamente arriba de la etiqueta
+        y mantiene su proporción original sin distorsión.
       </div>
-      <input type="number" id="logo-size" value="{{ [cfg.get('etiqueta_logo_size', 15), 20]|min }}"
-             min="5" max="20" step="1"
+      <input type="number" id="logo-size" value="{{ cfg.get('etiqueta_logo_size', 40) }}"
+             min="5" max="80" step="5"
              min="5" max="50" step="1">
     </div>
 
