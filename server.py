@@ -1693,11 +1693,43 @@ def api_pedidos():
 _cortes_cache = {"ts": 0.0, "data": None}
 _DIAS_ML = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
 
+def _merge_dia_colecta(actual, info):
+    """Fusiona el detalle de un día (una logística) en el acumulado 'actual'.
+    Toma la ÚLTIMA colecta del día (to/cutoff/from más tardíos). Si ya había
+    otra logística ese día, se queda con la ventana más tardía."""
+    dets = info.get("detail") or []
+    if not info.get("work", True) or not dets:
+        return actual if (actual and actual.get("work")) else {"work": False}
+    def _mx(campo):
+        vs = [str(d.get(campo, "")).strip() for d in dets if d.get(campo)]
+        return max(vs) if vs else ""
+    def _mn(campo):
+        vs = [str(d.get(campo, "")).strip() for d in dets if d.get(campo)]
+        return min(vs) if vs else ""
+    to_, cutoff, from_ = _mx("to"), _mx("cutoff"), _mn("from")
+    carrier = ""
+    try:
+        ult = max(dets, key=lambda d: (str(d.get("to","")), str(d.get("cutoff",""))))
+        carrier = (ult.get("carrier") or {}).get("name", "") or ""
+    except Exception:
+        pass
+    nuevo = {"work": True, "cutoff": cutoff, "to": to_, "from": from_,
+             "carrier": carrier, "colectas": len(dets)}
+    if not actual or not actual.get("work"):
+        return nuevo
+    return nuevo if (to_ or cutoff) > (actual.get("to") or actual.get("cutoff") or "") else actual
+
+
 def _calcular_cortes():
-    """Consulta a ML los horarios de corte por canal (doc oficial):
-      · Colecta: /users/{uid}/shipping/schedule/cross_docking → detail[].cutoff
+    """Consulta a ML la agenda real de corte por canal (doc oficial):
+      · Colecta: /users/{uid}/shipping/schedule/{cross_docking,xd_drop_off}
+                 → por día: work + detail[].{from,to,cutoff,carrier}
       · Flex:    /flex/.../coverage/zones/v1 → zones[].cutoff.{week,saturday,sunday}
-    Devuelve {"ok":bool,"colecta":{monday:"12:00",...},"flex":{week:18,...}}.
+    Devuelve {"ok":bool,
+              "colecta":{"monday":{"work":true,"cutoff":"12:00","to":"16:00",
+                                   "from":"13:00","carrier":"iCarrier","colectas":1},
+                         "saturday":{"work":false}, ...},
+              "flex":{"week":18,"saturday":14,"sunday":14}}.
     Se cachea 12 h. Ante cualquier fallo el canal queda {} y el escritorio
     usa sus defaults.
     """
@@ -1706,19 +1738,21 @@ def _calcular_cortes():
         uid = tok.get("user_id")
         if not uid or not tok.get("access_token"):
             continue
-        # ── Colecta ──────────────────────────────────────────────────────
+        # ── Colecta: cross_docking + xd_drop_off (Places) ────────────────
         if not out["colecta"]:
-            try:
-                r = _ml_get_cuenta(f"/users/{uid}/shipping/schedule/cross_docking", cuenta_id)
-                if r.status_code == 200:
+            col = {}
+            for logt in ("cross_docking", "xd_drop_off"):
+                try:
+                    r = _ml_get_cuenta(
+                        f"/users/{uid}/shipping/schedule/{logt}", cuenta_id)
+                    if r.status_code != 200:
+                        continue
                     sched = (r.json() or {}).get("schedule", {}) or {}
                     for dia, info in sched.items():
-                        dets = info.get("detail") or []
-                        cutoffs = [d.get("cutoff") for d in dets if d.get("cutoff")]
-                        if cutoffs:
-                            out["colecta"][dia] = min(cutoffs)
-            except Exception as e:
-                logger.debug(f"[CORTES] colecta {cuenta_id}: {e}")
+                        col[dia] = _merge_dia_colecta(col.get(dia), info or {})
+                except Exception as e:
+                    logger.debug(f"[CORTES] colecta/{logt} {cuenta_id}: {e}")
+            out["colecta"] = col
         # ── Flex ─────────────────────────────────────────────────────────
         if not out["flex"]:
             try:
