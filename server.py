@@ -1829,12 +1829,20 @@ def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
                 logo_img   = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
                 ratio      = logo_img.width / logo_img.height
 
-                # Tamaño: % del ancho ingresado por el usuario (5-80%)
-                # El usuario controla cuán grande lo quiere.
-                pct_raw  = int(config.get("etiqueta_logo_size", 40) or 40)
-                pct      = max(5, min(80, pct_raw))
+                # Tamaño: % del ancho ingresado por el usuario (5-35%)
+                # Tope bajo a propósito: el logo NO debe competir con el
+                # código de barras ni la dirección.
+                pct_raw  = int(config.get("etiqueta_logo_size", 18) or 18)
+                pct      = max(5, min(35, pct_raw))
                 logo_w_pt = (pw * pct) / 100
                 logo_h_pt = logo_w_pt / ratio
+
+                # Tope de altura: el logo nunca ocupa más del 12% del alto
+                # de la etiqueta (recalcula el ancho manteniendo proporción).
+                MAX_H = ph * 0.12
+                if logo_h_pt > MAX_H:
+                    logo_h_pt = MAX_H
+                    logo_w_pt = logo_h_pt * ratio
 
                 # Franja superior dedicada al logo + margen
                 FRANJA_LOGO = logo_h_pt + 12
@@ -5904,12 +5912,11 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
 
       <label>Tamaño del logo (% del ancho de la etiqueta)</label>
       <div style="font-size:11px;color:#94A3B8;margin-bottom:6px">
-        Recomendado: <b>40-60%</b>. El logo se centra automáticamente arriba de la etiqueta
-        y mantiene su proporción original sin distorsión.
+        Recomendado: <b>12-20%</b>. Máximo 35%. El logo se centra automáticamente arriba
+        de la etiqueta y mantiene su proporción original sin distorsión.
       </div>
-      <input type="number" id="logo-size" value="{{ cfg.get('etiqueta_logo_size', 40) }}"
-             min="5" max="80" step="5"
-             min="5" max="50" step="1">
+      <input type="number" id="logo-size" value="{{ cfg.get('etiqueta_logo_size', 18) }}"
+             min="5" max="35" step="1">
     </div>
 
     <div>
@@ -5977,7 +5984,7 @@ function mostrar(id, msg, ok) {
 async function guardarEtiqueta() {
   const body = {
     etiqueta_logo_pos:  _logoPos,
-    etiqueta_logo_size: parseInt(document.getElementById('logo-size').value) || 15,
+    etiqueta_logo_size: parseInt(document.getElementById('logo-size').value) || 18,
     etiqueta_texto:     document.getElementById('etiqueta-texto').value.trim(),
     etiqueta_texto_pos: document.getElementById('texto-pos').value,
   };
