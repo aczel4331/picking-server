@@ -187,6 +187,9 @@ def _estado_vacio():
         "canal":          "",
         "inicio_ts":      "",   # ISO datetime cuando se generó el lote
         "ultimos_scans":  [],   # últimos 5 SKUs escaneados con timestamp
+        # Identidad del lote — para no arrastrar la colecta de un lote al siguiente
+        "lote_id":        "",   # id del lote (lo asigna el desktop o el server)
+        "_firma_lote":    "",   # hash del contenido (sku+req) del lote actual
     }
 
 _estados_canal = {
@@ -3009,31 +3012,79 @@ def subir_estado():
     est   = _get_estado(canal)
     with _lock:
         nueva_fase = data.get("fase",1)
-        import datetime as _dt_est
-        # Detectar si es un lote NUEVO (antes no estaba cargado, o cambió el total)
-        es_lote_nuevo = (not est.get("cargado")
-                         or est.get("total_skus",0) != data.get("total_skus",0))
+        import datetime as _dt_est, hashlib as _hl_est, time as _t_lid
+
+        # ── Huella determinística del contenido del lote (sku + req) ──────────
+        # Dos lotes con el mismo nº de SKUs pero distinto contenido dan firmas
+        # distintas → se detectan como lotes diferentes aunque total_skus coincida.
+        try:
+            _firma = _hl_est.sha1(repr(sorted(
+                (str(it.get("sku","")), int(it.get("req",0) or 0))
+                for g in data.get("grupos", [])
+                for it in g.get("items", []))).encode()).hexdigest()
+        except Exception:
+            _firma = ""
+
+        # Detectar si es un lote NUEVO:
+        #   · el canal no tenía lote cargado, o
+        #   · el desktop mandó un lote_id distinto al guardado, o
+        #   · (desktop viejo sin lote_id) cambió la firma de contenido, o
+        #   · cambió el conteo total_skus (fallback histórico)
+        _lote_id_in = str(data.get("lote_id","") or "")
+        es_lote_nuevo = (
+            not est.get("cargado")
+            or (_lote_id_in and _lote_id_in != est.get("lote_id",""))
+            or (not _lote_id_in and _firma and _firma != est.get("_firma_lote",""))
+            or est.get("total_skus",0) != data.get("total_skus",0)
+        )
+
+        _colecta_in = data.get("colecta",{}) or {}   # se procesa aparte del update()
 
         est.update({
             "fase": nueva_fase, "grupos": data.get("grupos",[]),
             "total_skus": data.get("total_skus",0), "total_uds": data.get("total_uds",0),
-            "colecta": data.get("colecta",{}), "colecta_completa": data.get("colecta_completa",False),
+            "colecta_completa": data.get("colecta_completa",False),
             "ultima_actualizacion": _ts(), "cargado": True, "canal": canal,
             "operario": data.get("operario","") or est.get("operario",""),
         })
-        # Si es un lote nuevo → limpiar la colecta anterior para que el móvil
-        # no muestre como "ya buscado" lo que era del lote previo
-        if es_lote_nuevo and data.get("total_skus", 0) > 0:
-            import time as _t_lid
-            est["colecta"]       = {}  # reset explícito
+
+        if es_lote_nuevo and data.get("grupos"):
+            # Lote nuevo → arrancar la colecta de cero para que el móvil no
+            # muestre como "ya buscado" lo que era del lote previo.
+            est["colecta"]          = {}
             est["colecta_completa"] = False
-            est["inicio_ts"]     = _dt_est.datetime.now().isoformat()
-            est["ultimos_scans"] = []
-            est["_colecta_prev"] = {}
-            # ID único del lote — para que la app desktop lo compare
-            est["lote_id"] = f"{canal}_{int(_t_lid.time())}"
-            logger.info(f"[LOTE] Canal '{canal}': lote nuevo "
-                        f"(id={est['lote_id']}) — colecta reseteada a 0")
+            est["inicio_ts"]        = _dt_est.datetime.now().isoformat()
+            est["ultimos_scans"]    = []
+            est["_colecta_prev"]    = {}
+            est["_firma_lote"]      = _firma
+            est["lote_id"]          = _lote_id_in or f"{canal}_{int(_t_lid.time())}_{_firma[:6]}"
+            logger.info(f"[LOTE] Canal '{canal}': lote NUEVO "
+                        f"(id={est['lote_id']}, firma={_firma[:8]}) — colecta reseteada a 0")
+        else:
+            # Mismo lote → fusionar la colecta por MÁXIMO por SKU: nunca bajar
+            # contadores (así no se pierde un escaneo hecho en un celular mientras
+            # el desktop subía un estado más viejo).
+            _prev = est.get("colecta",{}) or {}
+            _merged = {}
+            for s in set(_prev) | set(_colecta_in):
+                try:
+                    _merged[s] = max(int(_prev.get(s,0) or 0), int(_colecta_in.get(s,0) or 0))
+                except Exception:
+                    _merged[s] = _prev.get(s,0) or _colecta_in.get(s,0) or 0
+            est["colecta"] = _merged
+            if _firma and not est.get("_firma_lote"):
+                est["_firma_lote"] = _firma
+
+        # ── Saneo: la colecta sólo puede contener SKUs presentes en los grupos
+        # que se acaban de subir. Mata cualquier arrastre de un lote anterior.
+        try:
+            _skus_validos = {str(it.get("sku","")) for g in data.get("grupos",[])
+                                                    for it in g.get("items",[])}
+            if _skus_validos:
+                est["colecta"] = {s: q for s, q in est.get("colecta",{}).items()
+                                  if str(s) in _skus_validos}
+        except Exception as _e_san:
+            logger.debug(f"[LOTE] Error saneando colecta: {_e_san}")
 
         # Registrar últimos escaneos comparando la colecta anterior con la nueva
         try:
@@ -3309,11 +3360,23 @@ def reset_sku():
 @app.route("/api/limpiar", methods=["POST"])
 @requiere_api_key
 def limpiar():
+    data  = request.get_json(silent=True) or {}
+    canal = data.get("canal") or request.args.get("canal") or "default"
+    est   = _get_estado(canal)
     with _lock:
-        _estado.update({"grupos":[],"colecta":{},"colecta_completa":False,
-                         "cargado":False,"total_skus":0,"total_uds":0,
-                         "ultima_actualizacion":_ts()})
-    return jsonify({"ok": True})
+        est.update({"grupos":[],"colecta":{},"colecta_completa":False,
+                    "cargado":False,"total_skus":0,"total_uds":0,
+                    "ultimos_scans":[],"_colecta_prev":{},"inicio_ts":"",
+                    "lote_id":"","_firma_lote":"","etiquetas_impresas":[],
+                    "ultima_actualizacion":_ts()})
+        _actualizar_sync_estado(canal)
+    try:
+        with open(LOTE_PATH,"w") as f:
+            json.dump({"canales": _estados_canal}, f, default=str)
+    except Exception as e:
+        logger.error(f"[LOTE] Error persistiendo limpiar: {e}")
+    logger.info(f"[LOTE] Canal '{canal}' limpiado")
+    return jsonify({"ok": True, "canal": canal})
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # API BASE DE SKUs
@@ -6260,15 +6323,34 @@ def _startup():
     else:
         logger.warning("[STARTUP] Sin tokens. Conectar ML desde la app.")
 
+    def _lote_restaurable(est_data):
+        """No revivir como 'activo' un lote ya completado o demasiado viejo
+        (p.ej. el de ayer): eso hacía que el móvil arrastrara su colecta."""
+        if not (est_data.get("cargado") and est_data.get("grupos")):
+            return False
+        if est_data.get("colecta_completa"):
+            logger.info("[STARTUP] Lote omitido: colecta_completa")
+            return False
+        ini = est_data.get("inicio_ts") or ""
+        if ini:
+            try:
+                edad_h = (datetime.now() - datetime.fromisoformat(ini)).total_seconds() / 3600
+                if edad_h > 12:
+                    logger.info(f"[STARTUP] Lote omitido: inicio_ts hace {edad_h:.1f} h")
+                    return False
+            except Exception:
+                pass   # inicio_ts ilegible → restaurar igual (seguridad legacy)
+        return True
+
     try:
         with open(LOTE_PATH) as f:
             data = json.load(f)
         if "canales" in data:
             for canal, est_data in data["canales"].items():
-                if est_data.get("cargado") and est_data.get("grupos"):
+                if _lote_restaurable(est_data):
                     _estados_canal[canal] = est_data
                     logger.info(f"[STARTUP] Canal '{canal}' restaurado: {est_data.get('total_skus',0)} SKUs")
-        elif data.get("cargado") and data.get("grupos"):
+        elif _lote_restaurable(data):
             _estados_canal["default"] = data
             _estado.update(data)
             logger.info(f"[STARTUP] Lote legacy restaurado: {data.get('total_skus',0)} SKUs")
