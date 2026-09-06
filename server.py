@@ -661,6 +661,10 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
                 "pack_id":      str(order.get("pack_id","")) if order.get("pack_id") else "",
                 "fecha":        order.get("date_created","")[:10],
                 "fecha_cierre": order.get("date_closed","")[:10],
+                # ISO completo (con hora/offset) — el escritorio lo compara contra
+                # el horario de corte del canal para decidir "es de hoy vs mañana"
+                "fecha_ts":        order.get("date_created","") or "",
+                "fecha_cierre_ts": order.get("date_closed","") or "",
                 "comprador":    (order.get("buyer") or {}).get("nickname","")
                                 or str((order.get("buyer") or {}).get("id","")),
                 "total":        order.get("total_amount", 0),
@@ -781,17 +785,26 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                         ped["tipo"]         = _calcular_tipo(logistica, ped.get("tags",[]), ped.get("shipping_id",""))
 
                         # Fechas de compromiso (doc oficial ML — nodo lead_time)
-                        #   estimated_handling_limit → límite para DESPACHAR
-                        #   estimated_delivery_time  → entrega al comprador
+                        #   estimated_handling_limit  → límite para DESPACHAR
+                        #   estimated_delivery_time   → entrega al comprador
+                        #   estimated_delivery_limit / estimated_schedule_limit →
+                        #   límites adicionales que a veces vienen en lugar del handling
                         try:
                             lt = sd.get("lead_time") or {}
                             ped["handling_limit"] = (
                                 lt.get("estimated_handling_limit") or {}).get("date","")
                             ped["delivery_time"]  = (
                                 lt.get("estimated_delivery_time") or {}).get("date","")
+                            _limites = [d for d in (
+                                (lt.get("estimated_handling_limit") or {}).get("date",""),
+                                (lt.get("estimated_delivery_limit") or {}).get("date",""),
+                                (lt.get("estimated_schedule_limit") or {}).get("date",""),
+                            ) if d]
+                            ped["limite_despacho"] = min(_limites) if _limites else ""
                         except Exception:
-                            ped["handling_limit"] = ""
-                            ped["delivery_time"]  = ""
+                            ped["handling_limit"]  = ""
+                            ped["delivery_time"]   = ""
+                            ped["limite_despacho"] = ""
                         # Regla por tipo de logística
                         FINS   = {"shipped","delivered","not_delivered","cancelled"}
                         es_fx  = logistica in ("self_service","xd_drop_off","drop_off")
@@ -1026,6 +1039,12 @@ def _refrescar_estado_pedidos_bg(pedidos_lista, limite=50):
                         lt2.get("estimated_handling_limit") or {}).get("date","")
                     pp["delivery_time"]  = (
                         lt2.get("estimated_delivery_time") or {}).get("date","")
+                    _lims = [d for d in (
+                        (lt2.get("estimated_handling_limit") or {}).get("date",""),
+                        (lt2.get("estimated_delivery_limit") or {}).get("date",""),
+                        (lt2.get("estimated_schedule_limit") or {}).get("date",""),
+                    ) if d]
+                    pp["limite_despacho"] = min(_lims) if _lims else ""
                 except Exception:
                     pass
                 antes = pp.get("impreso", False)
@@ -1669,6 +1688,89 @@ def api_pedidos():
         "sync_pausado": _sync_pausado(), "sync_estados": dict(_sync_estado_canal),
         "ts": _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S") if _ultimo_refresh_pedidos else "-",
     })
+
+
+_cortes_cache = {"ts": 0.0, "data": None}
+_DIAS_ML = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+
+def _calcular_cortes():
+    """Consulta a ML los horarios de corte por canal (doc oficial):
+      · Colecta: /users/{uid}/shipping/schedule/cross_docking → detail[].cutoff
+      · Flex:    /flex/.../coverage/zones/v1 → zones[].cutoff.{week,saturday,sunday}
+    Devuelve {"ok":bool,"colecta":{monday:"12:00",...},"flex":{week:18,...}}.
+    Se cachea 12 h. Ante cualquier fallo el canal queda {} y el escritorio
+    usa sus defaults.
+    """
+    out = {"colecta": {}, "flex": {}}
+    for cuenta_id, tok in list(_cuentas.items()):
+        uid = tok.get("user_id")
+        if not uid or not tok.get("access_token"):
+            continue
+        # ── Colecta ──────────────────────────────────────────────────────
+        if not out["colecta"]:
+            try:
+                r = _ml_get_cuenta(f"/users/{uid}/shipping/schedule/cross_docking", cuenta_id)
+                if r.status_code == 200:
+                    sched = (r.json() or {}).get("schedule", {}) or {}
+                    for dia, info in sched.items():
+                        dets = info.get("detail") or []
+                        cutoffs = [d.get("cutoff") for d in dets if d.get("cutoff")]
+                        if cutoffs:
+                            out["colecta"][dia] = min(cutoffs)
+            except Exception as e:
+                logger.debug(f"[CORTES] colecta {cuenta_id}: {e}")
+        # ── Flex ─────────────────────────────────────────────────────────
+        if not out["flex"]:
+            try:
+                rs = _ml_get_cuenta(
+                    f"/flex/sites/{ML_SITE_ID}/users/{uid}/subscriptions/v1", cuenta_id)
+                sid = ""
+                if rs.status_code == 200:
+                    for sub in (rs.json() or []):
+                        if str(sub.get("mode","")).upper() == "FLEX" and sub.get("service_id"):
+                            sid = str(sub["service_id"]); break
+                if sid:
+                    rz = _ml_get_cuenta(
+                        f"/flex/sites/{ML_SITE_ID}/users/{uid}/services/{sid}"
+                        f"/configurations/coverage/zones/v1", cuenta_id,
+                        params={"show_availables": "false"})
+                    if rz.status_code == 200:
+                        zj = rz.json() or {}
+                        zonas = zj.get("zones") or []
+                        cut = next((z.get("cutoff") for z in zonas if z.get("cutoff")), None)
+                        if not cut:
+                            g = ((zj.get("availables") or {}).get("cutoffs") or {}).get("global") or {}
+                            if g.get("min"):
+                                cut = {"week": g["min"], "saturday": g["min"], "sunday": g["min"]}
+                        if cut:
+                            out["flex"] = {k: cut.get(k) for k in ("week","saturday","sunday")
+                                           if cut.get(k) is not None}
+            except Exception as e:
+                logger.debug(f"[CORTES] flex {cuenta_id}: {e}")
+        if out["colecta"] and out["flex"]:
+            break
+    out["ok"] = bool(out["colecta"] or out["flex"])
+    return out
+
+
+@app.route("/api/cortes")
+@requiere_api_key
+def api_cortes():
+    """Horarios de corte de ML por canal, para que el escritorio decida
+    'pedido de hoy vs de mañana'. Cache 12 h; ?force=1 lo recalcula."""
+    import time as _t_c
+    ahora = _t_c.time()
+    if (request.args.get("force") != "1"
+            and _cortes_cache["data"] is not None
+            and ahora - _cortes_cache["ts"] < 43200):
+        return jsonify({**_cortes_cache["data"], "cache": True})
+    if not _cuentas:
+        return jsonify({"ok": False, "msg": "login", "colecta": {}, "flex": {}}), 200
+    data = _calcular_cortes()
+    if data.get("ok"):
+        _cortes_cache["data"] = data
+        _cortes_cache["ts"]   = ahora
+    return jsonify({**data, "cache": False})
 
 
 @app.route("/api/pedidos/refresh", methods=["POST"])
