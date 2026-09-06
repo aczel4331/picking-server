@@ -26,9 +26,27 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   padding:5px 12px;border-radius:20px}
 .badge.done{background:var(--success)}
 .badge.warn{background:var(--warning);color:#000}
+.sync-status{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--mid);
+  white-space:nowrap}
+.sync-dot{width:7px;height:7px;border-radius:50%;background:var(--lo);display:inline-block;
+  box-shadow:0 0 0 3px rgba(71,85,105,.16);transition:background .2s,box-shadow .2s}
+.sync-dot.ok{background:#34D399;box-shadow:0 0 0 3px rgba(52,211,153,.13)}
+.sync-dot.warn{background:var(--warning);box-shadow:0 0 0 3px rgba(245,158,11,.13)}
+@media(max-width:390px){.sync-status span:last-child{display:none}}
 #ban{display:none;background:var(--success);color:#fff;text-align:center;
   padding:14px;font-size:16px;font-weight:800;letter-spacing:.04em;flex-shrink:0}
 #ban.show{display:block}
+.operacion-resumen{margin:10px 10px 2px;padding:11px 13px;border:1px solid var(--border);
+  border-radius:12px;background:linear-gradient(135deg,rgba(37,99,235,.14),rgba(14,165,233,.06));}
+.resumen-titulo{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.resumen-eyebrow{font-size:10px;font-weight:800;letter-spacing:.09em;color:#93C5FD}
+.resumen-pct{font-size:17px;font-weight:900;color:#fff}
+.progreso-rail{height:7px;border-radius:8px;background:rgba(255,255,255,.12);overflow:hidden;margin:8px 0 6px}
+.progreso-fill{height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,#38BDF8,#34D399);
+  transition:width .35s ease}
+.resumen-detalle{font-size:11px;color:var(--mid);display:flex;justify-content:space-between;gap:8px}
+.guia-pie{display:flex;justify-content:space-between;gap:10px;margin-top:9px;padding-top:8px;
+  border-top:1px solid rgba(255,255,255,.14);font-size:11px;color:#BFDBFE}
 .scan-box{padding:10px 12px;background:var(--panel);border-bottom:1px solid var(--border);
   flex-shrink:0}
 #sku{width:100%;background:var(--card);border:2px solid var(--accent);color:var(--hi);
@@ -141,6 +159,9 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:8px">
+    <div class="sync-status" title="Estado de sincronización">
+      <span id="sync-dot" class="sync-dot"></span><span id="sync-label">Conectando</span>
+    </div>
     <button id="btn-voz" onclick="toggleVoz()"
             style="background:var(--panel);border:1px solid var(--border);color:var(--accent);
             border-radius:8px;padding:6px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
@@ -179,6 +200,22 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     <button onclick="repetirVoz()" style="margin-left:auto;background:rgba(255,255,255,.2);
             border:none;color:#fff;border-radius:8px;padding:5px 12px;font-size:16px;cursor:pointer"
             title="Repetir por voz">&#x1F50A;</button>
+  </div>
+  <div class="guia-pie">
+    <span id="guia-restantes">Preparando ruta…</span>
+    <span id="guia-secuencia"></span>
+  </div>
+</div>
+
+<div id="operacion-resumen" class="operacion-resumen" style="display:none" aria-live="polite">
+  <div class="resumen-titulo">
+    <span class="resumen-eyebrow">AVANCE DEL LOTE</span>
+    <span id="avance-pct" class="resumen-pct">0%</span>
+  </div>
+  <div class="progreso-rail"><div id="avance-barra" class="progreso-fill"></div></div>
+  <div class="resumen-detalle">
+    <span id="avance-skus">0 de 0 SKU</span>
+    <span id="avance-unidades">0 de 0 unidades</span>
   </div>
 </div>
 
@@ -296,6 +333,7 @@ async function detectarCanalActivo() {
     ]);
     const dF = await rF.json();
     const dC = await rC.json();
+    setConexion('ok');
 
     const flexCargado    = dF.cargado && (dF.grupos || []).length > 0;
     const colectaCargado = dC.cargado && (dC.grupos || []).length > 0;
@@ -343,6 +381,7 @@ async function detectarCanalActivo() {
     // Caso 4: Ninguno tiene lote → mostrar pantalla de espera
   } catch(e) {
     console.error('[MOVIL] detectarCanalActivo error:', e);
+    setConexion('warn');
     fb('err', '❌ Sin conexión al servidor');
   }
 }
@@ -369,6 +408,7 @@ async function load() {
     const r = await fetch('/api/estado?canal=' + _canalActivo);
     if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
     E = await r.json();
+    setConexion('ok');
     console.log('[MOVIL] canal='+_canalActivo+' cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
 
     // Si el canal actual NO tiene lote, buscar en el otro canal
@@ -381,6 +421,7 @@ async function load() {
     render();
   } catch(e) {
     console.error('[MOVIL] load error:', e);
+    setConexion('warn');
     fb('err', '❌ Sin conexión al servidor');
   }
 }
@@ -391,8 +432,9 @@ async function load() {
 async function loadQ() {
   try {
     const r = await fetch('/api/estado?canal=' + _canalActivo);
-    if (!r.ok) return;
+    if (!r.ok) { setConexion('warn'); return; }
     const nuevo = await r.json();
+    setConexion('ok');
 
     // ── Caso A: Lote nuevo del supervisor (timestamp cambió) ─────────────────
     const tsNuevo = nuevo.ultima_actualizacion || '';
@@ -439,7 +481,8 @@ async function loadQ() {
       }
     }
   } catch(e) {
-    // Silencioso — no mostrar error en refresh de fondo
+    // Silencioso para el operario, pero el punto de estado avisa que no se pudo sincronizar.
+    setConexion('warn');
   }
 }
 
@@ -566,7 +609,35 @@ function actualizarGuia(anunciar = false) {
   $('guia-sku').textContent     = 'SKU ' + it.sku;
   $('guia-estante').textContent = it.estanteria ? ('🗂 ' + it.estanteria) : '';
   $('guia-cant').textContent    = it.req > 1 ? ('× ' + it.req) : '';
+  const total = (E.grupos || []).reduce((s, g) => s + (g.items || []).length, 0);
+  const completos = (E.grupos || []).reduce((s, g) => s + (g.items || []).filter(
+    x => ((E.colecta || {})[x.sku] || 0) >= x.req).length, 0);
+  const pendientes = Math.max(0, total - completos);
+  $('guia-restantes').textContent = `${pendientes} SKU${pendientes === 1 ? '' : 's'} pendiente${pendientes === 1 ? '' : 's'}`;
+  $('guia-secuencia').textContent = `Paso ${Math.min(completos + 1, total)} de ${total}`;
   if (anunciar) _anunciarItem(it);
+}
+
+// ── PULSO OPERATIVO ────────────────────────────────────────────────────────
+// Solo representa el estado que ya recibe el móvil: no toca escaneo ni colecta.
+function actualizarResumen(skusHechos, skusTotal, udsHechas, udsTotal) {
+  const box = $('operacion-resumen');
+  if (!box) return;
+  box.style.display = 'block';
+  const pct = skusTotal ? Math.round((skusHechos / skusTotal) * 100) : 0;
+  $('avance-pct').textContent = pct + '%';
+  $('avance-barra').style.width = pct + '%';
+  $('avance-skus').textContent = `${skusHechos} de ${skusTotal} SKU${skusTotal === 1 ? '' : 's'}`;
+  $('avance-unidades').textContent = `${udsHechas} de ${udsTotal} unidades`;
+}
+
+function setConexion(estado) {
+  const dot = $('sync-dot');
+  const label = $('sync-label');
+  if (!dot || !label) return;
+  dot.className = 'sync-dot ' + estado;
+  label.textContent = estado === 'ok' ? 'Sincronizado'
+    : estado === 'warn' ? 'Reconectando…' : 'Conectando…';
 }
 
 // ── RENDER ──────────────────────────────────────────────────────────────────
@@ -589,6 +660,8 @@ function render(quiet = false) {
         </div></div>`;
       if (badge) { badge.textContent = '— / —'; badge.className = 'badge'; }
       $('t-sub').textContent = 'Esperando lote…';
+      $('operacion-resumen').style.display = 'none';
+      $('guia').style.display = 'none';
       return;
     }
 
@@ -609,6 +682,7 @@ function render(quiet = false) {
     }
     $('t-sub').textContent = `${uds_done} / ${uds_tot} unidades`;
     if (ban) ban.className = E.colecta_completa ? 'show' : '';
+    actualizarResumen(done, tot, uds_done, uds_tot);
 
     // Recordar grupos colapsados
     const colaps = new Set();
