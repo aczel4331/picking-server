@@ -4975,8 +4975,10 @@ def panel_estadisticas():
         data_all = [d for d in data_all if d.get("cuenta_id","todas") == cuenta_sesion]
 
     import datetime as _dt
+    # Por defecto: SOLO el día de hoy. Si el usuario elige "Desde/Hasta" en el
+    # formulario, esos parámetros mandan y amplían el rango.
     if not desde:
-        desde = (_dt.date.today() - _dt.timedelta(days=30)).strftime("%Y-%m-%d")
+        desde = _dt.date.today().strftime("%Y-%m-%d")
     if not hasta:
         hasta = _dt.date.today().strftime("%Y-%m-%d")
 
@@ -5449,7 +5451,7 @@ tr:hover td{background:rgba(255,255,255,.03)}
 
 <!-- Flex vs Colecta por día -->
 <div class="card" style="margin-bottom:20px">
-  <h2>⚡ FLEX vs 🚚 COLECTA — por día (últimos 30)</h2>
+  <h2>⚡ FLEX vs 🚚 COLECTA — por día{% if desde == hasta %} · {{ desde }} (hoy){% else %} · {{ desde }} → {{ hasta }}{% endif %}</h2>
   <table>
     <thead><tr>
       <th>Fecha</th><th>Lotes</th>
@@ -5881,8 +5883,7 @@ _ciclo_vivo();
              border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">
       🔍 Buscar
     </button>
-    <button onclick="document.getElementById('buscar-venta').value='';
-                     document.getElementById('res-busqueda').innerHTML=''"
+    <button onclick="limpiarBusquedaVenta()"
       style="background:#334155;color:#94A3B8;border:none;padding:10px 14px;
              border-radius:8px;cursor:pointer;font-size:13px">
       ✕ Limpiar
@@ -5893,7 +5894,7 @@ _ciclo_vivo();
 
 <!-- ── Historial de lotes ─────────────────────────────────────────────────── -->
 <div class="card" style="margin-bottom:20px">
-  <h2>📋 Historial de lotes — quién preparó qué pedido</h2>
+  <h2>📋 Historial de lotes — quién preparó qué pedido{% if desde == hasta %} · {{ desde }} (hoy){% else %} · {{ desde }} → {{ hasta }}{% endif %}</h2>
   <div style="overflow-x:auto">
   <table id="tabla-lotes">
     <thead><tr>
@@ -5907,17 +5908,28 @@ _ciclo_vivo();
 </div>
 
 <script>
+function limpiarBusquedaVenta() {
+  document.getElementById('buscar-venta').value = '';
+  document.getElementById('res-busqueda').innerHTML = '';
+  document.querySelectorAll('#tabla-lotes tbody tr[data-orders]')
+    .forEach(f => f.style.display = '');
+}
+
 function buscarVenta() {
   const q = document.getElementById('buscar-venta').value.trim().replace(/ /g,'');
   const res = document.getElementById('res-busqueda');
-  if (!q) { res.innerHTML=''; return; }
+  const filas = document.querySelectorAll('#tabla-lotes tbody tr[data-orders]');
+
+  // Sin búsqueda: mostrar todas las filas de nuevo
+  if (!q) { res.innerHTML=''; filas.forEach(f => f.style.display=''); return; }
   res.innerHTML = '<div style="color:#94A3B8;padding:8px">Buscando...</div>';
 
-  // Buscar en todas las filas de la tabla de lotes
-  const filas = document.querySelectorAll('#tabla-lotes tbody tr[data-orders]');
+  // Buscar en la tabla de lotes y ocultar las filas que no coinciden
   const encontrados = [];
   filas.forEach(f => {
-    if ((f.dataset.orders||'').replace(/ /g,'').includes(q)) {
+    const coincide = (f.dataset.orders||'').replace(/ /g,'').includes(q);
+    f.style.display = coincide ? '' : 'none';
+    if (coincide) {
       encontrados.push({
         ts:       f.dataset.ts       || '',
         canal:    f.dataset.canal    || '',
@@ -5929,8 +5941,8 @@ function buscarVenta() {
   if (encontrados.length === 0) {
     res.innerHTML = `<div style="background:#1E293B;border:1px solid #EF4444;
       border-radius:8px;padding:14px;color:#FCA5A5">
-      ❌ Venta <b>#${q}</b> no encontrada en el historial visible.<br>
-      <span style="font-size:11px;color:#64748B">Probá ajustar el filtro de fechas para ampliar la búsqueda.</span>
+      ❌ Venta <b>#${q}</b> no encontrada en el rango de fechas actual.<br>
+      <span style="font-size:11px;color:#64748B">Ampliá el filtro Desde/Hasta arriba y volvé a buscar.</span>
     </div>`;
     return;
   }
