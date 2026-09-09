@@ -8,6 +8,10 @@ logo.ico
 build_exe.bat
 Logibot.exe
 gitignore
+ui_theme.py
+requirements-desktop.txt
+assets/
+tools/
 
 # ── Datos privados / config local ──────────────────────────────
 config.json
