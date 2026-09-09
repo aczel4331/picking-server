@@ -1,5 +1,5 @@
 {
-  "version": "4.0.1",
-  "url_exe": "https://github.com/aczel4331/picking-server/releases/download/v4.0.1/Logibot_v4.0.1.zip",
-  "notas": "control total"
+  "version": "4.1.0",
+  "url_exe": "https://github.com/aczel4331/picking-server/releases/download/v4.1.0/Logibot_v4.1.0.zip",
+  "notas": "Login rediseñado, barra de KPIs en vivo, fix pasillos y 'Ver otros días'"
 }
