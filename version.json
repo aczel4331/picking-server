@@ -1,5 +1,5 @@
 {
-  "version": "4.1.0",
-  "url_exe": "https://github.com/aczel4331/picking-server/releases/download/v4.1.0/Logibot_v4.1.0.zip",
-  "notas": "Login rediseñado, barra de KPIs en vivo, fix pasillos y 'Ver otros días'"
+  "version": "4.1.9",
+  "url_exe": "https://github.com/aczel4331/picking-server/releases/download/v4.1.9/Logibot_v4.1.9.zip",
+  "notas": "Impresion: se dejo de forzar el tamano de pagina via DEVMODE (no era confiable entre PCs con la misma impresora) y ahora se calcula el tamano real de la etiqueta usando el DPI del hardware / unidades fijas, independiente de como el driver reporte la pagina. Nuevo: boton 'Pedido de prueba (Flex)' en Configuracion para probar todo el proceso (Fase 1, escaneo, Fase 2, impresion) sin un pedido real. Nuevo: log picking_print.log con el diagnostico de impresion (antes se perdia porque la app no tiene consola)."
 }
