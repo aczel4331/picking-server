@@ -245,8 +245,13 @@ def _sync_pausado() -> bool:
     return all(_sync_estado_canal.get(c, "idle") == "en_lote" for c in activos)
 
 def _get_estado(canal=None):
-    if not canal or canal == "default":
-        return _estado
+    # OJO: "default" NO puede ser un alias de "colecta". Antes lo era
+    # (_estado = _estados_canal["colecta"]), así que cualquier subida/lectura
+    # con canal="default" (p. ej. un lote generado desde la pestaña "Todos"
+    # sin poder determinar flex/colecta) pisaba directamente el lote real de
+    # Colecta. Ahora "default" tiene su propio balde, separado de ambos.
+    if not canal:
+        canal = "default"
     canal = canal.lower().strip()
     if canal not in _estados_canal:
         _estados_canal[canal] = _estado_vacio()

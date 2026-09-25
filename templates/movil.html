@@ -150,6 +150,26 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <body>
 <div id="flash"></div>
 
+<div id="canal-gate" style="display:none;position:fixed;inset:0;z-index:9998;
+     background:#0B0F1A;flex-direction:column;align-items:center;
+     justify-content:center;padding:24px;text-align:center;gap:22px">
+  <div style="font-size:44px">📦</div>
+  <div style="font-size:19px;font-weight:800;color:var(--hi)">¿Qué vas a colectar ahora?</div>
+  <div style="font-size:13px;color:var(--mid);max-width:280px">
+    Eleg&#xED; el canal antes de empezar a escanear. Este celular va a quedar
+    en ese canal hasta que lo cambies.</div>
+  <div style="display:flex;flex-direction:column;gap:14px;width:100%;max-width:320px">
+    <button onclick="elegirCanalInicial('flex')"
+            style="padding:20px 10px;border:2px solid #7C3AED;background:#7C3AED;
+            color:#fff;font-weight:800;font-size:18px;border-radius:14px;
+            cursor:pointer">&#x26A1; FLEX</button>
+    <button onclick="elegirCanalInicial('colecta')"
+            style="padding:20px 10px;border:2px solid #2563EB;background:#2563EB;
+            color:#fff;font-weight:800;font-size:18px;border-radius:14px;
+            cursor:pointer">&#x1F69A; COLECTA</button>
+  </div>
+</div>
+
 <div class="topbar">
   <div class="t-left">
     <span class="t-icon">&#x2B21;</span>
@@ -288,7 +308,16 @@ let _guiaActual = null;
 let _vozActiva  = true;
 
 // ── CANAL ACTIVO ────────────────────────────────────────────────────────────
-let _canalActivo = localStorage.getItem('canal_picking') || 'flex';
+// OJO: NO defaultear a 'flex' cuando no hay nada guardado. Antes esto casi
+// no se notaba porque normalmente sólo un canal estaba cargado a la vez
+// (ahí el auto-detect de detectarCanalActivo() corregía el default solo).
+// Con dos colectores trabajando SIEMPRE en simultáneo (uno por canal), un
+// celular nuevo/con caché borrado que arranca sin canal guardado se queda
+// pegado mostrando "flex" aunque sea del canal de colecta — sin ninguna
+// forma de autocorregirse. Si no hay nada guardado, queda vacío y se pide
+// elegir explícitamente antes de mostrar cualquier dato (ver
+// mostrarSelectorInicial más abajo).
+let _canalActivo = localStorage.getItem('canal_picking') || '';
 // Timestamp del último lote recibido — para detectar lotes nuevos
 let _loteTimestamp = '';
 
@@ -297,20 +326,28 @@ function setCanal(canal, silencioso = false) {
   localStorage.setItem('canal_picking', canal);
   const btnF = $('btn-canal-flex');
   const btnC = $('btn-canal-colecta');
+  const topbar = document.querySelector('.topbar');
 
-  // Estilos activo/inactivo para cada botón
+  // Estilos activo/inactivo para cada botón + teñido de la barra superior,
+  // para que con un solo vistazo (sin leer texto chico) se sepa en qué
+  // canal está el celular — clave cuando el mismo celular rota entre
+  // colectores de Flex y Colecta durante el turno.
   if (canal === 'flex') {
     if (btnF) { btnF.style.background='#7C3AED'; btnF.style.color='#fff';
                 btnF.style.borderColor='#7C3AED'; }
     if (btnC) { btnC.style.background='var(--card)'; btnC.style.color='#2563EB';
                 btnC.style.borderColor='#2563EB'; }
     $('t-sub').textContent = '⚡ Colecta FLEX';
+    if (topbar) { topbar.style.background = '#2E1065';
+                  topbar.style.borderBottomColor = '#7C3AED'; }
   } else {
     if (btnC) { btnC.style.background='#2563EB'; btnC.style.color='#fff';
                 btnC.style.borderColor='#2563EB'; }
     if (btnF) { btnF.style.background='var(--card)'; btnF.style.color='#7C3AED';
                 btnF.style.borderColor='#7C3AED'; }
     $('t-sub').textContent = '🚚 Colecta COLECTA';
+    if (topbar) { topbar.style.background = '#0C2A5E';
+                  topbar.style.borderBottomColor = '#2563EB'; }
   }
 
   // Cuando el operario toca el botón manualmente, resetear timestamp
@@ -319,6 +356,21 @@ function setCanal(canal, silencioso = false) {
     _loteTimestamp = '';
     load();
   }
+}
+
+// ── SELECTOR INICIAL DE CANAL (bloqueante) ──────────────────────────────────
+// Se muestra SOLO si el celular no tiene ningún canal guardado todavía
+// (nunca adivinar). Recién al elegir se guarda y arranca la carga normal.
+function mostrarSelectorInicial() {
+  const ov = document.getElementById('canal-gate');
+  if (ov) ov.style.display = 'flex';
+}
+
+function elegirCanalInicial(canal) {
+  const ov = document.getElementById('canal-gate');
+  if (ov) ov.style.display = 'none';
+  setCanal(canal, true);
+  detectarCanalActivo();
 }
 
 // ── AUTO-DETECCIÓN DE CANAL CON LOTE ACTIVO ────────────────────────────────
@@ -908,11 +960,16 @@ function toggleTeclado() {
 
 // ── INIT ────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  // Inicializar visual del canal sin recargar (la carga la hace detectarCanalActivo)
-  setCanal(_canalActivo, true);
-
-  // Primera carga: detectar automáticamente en qué canal hay lote activo
-  detectarCanalActivo();
+  if (!_canalActivo) {
+    // Celular sin canal guardado (nuevo, caché borrado, etc.) — nunca
+    // adivinar: pedir que elija antes de mostrar o cargar nada.
+    mostrarSelectorInicial();
+  } else {
+    // Inicializar visual del canal sin recargar (la carga la hace detectarCanalActivo)
+    setCanal(_canalActivo, true);
+    // Primera carga: detectar automáticamente en qué canal hay lote activo
+    detectarCanalActivo();
+  }
 
   const inp      = $('sku');
   const debugDiv = $('scanner-debug');
@@ -1018,6 +1075,7 @@ document.addEventListener('DOMContentLoaded', () => {
   //           en el otro canal. Así el móvil se entera sin tocar nada.
   let _ciclos = 0;
   setInterval(() => {
+    if (!_canalActivo) return;   // esperando que elija canal en el selector inicial
     _ciclos++;
     const sinLote = !E || !E.cargado || !(E.grupos || []).length;
 
