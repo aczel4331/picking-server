@@ -1,5 +1,5 @@
 {
-  "version": "4.1.9",
-  "url_exe": "https://github.com/aczel4331/picking-server/releases/download/v4.1.9/Logibot_v4.1.9.zip",
-  "notas": "Impresion: se dejo de forzar el tamano de pagina via DEVMODE (no era confiable entre PCs con la misma impresora) y ahora se calcula el tamano real de la etiqueta usando el DPI del hardware / unidades fijas, independiente de como el driver reporte la pagina. Nuevo: boton 'Pedido de prueba (Flex)' en Configuracion para probar todo el proceso (Fase 1, escaneo, Fase 2, impresion) sin un pedido real. Nuevo: log picking_print.log con el diagnostico de impresion (antes se perdia porque la app no tiene consola)."
+  "version": "4.1.12",
+  "url_exe": "https://github.com/aczel4331/picking-server/releases/download/v4.1.12/Logibot_v4.1.12.zip",
+  "notas": "Autorizacion para saltear Fase 1: el codigo que pedia la app para pasar a Fase 2 con SKUs incompletos usaba SOLO el valor guardado en el config.json local de esa PC -- si el supervisor cambiaba el codigo desde el panel web, esa PC seguia pidiendo el codigo viejo. Ahora consulta el codigo desde Railway (la misma fuente que ya usaba la ventana de 'imprimir etiqueta con clave'), y solo cae al valor local si no hay conexion. El boton de aprobacion remota (pedirle al supervisor que apruebe con un click desde la web) no cambia."
 }
