@@ -377,8 +377,20 @@ function elegirCanalInicial(canal) {
 // Si el supervisor subió un lote en 'colecta' pero el celular tiene 'flex'
 // guardado (o viceversa), el móvil lo detecta y cambia automáticamente.
 async function detectarCanalActivo() {
+  // OJO: esta función NO cambia de canal sola nunca — sólo informa.
+  // Antes (cuando un único operario alternaba de canal a mano) tenía
+  // sentido "adivinar" y saltar al canal que sí tenía lote. Ahora cada
+  // canal tiene su propio colector trabajando en simultáneo (Flex y
+  // Colecta a la vez, todo el turno): si el canal propio queda vacío un
+  // momento (p. ej. terminó un lote y el supervisor todavía no generó el
+  // siguiente), NO hay que saltar al canal del otro colector — hay que
+  // esperar ahí. El único lugar que cambia _canalActivo es el selector
+  // inicial (celular sin nada guardado) o que el operario toque el botón
+  // FLEX/COLECTA a mano.
+  if (!_canalActivo) return;
   try {
-    // Consultar ambos canales en paralelo
+    // Consultar ambos canales en paralelo: el propio para renderizar, el
+    // otro sólo para el contador de SKUs en su botón y un aviso opcional.
     const [rF, rC] = await Promise.all([
       fetch('/api/estado?canal=flex'),
       fetch('/api/estado?canal=colecta')
@@ -396,27 +408,6 @@ async function detectarCanalActivo() {
       colectaCargado ? (dC.total_skus || 0) : 0
     );
 
-    // Caso 1: Solo flex tiene lote → cambiar automáticamente
-    if (flexCargado && !colectaCargado) {
-      if (_canalActivo !== 'flex') {
-        setCanal('flex', true);
-        toast('⚡ Canal FLEX detectado automáticamente', 'ok');
-      }
-      E = dF; _loteTimestamp = dF.ultima_actualizacion || ''; render(); return;
-    }
-
-    // Caso 2: Solo colecta tiene lote → cambiar automáticamente
-    if (colectaCargado && !flexCargado) {
-      if (_canalActivo !== 'colecta') {
-        setCanal('colecta', true);
-        toast('🚚 Canal COLECTA detectado automáticamente', 'ok');
-      }
-      E = dC; _loteTimestamp = dC.ultima_actualizacion || ''; render(); return;
-    }
-
-    // Caso 3: Ambos canales tienen lote → RESPETAR el canal elegido por el operario.
-    // El colector de Flex NO debe ver el lote de Colecta y viceversa.
-    // El operario elige su canal con los botones ⚡ FLEX / 🚚 COLECTA al entrar.
     const d = _canalActivo === 'flex' ? dF : dC;
 
     // Avisar SOLO si llegó un lote NUEVO en el PROPIO canal (no en el otro)
@@ -428,9 +419,7 @@ async function detectarCanalActivo() {
       try { navigator.vibrate && navigator.vibrate([120, 60, 120]); } catch(e) {}
     }
 
-    E = d; _loteTimestamp = d.ultima_actualizacion || ''; render(); return;
-
-    // Caso 4: Ninguno tiene lote → mostrar pantalla de espera
+    E = d; _loteTimestamp = d.ultima_actualizacion || ''; render();
   } catch(e) {
     console.error('[MOVIL] detectarCanalActivo error:', e);
     setConexion('warn');
@@ -455,27 +444,11 @@ function _actualizarBotonesCanal(skusFlex, skusColecta) {
 }
 
 // ── CARGA ──────────────────────────────────────────────────────────────────
+// detectarCanalActivo() ya hace todo lo que hace falta: consulta el canal
+// propio (y de paso el otro, para el contador del botón), y renderiza el
+// propio sin saltar nunca de canal solo — ver comentario ahí.
 async function load() {
-  try {
-    const r = await fetch('/api/estado?canal=' + _canalActivo);
-    if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
-    E = await r.json();
-    setConexion('ok');
-    console.log('[MOVIL] canal='+_canalActivo+' cargado='+E.cargado+' grupos='+((E.grupos||[]).length));
-
-    // Si el canal actual NO tiene lote, buscar en el otro canal
-    if (!E.cargado || !(E.grupos||[]).length) {
-      console.log('[MOVIL] Canal sin lote — detectando canal activo...');
-      await detectarCanalActivo();
-      return;
-    }
-
-    render();
-  } catch(e) {
-    console.error('[MOVIL] load error:', e);
-    setConexion('warn');
-    fb('err', '❌ Sin conexión al servidor');
-  }
+  await detectarCanalActivo();
 }
 
 // ── REFRESH SILENCIOSO (cada 5s) ────────────────────────────────────────────
@@ -502,22 +475,11 @@ async function loadQ() {
       return;
     }
 
-    // ── Caso B: Canal propio sin lote → buscar en otro canal ─────────────────
-    // SOLO si el canal propio está vacío. Si ambos tienen lote, no cambiar.
+    // ── Caso B: Canal propio sin lote → mantener pantalla de espera ──────────
+    // NUNCA saltar sola al otro canal: cada canal tiene su propio colector
+    // trabajando en simultáneo, así que un canal vacío no significa que el
+    // operario esté "en el canal equivocado" (ver detectarCanalActivo).
     if (!nuevo.cargado || !(nuevo.grupos||[]).length) {
-      const otroCanal = _canalActivo === 'flex' ? 'colecta' : 'flex';
-      const r2 = await fetch('/api/estado?canal=' + otroCanal);
-      const d2 = await r2.json();
-      if (d2.cargado && (d2.grupos||[]).length > 0) {
-        // Cambiar solo si el canal propio está vacío
-        setCanal(otroCanal, true);
-        E = d2;
-        _loteTimestamp = d2.ultima_actualizacion || '';
-        render();
-        toast(`🔄 Lote detectado en canal ${otroCanal.toUpperCase()}`, 'ok');
-        return;
-      }
-      // Ningún canal tiene lote → mantener pantalla de espera
       E = nuevo; render(); return;
     }
 
