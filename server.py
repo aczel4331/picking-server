@@ -257,6 +257,30 @@ def _get_estado(canal=None):
         _estados_canal[canal] = _estado_vacio()
     return _estados_canal[canal]
 
+
+def _clave_colector(usuario="", cuenta_id="", canal=""):
+    """Clave real para _estados_canal/_get_estado.
+
+    Antes se guardaba UN solo lote por canal ("flex"/"colecta") — si dos
+    colectores distintos trabajaban el mismo canal a la vez (p. ej. dos
+    personas haciendo Flex), se pisaban entre sí. Ahora cada colector
+    logueado tiene su PROPIO lote, identificado por su usuario (+ cuenta_id
+    para no mezclar tiendas distintas si algún día hay más de una). El
+    campo "canal" (Flex/Colecta) sigue viajando como metadata del lote
+    (para mostrarlo en el móvil y para las métricas), pero deja de ser la
+    clave de enrutamiento.
+
+    Compatibilidad: si no viene "usuario" (desktop viejo sin actualizar, o
+    algún caller legado), cae al comportamiento anterior — usar el canal
+    como clave — para no romper nada mientras se termina de actualizar
+    todo el parque de PCs.
+    """
+    usuario = (usuario or "").strip().lower()
+    if usuario:
+        cuenta_id = (cuenta_id or "").strip().lower() or "todas"
+        return f"{cuenta_id}:{usuario}"
+    return (canal or "default").strip().lower() or "default"
+
 _colectores          = {}
 _etiquetas_cache     = {}
 _cola_etiquetas      = []
@@ -3149,8 +3173,9 @@ def subir_estado():
     data = request.get_json(force=True)
     if not data or "grupos" not in data:
         return jsonify({"ok": False, "msg": "Datos invalidos"}), 400
-    canal = data.get("canal","default")
-    est   = _get_estado(canal)
+    canal  = data.get("canal","default")
+    clave  = _clave_colector(data.get("usuario",""), data.get("cuenta_id",""), canal)
+    est    = _get_estado(clave)
     with _lock:
         nueva_fase = data.get("fase",1)
         import datetime as _dt_est, hashlib as _hl_est, time as _t_lid
@@ -3198,8 +3223,8 @@ def subir_estado():
             est["ultimos_scans"]    = []
             est["_colecta_prev"]    = {}
             est["_firma_lote"]      = _firma
-            est["lote_id"]          = _lote_id_in or f"{canal}_{int(_t_lid.time())}_{_firma[:6]}"
-            logger.info(f"[LOTE] Canal '{canal}': lote NUEVO "
+            est["lote_id"]          = _lote_id_in or f"{clave}_{int(_t_lid.time())}_{_firma[:6]}"
+            logger.info(f"[LOTE] '{clave}' (canal={canal}): lote NUEVO "
                         f"(id={est['lote_id']}, firma={_firma[:8]}) — colecta reseteada a 0")
         else:
             # Mismo lote → fusionar la colecta por MÁXIMO por SKU: nunca bajar
@@ -3255,14 +3280,14 @@ def subir_estado():
             est["pedidos"] = data["pedidos"]
         if nueva_fase == 1 and not data.get("colecta"):
             est["etiquetas_impresas"] = []
-        _actualizar_sync_estado(canal)
+        _actualizar_sync_estado(clave)
     try:
         with open(LOTE_PATH,"w") as f:
             json.dump({"canales": _estados_canal}, f, default=str)
     except Exception as e:
         logger.error(f"[LOTE] Error persistiendo: {e}")
-    logger.info(f"[LOTE] Canal '{canal}' cargado: {est['total_skus']} SKUs, fase {nueva_fase}")
-    return jsonify({"ok": True, "canal": canal,
+    logger.info(f"[LOTE] '{clave}' (canal={canal}) cargado: {est['total_skus']} SKUs, fase {nueva_fase}")
+    return jsonify({"ok": True, "canal": canal, "clave": clave,
                     "lote_id": est.get("lote_id",""),
                     "msg": f"Canal '{canal}': {est['total_skus']} SKUs"})
 
@@ -3370,11 +3395,12 @@ def api_lote_en_vivo():
 @app.route("/api/estado")
 def get_estado():
     canal = request.args.get("canal","default")
-    est   = _get_estado(canal)
+    clave = _clave_colector(request.args.get("usuario",""), request.args.get("cuenta_id",""), canal)
+    est   = _get_estado(clave)
     with _lock:
         estado = dict(est)
     estado["cargado"] = bool(estado.get("cargado",False))
-    estado["canal"]   = canal
+    estado.setdefault("canal", canal)
     estado["canales_disponibles"] = {
         c: {"cargado": e.get("cargado",False), "total_skus": e.get("total_skus",0), "fase": e.get("fase",1)}
         for c, e in _estados_canal.items()
@@ -3410,9 +3436,10 @@ def _pedidos_completos_segun_colecta(canal="default"):
 @app.route("/api/fase2/pedidos-completos", methods=["GET"])
 def fase2_pedidos_completos():
     canal = request.args.get("canal","default")
-    est   = _get_estado(canal)
+    clave = _clave_colector(request.args.get("usuario",""), request.args.get("cuenta_id",""), canal)
+    est   = _get_estado(clave)
     with _lock:
-        completos = _pedidos_completos_segun_colecta(canal)
+        completos = _pedidos_completos_segun_colecta(clave)
         fase      = est.get("fase",1)
         impresas  = list(est.get("etiquetas_impresas",[]))
     return jsonify({"ok": True, "fase": fase, "completos": completos, "ya_impresas": impresas})
@@ -3422,17 +3449,21 @@ def fase2_pedidos_completos():
 def fase2_marcar_impresa(order_id):
     data  = request.get_json(silent=True) or {}
     canal = data.get("canal", request.args.get("canal","default"))
-    est   = _get_estado(canal)
+    clave = _clave_colector(
+        data.get("usuario", request.args.get("usuario","")),
+        data.get("cuenta_id", request.args.get("cuenta_id","")),
+        canal)
+    est   = _get_estado(clave)
     nuevo_estado = "idle"
     with _lock:
         if order_id not in est.get("etiquetas_impresas",[]):
             est.setdefault("etiquetas_impresas",[]).append(order_id)
         if order_id in _pedidos_ml:
             _pedidos_ml[order_id]["impreso"] = True
-        _actualizar_sync_estado(canal)
-        nuevo_estado = _sync_estado_canal.get(canal,"idle")
+        _actualizar_sync_estado(clave)
+        nuevo_estado = _sync_estado_canal.get(clave,"idle")
         if nuevo_estado == "casi_listo":
-            logger.info(f"[SYNC] Canal '{canal}' casi_listo — reactivando consultas ML")
+            logger.info(f"[SYNC] '{clave}' casi_listo — reactivando consultas ML")
         try:
             with open(LOTE_PATH,"w") as f:
                 json.dump({"canales": _estados_canal}, f, default=str)
@@ -3446,12 +3477,13 @@ def escanear():
     data  = request.get_json(force=True)
     sku   = str(data.get("sku","")).strip().upper()
     canal = data.get("canal","default")
-    est   = _get_estado(canal)
+    clave = _clave_colector(data.get("usuario",""), data.get("cuenta_id",""), canal)
+    est   = _get_estado(clave)
     if not sku:
         return jsonify({"ok": False, "msg": "SKU vacio"})
     with _lock:
         if not est["cargado"]:
-            return jsonify({"ok": False, "msg": f"No hay lote cargado en canal '{canal}'"})
+            return jsonify({"ok": False, "msg": f"No hay lote cargado en '{clave}'"})
         colecta  = est["colecta"]
         sku_info = next((it for g in est["grupos"] for it in g.get("items",[]) if it["sku"] == sku), None)
         if not sku_info:
@@ -3467,7 +3499,7 @@ def escanear():
         est["colecta_completa"] = todo
         if todo and est.get("fase",1) == 1:
             est["fase"] = 2
-            logger.info(f"[FASE] Canal '{canal}': Colecta completa -> Fase 2")
+            logger.info(f"[FASE] '{clave}' (canal={canal}): Colecta completa -> Fase 2")
         nuevo = colecta[sku]
     try:
         with open(LOTE_PATH,"w") as f:
@@ -3486,7 +3518,8 @@ def reset_sku():
     data  = request.get_json(force=True)
     sku   = str(data.get("sku","")).strip().upper()
     canal = data.get("canal","default")
-    est   = _get_estado(canal)
+    clave = _clave_colector(data.get("usuario",""), data.get("cuenta_id",""), canal)
+    est   = _get_estado(clave)
     with _lock:
         col = est["colecta"]
         if sku in col and col[sku] > 0:
@@ -3503,21 +3536,25 @@ def reset_sku():
 def limpiar():
     data  = request.get_json(silent=True) or {}
     canal = data.get("canal") or request.args.get("canal") or "default"
-    est   = _get_estado(canal)
+    clave = _clave_colector(
+        data.get("usuario", request.args.get("usuario","")),
+        data.get("cuenta_id", request.args.get("cuenta_id","")),
+        canal)
+    est   = _get_estado(clave)
     with _lock:
         est.update({"grupos":[],"colecta":{},"colecta_completa":False,
                     "cargado":False,"total_skus":0,"total_uds":0,
                     "ultimos_scans":[],"_colecta_prev":{},"inicio_ts":"",
                     "lote_id":"","_firma_lote":"","etiquetas_impresas":[],
                     "ultima_actualizacion":_ts()})
-        _actualizar_sync_estado(canal)
+        _actualizar_sync_estado(clave)
     try:
         with open(LOTE_PATH,"w") as f:
             json.dump({"canales": _estados_canal}, f, default=str)
     except Exception as e:
         logger.error(f"[LOTE] Error persistiendo limpiar: {e}")
-    logger.info(f"[LOTE] Canal '{canal}' limpiado")
-    return jsonify({"ok": True, "canal": canal})
+    logger.info(f"[LOTE] '{clave}' (canal={canal}) limpiado")
+    return jsonify({"ok": True, "canal": canal, "clave": clave})
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # API BASE DE SKUs

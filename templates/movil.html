@@ -150,23 +150,29 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <body>
 <div id="flash"></div>
 
-<div id="canal-gate" style="display:none;position:fixed;inset:0;z-index:9998;
+<div id="login-gate" style="display:none;position:fixed;inset:0;z-index:9998;
      background:#0B0F1A;flex-direction:column;align-items:center;
-     justify-content:center;padding:24px;text-align:center;gap:22px">
+     justify-content:center;padding:24px;text-align:center;gap:18px">
   <div style="font-size:44px">📦</div>
-  <div style="font-size:19px;font-weight:800;color:var(--hi)">¿Qué vas a colectar ahora?</div>
+  <div style="font-size:19px;font-weight:800;color:var(--hi)">Iniciá sesión para colectar</div>
   <div style="font-size:13px;color:var(--mid);max-width:280px">
-    Eleg&#xED; el canal antes de empezar a escanear. Este celular va a quedar
-    en ese canal hasta que lo cambies.</div>
-  <div style="display:flex;flex-direction:column;gap:14px;width:100%;max-width:320px">
-    <button onclick="elegirCanalInicial('flex')"
-            style="padding:20px 10px;border:2px solid #7C3AED;background:#7C3AED;
-            color:#fff;font-weight:800;font-size:18px;border-radius:14px;
-            cursor:pointer">&#x26A1; FLEX</button>
-    <button onclick="elegirCanalInicial('colecta')"
-            style="padding:20px 10px;border:2px solid #2563EB;background:#2563EB;
-            color:#fff;font-weight:800;font-size:18px;border-radius:14px;
-            cursor:pointer">&#x1F69A; COLECTA</button>
+    Usá el mismo usuario y clave que en la PC. El lote que generes va a
+    aparecer directo en este celular, sin importar el canal.</div>
+  <div style="display:flex;flex-direction:column;gap:12px;width:100%;max-width:300px">
+    <input id="login-usuario" type="text" autocomplete="username"
+           autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="Usuario"
+           style="padding:14px;font-size:16px;border-radius:10px;
+           border:2px solid var(--border);background:var(--card);color:var(--hi);text-align:center">
+    <input id="login-clave" type="password" autocomplete="current-password"
+           placeholder="Clave"
+           style="padding:14px;font-size:16px;border-radius:10px;
+           border:2px solid var(--border);background:var(--card);color:var(--hi);text-align:center">
+    <button id="login-btn" onclick="intentarLogin()"
+            style="padding:16px 10px;border:none;background:var(--accent);
+            color:#fff;font-weight:800;font-size:16px;border-radius:12px;
+            cursor:pointer">Iniciar sesión</button>
+    <div id="login-error" style="min-height:18px;font-size:13px;color:var(--danger)"></div>
   </div>
 </div>
 
@@ -182,26 +188,17 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     <div class="sync-status" title="Estado de sincronización">
       <span id="sync-dot" class="sync-dot"></span><span id="sync-label">Conectando</span>
     </div>
+    <button id="btn-colector" onclick="cerrarSesionColector()"
+            style="background:var(--panel);border:1px solid var(--border);color:var(--accent);
+            border-radius:8px;padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;
+            flex-shrink:0;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="Tocá para cerrar sesión">&#x1F464; ?</button>
     <button id="btn-voz" onclick="toggleVoz()"
             style="background:var(--panel);border:1px solid var(--border);color:var(--accent);
             border-radius:8px;padding:6px 10px;font-size:16px;cursor:pointer;flex-shrink:0"
             title="Activar/desactivar voz">&#x1F50A;</button>
     <div id="badge" class="badge">&#x2014; / &#x2014;</div>
   </div>
-</div>
-
-<div id="canal-selector" style="display:flex;gap:0;background:var(--bg);
-     padding:8px 12px;border-bottom:2px solid var(--border)">
-  <button class="canal-btn" id="btn-canal-flex"
-          onclick="setCanal('flex')"
-          style="flex:1;padding:10px 6px;border:2px solid #7C3AED;background:#7C3AED;
-          color:#fff;font-weight:800;font-size:15px;border-radius:10px 0 0 10px;
-          cursor:pointer;min-height:52px;line-height:1.2">&#x26A1; FLEX</button>
-  <button class="canal-btn" id="btn-canal-colecta"
-          onclick="setCanal('colecta')"
-          style="flex:1;padding:10px 6px;border:2px solid #2563EB;background:var(--card);
-          color:#2563EB;font-weight:800;font-size:15px;border-radius:0 10px 10px 0;
-          cursor:pointer;min-height:52px;line-height:1.2">&#x1F69A; COLECTA</button>
 </div>
 
 <div id="ban">&#x1F389; &#xA1;COLECTA COMPLETA! Avis&#xE1; al supervisor.</div>
@@ -307,167 +304,117 @@ let E = null, last = null;
 let _guiaActual = null;
 let _vozActiva  = true;
 
-// ── CANAL ACTIVO ────────────────────────────────────────────────────────────
-// OJO: NO defaultear a 'flex' cuando no hay nada guardado. Antes esto casi
-// no se notaba porque normalmente sólo un canal estaba cargado a la vez
-// (ahí el auto-detect de detectarCanalActivo() corregía el default solo).
-// Con dos colectores trabajando SIEMPRE en simultáneo (uno por canal), un
-// celular nuevo/con caché borrado que arranca sin canal guardado se queda
-// pegado mostrando "flex" aunque sea del canal de colecta — sin ninguna
-// forma de autocorregirse. Si no hay nada guardado, queda vacío y se pide
-// elegir explícitamente antes de mostrar cualquier dato (ver
-// mostrarSelectorInicial más abajo).
-let _canalActivo = localStorage.getItem('canal_picking') || '';
+// ── SESIÓN DEL COLECTOR ─────────────────────────────────────────────────────
+// Antes el celular elegía un "canal" (Flex/Colecta) — un slot compartido en
+// el servidor, así que dos colectores distintos trabajando el MISMO canal
+// (ej. dos personas haciendo Flex a la vez) se pisaban entre sí. Ahora cada
+// colector inicia sesión con el mismo usuario/clave que en la PC, y el lote
+// que genere en SU pc aparece directo en SU celular — la sesión reemplaza
+// por completo a la elección manual de canal.
+let _colector = null;
+try { _colector = JSON.parse(localStorage.getItem('colector_activo') || 'null'); }
+catch(e) { _colector = null; }
 // Timestamp del último lote recibido — para detectar lotes nuevos
 let _loteTimestamp = '';
 
-function setCanal(canal, silencioso = false) {
-  _canalActivo = canal;
-  localStorage.setItem('canal_picking', canal);
-  const btnF = $('btn-canal-flex');
-  const btnC = $('btn-canal-colecta');
-  const topbar = document.querySelector('.topbar');
-
-  // Estilos activo/inactivo para cada botón + teñido de la barra superior,
-  // para que con un solo vistazo (sin leer texto chico) se sepa en qué
-  // canal está el celular — clave cuando el mismo celular rota entre
-  // colectores de Flex y Colecta durante el turno.
-  if (canal === 'flex') {
-    if (btnF) { btnF.style.background='#7C3AED'; btnF.style.color='#fff';
-                btnF.style.borderColor='#7C3AED'; }
-    if (btnC) { btnC.style.background='var(--card)'; btnC.style.color='#2563EB';
-                btnC.style.borderColor='#2563EB'; }
-    $('t-sub').textContent = '⚡ Colecta FLEX';
-    if (topbar) { topbar.style.background = '#2E1065';
-                  topbar.style.borderBottomColor = '#7C3AED'; }
-  } else {
-    if (btnC) { btnC.style.background='#2563EB'; btnC.style.color='#fff';
-                btnC.style.borderColor='#2563EB'; }
-    if (btnF) { btnF.style.background='var(--card)'; btnF.style.color='#7C3AED';
-                btnF.style.borderColor='#7C3AED'; }
-    $('t-sub').textContent = '🚚 Colecta COLECTA';
-    if (topbar) { topbar.style.background = '#0C2A5E';
-                  topbar.style.borderBottomColor = '#2563EB'; }
-  }
-
-  // Cuando el operario toca el botón manualmente, resetear timestamp
-  // para que el siguiente loadQ detecte el lote del nuevo canal
-  if (!silencioso) {
-    _loteTimestamp = '';
-    load();
-  }
+function _paramsColector() {
+  if (!_colector) return '';
+  return 'usuario=' + encodeURIComponent(_colector.usuario || '') +
+         '&cuenta_id=' + encodeURIComponent(_colector.cuenta_id || '');
 }
 
-// ── SELECTOR INICIAL DE CANAL (bloqueante) ──────────────────────────────────
-// Se muestra SOLO si el celular no tiene ningún canal guardado todavía
-// (nunca adivinar). Recién al elegir se guarda y arranca la carga normal.
+// ── LOGIN (bloqueante) ───────────────────────────────────────────────────────
+// Se muestra SOLO si el celular no tiene una sesión guardada todavía.
 function mostrarSelectorInicial() {
-  const ov = document.getElementById('canal-gate');
+  const ov = document.getElementById('login-gate');
   if (ov) ov.style.display = 'flex';
+  setTimeout(() => { const i = $('login-usuario'); if (i) i.focus(); }, 50);
 }
 
-function elegirCanalInicial(canal) {
-  const ov = document.getElementById('canal-gate');
-  if (ov) ov.style.display = 'none';
-  setCanal(canal, true);
-  detectarCanalActivo();
-}
-
-// ── AUTO-DETECCIÓN DE CANAL CON LOTE ACTIVO ────────────────────────────────
-// Si el supervisor subió un lote en 'colecta' pero el celular tiene 'flex'
-// guardado (o viceversa), el móvil lo detecta y cambia automáticamente.
-async function detectarCanalActivo() {
-  // OJO: esta función NO cambia de canal sola nunca — sólo informa.
-  // Antes (cuando un único operario alternaba de canal a mano) tenía
-  // sentido "adivinar" y saltar al canal que sí tenía lote. Ahora cada
-  // canal tiene su propio colector trabajando en simultáneo (Flex y
-  // Colecta a la vez, todo el turno): si el canal propio queda vacío un
-  // momento (p. ej. terminó un lote y el supervisor todavía no generó el
-  // siguiente), NO hay que saltar al canal del otro colector — hay que
-  // esperar ahí. El único lugar que cambia _canalActivo es el selector
-  // inicial (celular sin nada guardado) o que el operario toque el botón
-  // FLEX/COLECTA a mano.
-  if (!_canalActivo) return;
+async function intentarLogin() {
+  const usuario = ($('login-usuario').value || '').trim();
+  const clave   = ($('login-clave').value || '').trim();
+  const err     = $('login-error');
+  err.textContent = '';
+  if (!usuario || !clave) { err.textContent = 'Completá usuario y clave.'; return; }
+  const btn = $('login-btn');
+  btn.disabled = true; btn.textContent = 'Entrando…';
   try {
-    // Consultar ambos canales en paralelo: el propio para renderizar, el
-    // otro sólo para el contador de SKUs en su botón y un aviso opcional.
-    const [rF, rC] = await Promise.all([
-      fetch('/api/estado?canal=flex'),
-      fetch('/api/estado?canal=colecta')
-    ]);
-    const dF = await rF.json();
-    const dC = await rC.json();
-    setConexion('ok');
-
-    const flexCargado    = dF.cargado && (dF.grupos || []).length > 0;
-    const colectaCargado = dC.cargado && (dC.grupos || []).length > 0;
-
-    // Actualizar los botones de canal con SKUs disponibles en cada uno
-    _actualizarBotonesCanal(
-      flexCargado    ? (dF.total_skus || 0) : 0,
-      colectaCargado ? (dC.total_skus || 0) : 0
-    );
-
-    const d = _canalActivo === 'flex' ? dF : dC;
-
-    // Avisar SOLO si llegó un lote NUEVO en el PROPIO canal (no en el otro)
-    const habiaLote = E && E.cargado && (E.grupos || []).length > 0;
-    const hayLoteNuevo = !habiaLote && d.cargado && (d.grupos || []).length > 0;
-    if (hayLoteNuevo) {
-      const ico = _canalActivo === 'flex' ? '⚡' : '🚚';
-      toast(ico + ' Lote nuevo: ' + (d.total_skus || 0) + ' SKUs', 'ok');
-      try { navigator.vibrate && navigator.vibrate([120, 60, 120]); } catch(e) {}
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ usuario, clave })
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      err.textContent = d.msg || 'Usuario o clave incorrectos.';
+      $('login-clave').value = '';
+      return;
     }
-
-    E = d; _loteTimestamp = d.ultima_actualizacion || ''; render();
+    _colector = d.usuario;   // {usuario, nombre, cuenta_id, rol}
+    localStorage.setItem('colector_activo', JSON.stringify(_colector));
+    document.getElementById('login-gate').style.display = 'none';
+    _actualizarBotonColector();
+    load();
   } catch(e) {
-    console.error('[MOVIL] detectarCanalActivo error:', e);
+    err.textContent = 'Sin conexión al servidor.';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Iniciar sesión';
+  }
+}
+
+function cerrarSesionColector() {
+  if (!_colector) return;
+  if (!confirm('¿Cerrar sesión de ' + (_colector.nombre || _colector.usuario) + '?')) return;
+  _colector = null;
+  localStorage.removeItem('colector_activo');
+  E = null; _loteTimestamp = '';
+  _actualizarBotonColector();
+  fb('neu', '🔫 Listo para escanear');
+  _tintarPorCanal('');
+  mostrarSelectorInicial();
+}
+
+function _actualizarBotonColector() {
+  const b = $('btn-colector');
+  if (!b) return;
+  b.textContent = _colector ? ('👤 ' + (_colector.nombre || _colector.usuario)) : '👤 ?';
+}
+
+// ── CARGA ──────────────────────────────────────────────────────────────────
+// Cada colector tiene un único lote propio (identificado por su sesión), no
+// hay "otro canal" que mirar — se pide directo el estado de ESTE colector.
+async function load() {
+  if (!_colector) return;
+  try {
+    const r = await fetch('/api/estado?' + _paramsColector());
+    if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
+    E = await r.json();
+    setConexion('ok');
+    _loteTimestamp = E.ultima_actualizacion || '';
+    render();
+  } catch(e) {
+    console.error('[MOVIL] load error:', e);
     setConexion('warn');
     fb('err', '❌ Sin conexión al servidor');
   }
 }
 
-// Actualiza el texto de los botones de canal con cantidad de SKUs
-function _actualizarBotonesCanal(skusFlex, skusColecta) {
-  const btnF = document.getElementById('btn-canal-flex');
-  const btnC = document.getElementById('btn-canal-colecta');
-  if (btnF) {
-    btnF.innerHTML = skusFlex > 0
-      ? `⚡ FLEX<br><small style="font-weight:400;font-size:11px">${skusFlex} SKUs</small>`
-      : '⚡ FLEX';
-  }
-  if (btnC) {
-    btnC.innerHTML = skusColecta > 0
-      ? `🚚 COLECTA<br><small style="font-weight:400;font-size:11px">${skusColecta} SKUs</small>`
-      : '🚚 COLECTA';
-  }
-}
-
-// ── CARGA ──────────────────────────────────────────────────────────────────
-// detectarCanalActivo() ya hace todo lo que hace falta: consulta el canal
-// propio (y de paso el otro, para el contador del botón), y renderiza el
-// propio sin saltar nunca de canal solo — ver comentario ahí.
-async function load() {
-  await detectarCanalActivo();
-}
-
 // ── REFRESH SILENCIOSO (cada 5s) ────────────────────────────────────────────
-// Solo sincroniza el canal propio del operario.
-// Si ambas PCs tienen lote simultáneo, cada celular trabaja en su canal.
 async function loadQ() {
+  if (!_colector) return;
   try {
-    const r = await fetch('/api/estado?canal=' + _canalActivo);
+    const r = await fetch('/api/estado?' + _paramsColector());
     if (!r.ok) { setConexion('warn'); return; }
     const nuevo = await r.json();
     setConexion('ok');
 
-    // ── Caso A: Lote nuevo del supervisor (timestamp cambió) ─────────────────
+    // ── Caso A: Lote nuevo (timestamp cambió) ─────────────────────────────
     const tsNuevo = nuevo.ultima_actualizacion || '';
     if (tsNuevo && tsNuevo !== _loteTimestamp && nuevo.cargado && (nuevo.grupos||[]).length > 0) {
       if (_loteTimestamp) {
-        // Había un lote antes → el supervisor cargó uno nuevo
-        toast('🔄 Lote nuevo del supervisor', 'ok');
-        leerProducto('El supervisor cargó un lote nuevo.');
+        toast('🔄 Lote nuevo', 'ok');
+        leerProducto('Tenés un lote nuevo.');
       }
       _loteTimestamp = tsNuevo;
       E = nuevo;
@@ -475,16 +422,13 @@ async function loadQ() {
       return;
     }
 
-    // ── Caso B: Canal propio sin lote → mantener pantalla de espera ──────────
-    // NUNCA saltar sola al otro canal: cada canal tiene su propio colector
-    // trabajando en simultáneo, así que un canal vacío no significa que el
-    // operario esté "en el canal equivocado" (ver detectarCanalActivo).
+    // ── Caso B: Sin lote propio → mantener pantalla de espera ────────────────
     if (!nuevo.cargado || !(nuevo.grupos||[]).length) {
       E = nuevo; render(); return;
     }
 
     // ── Caso C: Mismo lote, actualizar colecta ───────────────────────────────
-    // Sincronizar escaneos del propio canal (otro celular escaneó algo)
+    // Sincronizar escaneos (otro celular con la misma sesión escaneó algo)
     if (nuevo.cargado && E && E.cargado) {
       const colNueva = nuevo.colecta || {};
       const colVieja = E.colecta || {};
@@ -655,6 +599,21 @@ function setConexion(estado) {
 }
 
 // ── RENDER ──────────────────────────────────────────────────────────────────
+// Tiñe la topbar según el canal (Flex/Colecta) del lote propio — ahora es
+// sólo informativo (de qué canal viene el lote de esta sesión), no algo que
+// el operario elija.
+function _tintarPorCanal(canal) {
+  const topbar = document.querySelector('.topbar');
+  if (!topbar) return;
+  if (canal === 'flex') {
+    topbar.style.background = '#2E1065'; topbar.style.borderBottomColor = '#7C3AED';
+  } else if (canal === 'colecta') {
+    topbar.style.background = '#0C2A5E'; topbar.style.borderBottomColor = '#2563EB';
+  } else {
+    topbar.style.background = ''; topbar.style.borderBottomColor = '';
+  }
+}
+
 function render(quiet = false) {
   try {
     if (!E) return;
@@ -665,12 +624,13 @@ function render(quiet = false) {
     const content = document.getElementById('content');
     const badge   = document.getElementById('badge');
     const ban     = document.getElementById('ban');
+    _tintarPorCanal(cargado ? E.canal : '');
 
     if (!cargado || !gs.length) {
       if (content) content.innerHTML = `<div class="empty">
         <div class="empty-i">📋</div>
-        <div class="empty-t">Esperando lote del supervisor…<br>
-        <small style="color:var(--lo)">Cuando el supervisor genere el lote<br>aparecerá aquí automáticamente.</small>
+        <div class="empty-t">Esperando que generes un lote…<br>
+        <small style="color:var(--lo)">Cuando generes el lote en tu PC<br>aparecerá aquí automáticamente.</small>
         </div></div>`;
       if (badge) { badge.textContent = '— / —'; badge.className = 'badge'; }
       $('t-sub').textContent = 'Esperando lote…';
@@ -762,7 +722,8 @@ async function scan(raw) {
     const r = await fetch('/api/escanear', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ sku, canal: _canalActivo })
+      body:    JSON.stringify({ sku, usuario: (_colector && _colector.usuario) || '',
+                                 cuenta_id: (_colector && _colector.cuenta_id) || '' })
     });
     const d = await r.json();
 
@@ -922,16 +883,19 @@ function toggleTeclado() {
 
 // ── INIT ────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  if (!_canalActivo) {
-    // Celular sin canal guardado (nuevo, caché borrado, etc.) — nunca
-    // adivinar: pedir que elija antes de mostrar o cargar nada.
+  if (!_colector) {
+    // Celular sin sesión guardada (nuevo, caché borrado, etc.) — pedir login
+    // antes de mostrar o cargar nada.
     mostrarSelectorInicial();
   } else {
-    // Inicializar visual del canal sin recargar (la carga la hace detectarCanalActivo)
-    setCanal(_canalActivo, true);
-    // Primera carga: detectar automáticamente en qué canal hay lote activo
-    detectarCanalActivo();
+    _actualizarBotonColector();
+    load();
   }
+
+  // Enter en los campos de login
+  const _lu = $('login-usuario'), _lc = $('login-clave');
+  if (_lu) _lu.addEventListener('keydown', e => { if (e.key === 'Enter') $('login-clave').focus(); });
+  if (_lc) _lc.addEventListener('keydown', e => { if (e.key === 'Enter') intentarLogin(); });
 
   const inp      = $('sku');
   const debugDiv = $('scanner-debug');
@@ -1027,28 +991,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Botón refresh
   $('fab').addEventListener('click', () => {
     $('fab').classList.add('spin');
-    // Al hacer refresh manual, siempre buscar el canal correcto
-    detectarCanalActivo().finally(()=>setTimeout(()=>$('fab').classList.remove('spin'),500));
+    load().finally(()=>setTimeout(()=>$('fab').classList.remove('spin'),500));
   });
 
-  // ── Auto-refresh ────────────────────────────────────────────────────────
-  // Cada 5s: recarga el canal actual (rápido, liviano)
-  // Cada 15s: verifica AMBOS canales por si el desktop generó un lote nuevo
-  //           en el otro canal. Así el móvil se entera sin tocar nada.
-  let _ciclos = 0;
+  // ── Auto-refresh cada 5s ──────────────────────────────────────────────────
   setInterval(() => {
-    if (!_canalActivo) return;   // esperando que elija canal en el selector inicial
-    _ciclos++;
-    const sinLote = !E || !E.cargado || !(E.grupos || []).length;
-
-    // Verificar ambos canales si:
-    //   a) el canal actual está vacío (probablemente el lote está en el otro)
-    //   b) o cada 3 ciclos (15s) como chequeo periódico
-    if (sinLote || _ciclos % 3 === 0) {
-      detectarCanalActivo();
-    } else {
-      loadQ();
-    }
+    if (!_colector) return;   // esperando login en el selector inicial
+    loadQ();
   }, 5000);
 });
 </script>
