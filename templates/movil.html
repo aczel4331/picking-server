@@ -948,7 +948,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Captura global para escáner físico
   let _gBuf='', _gLastKey=0, _gTimer=null;
   document.addEventListener('keydown', e => {
-    if (_tecladoVisible || _camaraActiva) return;
+    if (!_colector || _tecladoVisible || _camaraActiva) return;
     if (e.key==='Enter' || e.keyCode===13) {
       const s=_gBuf.trim(); _gBuf=''; clearTimeout(_gTimer);
       if (s.length>=2) { debug(`🌐 Enter global: ${s}`); scan(s); inp.focus(); }
@@ -967,6 +967,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.addEventListener('click', e => {
+    if (!_colector) return;   // login visible — no robarle el foco a usuario/clave
     if (!e.target.closest('#btn-teclado') && !e.target.closest('#btn-confirmar') &&
         !e.target.closest('#btn-cam') && !e.target.closest('#cam-overlay') &&
         !e.target.closest('.g-hdr')) {
@@ -974,10 +975,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  inp.focus();
+  if (_colector) inp.focus();
 
   // Mantener foco cada 3s
   setInterval(() => {
+    if (!_colector) return;   // login visible — no robarle el foco a usuario/clave
     if (!_tecladoVisible && !_camaraActiva && document.activeElement !== inp) inp.focus();
   }, 3000);
 
