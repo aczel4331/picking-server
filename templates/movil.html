@@ -325,9 +325,20 @@ function _paramsColector() {
 
 // ── LOGIN (bloqueante) ───────────────────────────────────────────────────────
 // Se muestra SOLO si el celular no tiene una sesión guardada todavía.
+//
+// OJO: no alcanza con "no llamar inp.focus() mientras no haya login" — hay
+// demasiados lugares que podían disparar eso (cámara, teclado del escáner,
+// captura global de teclado físico) y encima un teléfono real puede
+// autoenfocar el primer input de texto de la página al abrir la app. La
+// forma robusta de garantizar que el teclado numérico del escáner (#sku
+// tiene inputmode="decimal") nunca tape el teclado normal de usuario/clave
+// es DESHABILITAR #sku por completo mientras se pide el login — un input
+// disabled no puede recibir foco pase lo que pase.
 function mostrarSelectorInicial() {
   const ov = document.getElementById('login-gate');
   if (ov) ov.style.display = 'flex';
+  const sku = $('sku');
+  if (sku) sku.disabled = true;
   setTimeout(() => { const i = $('login-usuario'); if (i) i.focus(); }, 50);
 }
 
@@ -354,6 +365,8 @@ async function intentarLogin() {
     _colector = d.usuario;   // {usuario, nombre, cuenta_id, rol}
     localStorage.setItem('colector_activo', JSON.stringify(_colector));
     document.getElementById('login-gate').style.display = 'none';
+    const sku = $('sku');
+    if (sku) { sku.disabled = false; sku.focus(); }
     _actualizarBotonColector();
     load();
   } catch(e) {
