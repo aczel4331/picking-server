@@ -727,15 +727,26 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
         else:
             oid_principal = packs_vistos[ship_id]
             ped_principal = pedidos_agrupados[oid_principal]
-            skus_existentes = {it["sku"] for it in ped_principal["items"]}
+            # Clave por (sku, color, talle) — NO por item_id: en ML, distintas
+            # variantes de color/talle de UN MISMO producto comparten el
+            # mismo "item.id" (el id es del aviso, no de la variación). Usar
+            # item_id acá hacía que, al fusionar dos órdenes del mismo pack,
+            # una variante (ej. color Transparente) con el mismo SKU que otra
+            # ya vista (ej. color Negro) no calzara ni por "nuevo" ni por
+            # "mismo item_id" → se perdía en silencio, sin sumar cantidad ni
+            # aparecer en la lista. Con (sku, color, talle) cada variante
+            # real se preserva como línea propia y sólo se suma cantidad
+            # cuando es genuinamente la misma variante repetida.
+            def _clave_item(it):
+                return (it["sku"], it.get("color",""), it.get("talle",""))
+            existentes = {_clave_item(it): it for it in ped_principal["items"]}
             for it in ped.get("items", []):
-                if it["sku"] not in skus_existentes:
-                    ped_principal["items"].append(it)
-                    skus_existentes.add(it["sku"])
+                clave = _clave_item(it)
+                if clave in existentes:
+                    existentes[clave]["cantidad"] += it["cantidad"]
                 else:
-                    for ex in ped_principal["items"]:
-                        if ex["sku"] == it["sku"] and ex["item_id"] != it["item_id"]:
-                            ex["cantidad"] += it["cantidad"]; break
+                    ped_principal["items"].append(it)
+                    existentes[clave] = it
             ped_principal["total"] = ped_principal.get("total", 0) + ped.get("total", 0)
             # Registrar las órdenes que componen este pack
             ped_principal.setdefault("_orders_agrupadas", [oid_principal])
