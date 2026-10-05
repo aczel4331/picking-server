@@ -6386,7 +6386,7 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
 .btn-blue{background:#3B82F6;color:white}.btn-blue:hover{background:#2563EB}
 .btn-green{background:#10B981;color:white}.btn-green:hover{background:#059669}
 .btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
-#msg-etiqueta,#msg-excel,#msg-supervisor,#msg-marca{margin-top:10px;font-size:13px;
+#msg-etiqueta,#msg-excel,#msg-supervisor{margin-top:10px;font-size:13px;
   min-height:20px;padding:6px 10px;border-radius:6px;display:none}
 .ok-msg{background:rgba(16,185,129,.15);color:#34D399;border:1px solid #059669}
 .err-msg{background:rgba(239,68,68,.15);color:#FCA5A5;border:1px solid #EF4444}
@@ -6417,36 +6417,6 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
 </div>
 
 <div class="grid">
-
-<!-- ── MARCA DE LA TIENDA ─────────────────────────────────────────────────── -->
-<div class="card">
-  <h2>🏷 Marca de la tienda</h2>
-  <div class="info">
-    Nombre y logo que ven los colectores en la app de escritorio, en el celular
-    y en este panel. Si lo dejás vacío se muestra la marca por defecto.
-  </div>
-  <label>Nombre de la tienda</label>
-  <input type="text" id="marca-nombre" maxlength="40"
-         value="{{ cfg.get('tienda_nombre','') }}" placeholder="Ej: Mi Tienda">
-  <label style="margin-top:10px">Subtítulo (opcional)</label>
-  <input type="text" id="marca-subtitulo" maxlength="60"
-         value="{{ cfg.get('tienda_subtitulo','') }}" placeholder="Ej: Depósito Central · MercadoLibre">
-  <label style="margin-top:10px">Logo (PNG, JPG o WEBP · máx. 1.5 MB)</label>
-  <input type="file" id="marca-logo" accept="image/png,image/jpeg,image/webp"
-         onchange="previsualizarMarca(this)">
-  <div class="preview-box" id="marca-preview">
-    {% if cfg.get('tienda_logo_b64') %}
-      <img src="/brand/logo?v={{ cfg.get('tienda_logo_ts','') }}"
-           style="max-height:60px;border-radius:6px">
-    {% else %}Sin logo propio — se usa el logo por defecto.{% endif %}
-  </div>
-  <div class="btn-row">
-    <button class="btn btn-blue" onclick="guardarMarca(false)">💾 Guardar marca</button>
-    <button class="btn" style="background:#334155;color:#F1F5F9"
-            onclick="guardarMarca(true)">🗑 Quitar logo</button>
-  </div>
-  <div id="msg-marca"></div>
-</div>
 
 <!-- ── EXCEL DE PASILLOS ──────────────────────────────────────────────────── -->
 <div class="card">
@@ -6591,41 +6561,6 @@ async function guardarEtiqueta() {
     const d = await r.json();
     mostrar('msg-etiqueta', d.ok ? '✅ '+d.msg : '❌ '+d.msg, d.ok);
   } catch(e) { mostrar('msg-etiqueta', 'Error: '+e, false); }
-}
-
-let _marcaB64 = ''; let _marcaExt = '';
-function previsualizarMarca(input) {
-  const file = input.files[0]; if (!file) return;
-  if (file.size > 1.5 * 1024 * 1024) {
-    mostrar('msg-marca', 'El logo pesa más de 1.5 MB — usá una imagen más liviana', false);
-    input.value = ''; return;
-  }
-  const reader = new FileReader();
-  reader.onload = e => {
-    _marcaB64 = e.target.result.split(',')[1];
-    _marcaExt = '.' + file.name.split('.').pop().toLowerCase();
-    document.getElementById('marca-preview').innerHTML =
-      '<img src="' + e.target.result + '" style="max-height:60px;border-radius:6px">';
-  };
-  reader.readAsDataURL(file);
-}
-
-async function guardarMarca(quitarLogo) {
-  const body = {
-    tienda_nombre:    document.getElementById('marca-nombre').value.trim(),
-    tienda_subtitulo: document.getElementById('marca-subtitulo').value.trim(),
-  };
-  if (quitarLogo) { body.tienda_logo_b64 = ''; body.tienda_logo_ext = ''; }
-  else if (_marcaB64) { body.tienda_logo_b64 = _marcaB64; body.tienda_logo_ext = _marcaExt; }
-  try {
-    const r = await fetch(BASE+'/api/config-app', {
-      method:'POST', headers:{'Content-Type':'application/json','X-API-Key':KEY},
-      body: JSON.stringify(body)
-    });
-    const d = await r.json();
-    mostrar('msg-marca', d.ok ? '✅ Marca guardada' : '❌ '+d.msg, d.ok);
-    if (d.ok) setTimeout(() => location.reload(), 1200);
-  } catch(e) { mostrar('msg-marca', 'Error: '+e, false); }
 }
 
 async function subirExcel() {
