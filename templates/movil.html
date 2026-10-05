@@ -153,7 +153,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <div id="login-gate" style="display:none;position:fixed;inset:0;z-index:9998;
      background:#0B0F1A;flex-direction:column;align-items:center;
      justify-content:center;padding:24px;text-align:center;gap:18px">
-  <div style="font-size:44px">📦</div>
+  <div id="login-marca" style="font-size:44px">📦</div>
   <div style="font-size:19px;font-weight:800;color:var(--hi)">Iniciá sesión para colectar</div>
   <div style="font-size:13px;color:var(--mid);max-width:280px">
     Usá el mismo usuario y clave que en la PC. El lote que generes va a
@@ -387,6 +387,34 @@ function cerrarSesionColector() {
   _tintarPorCanal('');
   mostrarSelectorInicial();
 }
+
+async function aplicarMarca() {
+  try {
+    const r = await fetch('/api/branding', { cache: 'no-store' });
+    if (!r.ok) return;
+    const m = await r.json();
+    if (!m.personalizado) return;
+    const box = $('login-marca');
+    if (!box) return;
+    box.textContent = '';
+    if (m.tiene_logo) {
+      const img = document.createElement('img');
+      img.src = '/brand/logo?v=' + encodeURIComponent(m.logo_v || '');
+      img.alt = m.nombre || '';
+      img.style.cssText = 'max-height:80px;max-width:220px;border-radius:10px;background:#fff;padding:6px';
+      box.appendChild(img);
+    } else {
+      box.textContent = '📦';
+    }
+    if (m.nombre) {
+      const n = document.createElement('div');
+      n.textContent = m.nombre;
+      n.style.cssText = 'font-size:16px;font-weight:800;color:var(--hi);margin-top:8px';
+      box.appendChild(n);
+    }
+  } catch (e) {}
+}
+aplicarMarca();
 
 function _actualizarBotonColector() {
   const b = $('btn-colector');

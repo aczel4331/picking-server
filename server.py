@@ -56,8 +56,8 @@ def _leer_template(nombre):
 # ── Config ML ─────────────────────────────────────────────────────────────────
 ML_APP_ID     = os.environ.get("ML_APP_ID", "")
 ML_SECRET_KEY = os.environ.get("ML_SECRET_KEY", "")
-ML_SITE_ID    = "MLU"
-ML_AUTH_URL   = "https://auth.mercadolibre.com.uy"
+ML_SITE_ID    = os.environ.get("ML_SITE_ID", "MLU")
+ML_AUTH_URL   = os.environ.get("ML_AUTH_URL", "https://auth.mercadolibre.com.uy")
 ML_API_URL    = "https://api.mercadolibre.com"
 ML_REDIRECT   = os.environ.get("ML_REDIRECT_URI", "")
 if not ML_REDIRECT:
@@ -474,7 +474,7 @@ def _cargar_usuarios():
             # Primera vez: crear usuario admin por defecto
             _usuarios = [{
                 "usuario":    "admin",
-                "clave":      "1234",
+                "clave":      os.environ.get("ADMIN_BOOTSTRAP_CLAVE", "1234"),
                 "nombre":     "Administrador",
                 "cuenta_id":  "todas",
                 "rol":        "supervisor",
@@ -502,8 +502,15 @@ def _verificar_credenciales(usuario: str, clave: str):
     No guarda contraseñas en texto plano en logs.
     """
     usuario = usuario.strip().lower()
+    import hashlib
+    clave_sha = hashlib.sha256(clave.encode()).hexdigest()
     for u in _usuarios:
-        if u.get("usuario","").lower() == usuario and u.get("clave","") == clave:
+        guardada = u.get("clave", "")
+        # Texto plano (altas y ediciones normales) o sha256 (lo que guarda el
+        # endpoint /clave del panel): antes ese último caso dejaba al usuario
+        # sin poder entrar.
+        if u.get("usuario","").lower() == usuario and (
+                guardada == clave or (len(guardada) == 64 and guardada == clave_sha)):
             return {
                 "usuario":   u.get("usuario"),
                 "nombre":    u.get("nombre", u.get("usuario")),
@@ -1366,8 +1373,12 @@ def requiere_api_key(f):
     def decorated(*args, **kwargs):
         k = (request.headers.get("X-API-Key") or
              request.args.get("key") or request.args.get("api_key") or "").strip()
-        # Claves válidas: la definida en Railway + el fallback hardcodeado
-        CLAVES_VALIDAS = {API_KEY, "everest2024", "everest2025"}
+        # Claves válidas: la definida en Railway + (por defecto) las heredadas
+        # que ya están dentro de los .exe instalados. Una tienda nueva define
+        # ALLOW_LEGACY_KEYS=0 para que esas claves públicas NO abran su servidor.
+        CLAVES_VALIDAS = {API_KEY}
+        if os.environ.get("ALLOW_LEGACY_KEYS", "1").strip() != "0":
+            CLAVES_VALIDAS |= {"everest2024", "everest2025"}
         CLAVES_VALIDAS.discard("")  # no aceptar clave vacía
         if not CLAVES_VALIDAS:
             return jsonify({"ok": False, "msg": "Servidor no configurado correctamente."}), 503
@@ -1488,7 +1499,21 @@ def api_usuarios_editar(usuario_id):
     u = next((x for x in _usuarios if x.get("usuario","").lower() == usuario_id.lower()), None)
     if not u:
         return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
+
+    # Mismo criterio de permisos que el cambio de clave: admin edita a cualquiera,
+    # supervisor solo operarios de su tienda (y no puede reasignarlos ni ascenderlos).
+    rol_sesion    = (request.headers.get("X-Panel-Rol","") or session.get("admin_panel_rol",""))
+    cuenta_sesion = (request.headers.get("X-Panel-Cuenta","") or session.get("admin_panel_cuenta_id",""))
+    if rol_sesion == "supervisor":
+        if u.get("rol") != "operario" or u.get("cuenta_id","") != cuenta_sesion:
+            return jsonify({"ok": False, "msg": "Sin permiso sobre ese usuario"}), 403
+    elif rol_sesion != "admin":
+        return jsonify({"ok": False, "msg": "Sin permiso"}), 403
+
     data = request.get_json(silent=True) or {}
+    if rol_sesion == "supervisor":
+        data.pop("rol", None)
+        data.pop("cuenta_id", None)
     if data.get("clave"):
         u["clave"]     = data["clave"].strip()
     if data.get("nombre"):
@@ -4371,7 +4396,8 @@ def api_config_app_get():
     """Devuelve la configuración de la app."""
     cfg = _cargar_config_app()
     # No devolver logo en base64 (puede ser grande) — solo metadata
-    cfg_safe = {k: v for k, v in cfg.items() if k != "etiqueta_logo_b64"}
+    cfg_safe = {k: v for k, v in cfg.items()
+                if k not in ("etiqueta_logo_b64", "tienda_logo_b64")}
     return jsonify({"ok": True, "config": cfg_safe})
 
 
@@ -4388,10 +4414,14 @@ def api_config_app_post():
         "etiqueta_logo_pos", "etiqueta_logo_size",
         "etiqueta_texto",    "etiqueta_texto_pos",
         "excel_cache",       "excel_ts",
+        "tienda_nombre", "tienda_subtitulo",
+        "tienda_logo_b64", "tienda_logo_ext",
     ]
     for campo in campos:
         if campo in data:
             cfg[campo] = data[campo]
+    if "tienda_logo_b64" in data:
+        cfg["tienda_logo_ts"] = str(int(time.time()))
     _guardar_config_app(cfg)
     logger.info(f"[CONFIG-APP] Actualizado: {[k for k in data if k in campos]}")
     return jsonify({"ok": True, "msg": "Configuración guardada"})
@@ -4446,6 +4476,95 @@ def api_config_app_excel_get():
                         "ts": cfg.get("excel_ts","")})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MARCA DE LA TIENDA (white-label) — nombre, subtítulo, color y logo propios.
+# Sin configurar nada, todo sigue mostrando "Logibot" exactamente como antes.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _marca_actual() -> dict:
+    cfg    = _cargar_config_app()
+    nombre = (cfg.get("tienda_nombre") or "").strip()
+    tiene_logo = bool(cfg.get("tienda_logo_b64"))
+    return {
+        "personalizado": bool(nombre or tiene_logo),
+        "nombre":        nombre,
+        "subtitulo":     (cfg.get("tienda_subtitulo") or "").strip(),
+        "tiene_logo":    tiene_logo,
+        "logo_v":        cfg.get("tienda_logo_ts", ""),
+    }
+
+
+_nombre_tienda_cache = {"mtime": None, "nombre": ""}
+
+def _nombre_tienda_html() -> str:
+    """Nombre de la tienda ya saneado para incrustarlo en HTML/JS. Cacheado por
+    fecha de modificación de config_app.json (se consulta en cada página)."""
+    try:
+        mtime = os.path.getmtime(CONFIG_APP_PATH)
+    except OSError:
+        return ""
+    if _nombre_tienda_cache["mtime"] != mtime:
+        n = (_cargar_config_app().get("tienda_nombre") or "").strip()
+        n = re.sub(r"[\\\r\n]", "", n).replace("'", "’").replace('"', "”")
+        n = n.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        _nombre_tienda_cache.update(mtime=mtime, nombre=n[:60])
+    return _nombre_tienda_cache["nombre"]
+
+
+@app.after_request
+def _aplicar_marca_html(resp):
+    """Si la tienda configuró su nombre, lo pone en lugar de 'Logibot' en todas
+    las páginas HTML (títulos, encabezados). Sin nombre configurado: no hace nada."""
+    try:
+        if resp.mimetype != "text/html" or resp.direct_passthrough:
+            return resp
+        nombre = _nombre_tienda_html()
+        if not nombre:
+            return resp
+        cuerpo = resp.get_data(as_text=True)
+        if "Logibot" in cuerpo:
+            resp.set_data(cuerpo.replace("Logibot", nombre))
+    except Exception as e:
+        logger.debug(f"[MARCA] after_request: {e}")
+    return resp
+
+
+@app.route("/api/branding")
+def api_branding():
+    """Marca pública de la tienda (sin API key: la necesitan el login del
+    escritorio y la página móvil antes de autenticarse)."""
+    resp = jsonify(_marca_actual())
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.route("/brand/logo")
+def brand_logo():
+    import base64
+    b64 = _cargar_config_app().get("tienda_logo_b64", "")
+    if not b64:
+        return ("", 404)
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return ("", 404)
+    # Solo imágenes ráster (por el contenido real, no por la extensión): un SVG
+    # subido como "logo" podría ejecutar scripts en el dominio del servidor.
+    if raw.startswith(b"\x89PNG"):
+        mime = "image/png"
+    elif raw.startswith(b"\xff\xd8"):
+        mime = "image/jpeg"
+    elif raw.startswith(b"GIF8"):
+        mime = "image/gif"
+    elif raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        mime = "image/webp"
+    else:
+        return ("", 404)
+    return Response(raw, mimetype=mime, headers={
+        "Cache-Control": "public, max-age=300",
+        "X-Content-Type-Options": "nosniff"})
 
 
 def _cargar_metricas_servidor():
@@ -6088,7 +6207,7 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
 .btn-blue{background:#3B82F6;color:white}.btn-blue:hover{background:#2563EB}
 .btn-green{background:#10B981;color:white}.btn-green:hover{background:#059669}
 .btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
-#msg-etiqueta,#msg-excel,#msg-supervisor{margin-top:10px;font-size:13px;
+#msg-etiqueta,#msg-excel,#msg-supervisor,#msg-marca{margin-top:10px;font-size:13px;
   min-height:20px;padding:6px 10px;border-radius:6px;display:none}
 .ok-msg{background:rgba(16,185,129,.15);color:#34D399;border:1px solid #059669}
 .err-msg{background:rgba(239,68,68,.15);color:#FCA5A5;border:1px solid #EF4444}
@@ -6119,6 +6238,36 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
 </div>
 
 <div class="grid">
+
+<!-- ── MARCA DE LA TIENDA ─────────────────────────────────────────────────── -->
+<div class="card">
+  <h2>🏷 Marca de la tienda</h2>
+  <div class="info">
+    Nombre y logo que ven los colectores en la app de escritorio, en el celular
+    y en este panel. Si lo dejás vacío se muestra la marca por defecto.
+  </div>
+  <label>Nombre de la tienda</label>
+  <input type="text" id="marca-nombre" maxlength="40"
+         value="{{ cfg.get('tienda_nombre','') }}" placeholder="Ej: Mi Tienda">
+  <label style="margin-top:10px">Subtítulo (opcional)</label>
+  <input type="text" id="marca-subtitulo" maxlength="60"
+         value="{{ cfg.get('tienda_subtitulo','') }}" placeholder="Ej: Depósito Central · MercadoLibre">
+  <label style="margin-top:10px">Logo (PNG, JPG o WEBP · máx. 1.5 MB)</label>
+  <input type="file" id="marca-logo" accept="image/png,image/jpeg,image/webp"
+         onchange="previsualizarMarca(this)">
+  <div class="preview-box" id="marca-preview">
+    {% if cfg.get('tienda_logo_b64') %}
+      <img src="/brand/logo?v={{ cfg.get('tienda_logo_ts','') }}"
+           style="max-height:60px;border-radius:6px">
+    {% else %}Sin logo propio — se usa el logo por defecto.{% endif %}
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-blue" onclick="guardarMarca(false)">💾 Guardar marca</button>
+    <button class="btn" style="background:#334155;color:#F1F5F9"
+            onclick="guardarMarca(true)">🗑 Quitar logo</button>
+  </div>
+  <div id="msg-marca"></div>
+</div>
 
 <!-- ── EXCEL DE PASILLOS ──────────────────────────────────────────────────── -->
 <div class="card">
@@ -6261,6 +6410,41 @@ async function guardarEtiqueta() {
     const d = await r.json();
     mostrar('msg-etiqueta', d.ok ? '✅ '+d.msg : '❌ '+d.msg, d.ok);
   } catch(e) { mostrar('msg-etiqueta', 'Error: '+e, false); }
+}
+
+let _marcaB64 = ''; let _marcaExt = '';
+function previsualizarMarca(input) {
+  const file = input.files[0]; if (!file) return;
+  if (file.size > 1.5 * 1024 * 1024) {
+    mostrar('msg-marca', 'El logo pesa más de 1.5 MB — usá una imagen más liviana', false);
+    input.value = ''; return;
+  }
+  const reader = new FileReader();
+  reader.onload = e => {
+    _marcaB64 = e.target.result.split(',')[1];
+    _marcaExt = '.' + file.name.split('.').pop().toLowerCase();
+    document.getElementById('marca-preview').innerHTML =
+      '<img src="' + e.target.result + '" style="max-height:60px;border-radius:6px">';
+  };
+  reader.readAsDataURL(file);
+}
+
+async function guardarMarca(quitarLogo) {
+  const body = {
+    tienda_nombre:    document.getElementById('marca-nombre').value.trim(),
+    tienda_subtitulo: document.getElementById('marca-subtitulo').value.trim(),
+  };
+  if (quitarLogo) { body.tienda_logo_b64 = ''; body.tienda_logo_ext = ''; }
+  else if (_marcaB64) { body.tienda_logo_b64 = _marcaB64; body.tienda_logo_ext = _marcaExt; }
+  try {
+    const r = await fetch(BASE+'/api/config-app', {
+      method:'POST', headers:{'Content-Type':'application/json','X-API-Key':KEY},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    mostrar('msg-marca', d.ok ? '✅ Marca guardada' : '❌ '+d.msg, d.ok);
+    if (d.ok) setTimeout(() => location.reload(), 1200);
+  } catch(e) { mostrar('msg-marca', 'Error: '+e, false); }
 }
 
 async function subirExcel() {
@@ -6572,7 +6756,8 @@ def index():
 
 @app.route("/manifest.json")
 def manifest():
-    return jsonify({"name": "Picking App", "short_name": "Picking",
+    _n = (_cargar_config_app().get("tienda_nombre") or "").strip()[:30]
+    return jsonify({"name": _n or "Picking App", "short_name": _n or "Picking",
                     "start_url": "/movil", "display": "standalone",
                     "background_color": "#0F172A", "theme_color": "#1E293B",
                     "icons": [{"src": "/static/icon.png", "sizes": "192x192", "type": "image/png"}]})
