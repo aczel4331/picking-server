@@ -341,6 +341,8 @@ def _cargar_tokens_persistidos():
 def _serializar_cuentas():
     data = {}
     for cid, tok in list(_cuentas.items()):
+        if cid.startswith("t_"):
+            continue    # tiendas nuevas: se guardan en tiendas/<id>/ml_token.json
         t = dict(tok)
         if isinstance(t.get("expires_at"), datetime):
             t["expires_at"] = t["expires_at"].isoformat()
@@ -361,6 +363,16 @@ def _persistir_tokens_local():
                 os.fsync(f.fileno())
             os.replace(tmp, ML_TOKENS_PATH)
             os.environ[ML_TOKENS_ENV_KEY] = data
+            for cid, tok in list(_cuentas.items()):
+                if cid.startswith("t_"):
+                    d = os.path.join(DATA_DIR, "tiendas", cid)
+                    os.makedirs(d, exist_ok=True)
+                    t2 = dict(tok)
+                    if isinstance(t2.get("expires_at"), datetime):
+                        t2["expires_at"] = t2["expires_at"].isoformat()
+                    with open(os.path.join(d, "ml_token.json.tmp"), "w") as f:
+                        json.dump(t2, f)
+                    os.replace(os.path.join(d, "ml_token.json.tmp"), os.path.join(d, "ml_token.json"))
         logger.info(f"[TOKEN] Tokens guardados en {ML_TOKENS_PATH}")
     except Exception as e:
         logger.error(f"[TOKEN] Error guardando: {e}")
@@ -376,6 +388,13 @@ def _cargar_tokens_local():
                 data = json.loads(f.read())
             _fusionar_tokens(data, "archivo local")
             logger.info(f"[TOKEN] Tokens cargados desde archivo local: {list(_cuentas.keys())}")
+        base = os.path.join(DATA_DIR, "tiendas")
+        if os.path.isdir(base):
+            for cid in os.listdir(base):
+                ruta = os.path.join(base, cid, "ml_token.json")
+                if cid.startswith("t_") and os.path.exists(ruta):
+                    with open(ruta) as f:
+                        _fusionar_tokens({cid: json.load(f)}, "carpeta de tienda")
     except Exception as e:
         logger.error(f"[TOKEN] Error cargando local: {e}")
 
@@ -1752,11 +1771,26 @@ def _pkce_tomar(state):
 def auth_login():
     import secrets
     cuenta_id = request.args.get("cuenta", "cuenta_0")
+    invite    = request.args.get("invite", "")
+    tienda_id = ""
+    if invite:
+        import hashlib
+        h = hashlib.sha256(invite.encode()).hexdigest()
+        with _tiendas_lock:
+            t = next((x for x in _tiendas.values()
+                      if (x.get("invitacion") or {}).get("hash") == h), None)
+            if (not t or t["invitacion"].get("expira", 0) < time.time()
+                    or t.get("estado") == "suspendida"):
+                return _html_error("El enlace no es válido o venció",
+                                   "Pedí un enlace nuevo al administrador.")
+            tienda_id = cuenta_id = t["id"]
+    elif cuenta_id.startswith("t_"):
+        return _html_error("Cuenta inválida", "Esa tienda solo se conecta con su enlace de invitación.")
     if not re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", cuenta_id):
         return _html_error("Cuenta inválida", "El identificador de cuenta no es válido.")
     state               = secrets.token_urlsafe(16)
     verifier, challenge = _generar_pkce()
-    _pkce_guardar(state, {"verifier": verifier, "cuenta_id": cuenta_id})
+    _pkce_guardar(state, {"verifier": verifier, "cuenta_id": cuenta_id, "tienda_id": tienda_id})
     url = (f"{ML_AUTH_URL}/authorization?response_type=code"
            f"&client_id={ML_APP_ID}&redirect_uri={ML_REDIRECT}"
            f"&scope=read%20write%20offline_access&state={state}"
@@ -1782,6 +1816,12 @@ def auth_callback():
                            "panel o la app (el enlace dura 15 minutos).")
     verifier  = entry.get("verifier")
     cuenta_id = entry.get("cuenta_id", "cuenta_0")
+    tienda_id = entry.get("tienda_id", "")
+    if tienda_id and not _multi_tienda_activo():
+        # Hasta que el aislamiento entre tiendas esté verificado (fase 1) no se
+        # conecta ninguna tienda nueva: sus pedidos entrarían al listado global.
+        return _html_error("Todavía no está habilitado",
+                           "La conexión de tiendas nuevas aún no está activada en este servidor.")
     payload = {"grant_type": "authorization_code", "client_id": ML_APP_ID,
                "client_secret": ML_SECRET_KEY, "code": code, "redirect_uri": ML_REDIRECT}
     if verifier:
@@ -1813,6 +1853,11 @@ def auth_callback():
 
         import html as _html
         uid = str(tok.get("user_id", ""))
+        if tienda_id:
+            # Tienda nueva: su cuenta de ML no puede ser una que ya esté en otra tienda.
+            if not uid or any(str(t.get("user_id", "")) == uid for c, t in _cuentas.items() if c != cuenta_id):
+                return _html_error("Esa cuenta de Mercado Libre ya está conectada",
+                                   "Cada tienda necesita su propia cuenta de Mercado Libre.")
         # La misma cuenta de ML ya registrada en otro espacio: se renueva ESE
         # espacio (nunca se duplica la cuenta ni se pisa otro).
         if uid:
@@ -1834,6 +1879,13 @@ def auth_callback():
         _cuentas[cuenta_id] = tok
         if cuenta_id == "cuenta_0":
             _tokens.update(tok)
+        if tienda_id:
+            with _tiendas_lock:
+                t = _tiendas.get(tienda_id)
+                if t:
+                    t.update(estado="activa", ml_user_id=uid, nickname=tok.get("nickname", ""))
+                    t.pop("invitacion", None)      # un solo uso
+                    _tiendas_guardar()
         _guardar_tokens()
         logger.info(f"[TOKEN] Conectado: {tok.get('nickname','?')} -> {cuenta_id}")
         threading.Thread(target=_refresh_pedidos_worker_cuenta, args=(cuenta_id,), daemon=True).start()
@@ -1879,6 +1931,231 @@ def auth_status():
 @app.route("/api/cuentas")
 def api_cuentas():
     return jsonify({"ok": True, "cuentas": _cuentas_info()})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REGISTRO DE TIENDAS (multi-tienda). Mientras MULTI_TIENDA!=1 solo existe la
+# tienda primaria (la actual) y el callback de ML rechaza conectar otras.
+# Datos de las tiendas nuevas: DATA_DIR/tiendas/<id>/ (el código anterior nunca
+# lo lee, así un rollback no mezcla nada con la tienda actual).
+# ══════════════════════════════════════════════════════════════════════════════
+TIENDAS_PATH  = os.path.join(DATA_DIR, "tiendas.json")
+TIENDAS_DIR   = os.path.join(DATA_DIR, "tiendas")
+_tiendas_lock = threading.RLock()
+_tiendas      = {}          # id -> registro
+_admin_fallos = {}          # ip -> [timestamps] (límite de intentos del admin)
+
+
+def _multi_tienda_activo() -> bool:
+    return os.environ.get("MULTI_TIENDA", "0").strip() == "1"
+
+
+def _tiendas_guardar():
+    with _tiendas_lock:
+        os.makedirs(os.path.dirname(TIENDAS_PATH), exist_ok=True)
+        tmp = TIENDAS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"tiendas": list(_tiendas.values())}, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, TIENDAS_PATH)
+
+
+def _tiendas_cargar():
+    try:
+        with open(TIENDAS_PATH, encoding="utf-8") as f:
+            for t in json.load(f).get("tiendas", []):
+                _tiendas[t["id"]] = t
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.error(f"[TIENDAS] Error cargando: {e}")
+
+
+def _asegurar_primaria():
+    """Garantiza el registro de la tienda actual (primaria): id = su cuenta de ML
+    (o la cuenta más usada por sus usuarios). No mueve ningún dato existente."""
+    with _tiendas_lock:
+        if any(t.get("primary") for t in _tiendas.values()):
+            return
+        cid = next(iter(_cuentas), None)
+        if not cid:
+            from collections import Counter
+            c = Counter(u.get("cuenta_id") for u in _usuarios if u.get("cuenta_id") not in (None, "", "todas"))
+            cid = c.most_common(1)[0][0] if c else None
+        if not cid:
+            return      # aún no se sabe cuál es: se reintenta más adelante
+        nick = (_cuentas.get(cid) or {}).get("nickname", cid)
+        _tiendas[cid] = {"id": cid, "primary": True, "estado": "activa",
+                         "nombre": nick, "cuentas": [cid],
+                         "ml_user_id": (_cuentas.get(cid) or {}).get("user_id", ""),
+                         "creada": datetime.now().isoformat(timespec="seconds")}
+        _tiendas_guardar()
+        logger.info(f"[TIENDAS] Tienda primaria registrada: {cid} ({nick})")
+
+
+def _tienda_publica(t: dict) -> dict:
+    inv = t.get("invitacion") or {}
+    vigente = bool(inv.get("hash")) and inv.get("expira", 0) > time.time()
+    marca = _marca_de(t["id"])
+    return {"id": t["id"], "primary": bool(t.get("primary")), "estado": t.get("estado", ""),
+            "nombre": marca["nombre"] or t.get("nombre", ""), "subtitulo": marca["subtitulo"],
+            "tiene_logo": marca["tiene_logo"], "nickname": (_cuentas.get(t["id"]) or {}).get("nickname", t.get("nickname", "")),
+            "ml_conectado": t["id"] in _cuentas, "invitacion_vigente": vigente}
+
+
+def _logo_path(tienda_id: str) -> str:
+    return os.path.join(TIENDAS_DIR, tienda_id, "logo.bin")
+
+
+def _marca_de(tienda_id=None) -> dict:
+    """Marca de una tienda. La primaria sigue usando las claves de config_app
+    (como hasta ahora); las nuevas, su carpeta propia."""
+    t = _tiendas.get(tienda_id) if tienda_id else None
+    if t and not t.get("primary"):
+        return {"personalizado": True, "nombre": (t.get("nombre") or "").strip(),
+                "subtitulo": (t.get("subtitulo") or "").strip(),
+                "tiene_logo": os.path.exists(_logo_path(t["id"])), "logo_v": t.get("logo_ts", "")}
+    return _marca_actual()
+
+
+def _sniff_imagen(raw: bytes):
+    if raw.startswith(b"\x89PNG"): return "image/png"
+    if raw.startswith(b"\xff\xd8"): return "image/jpeg"
+    if raw.startswith(b"GIF8"): return "image/gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP": return "image/webp"
+    return None
+
+
+def requiere_admin_plataforma(f):
+    """Identidad del dueño de la plataforma: usuario con rol admin y cuenta 'todas',
+    enviada en X-Admin-Usuario / X-Admin-Clave. Con límite de intentos por IP."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+        ahora = time.time()
+        fallos = [t for t in _admin_fallos.get(ip, []) if ahora - t < 300]
+        if len(fallos) >= 8:
+            return jsonify({"ok": False, "msg": "Demasiados intentos. Esperá unos minutos."}), 429
+        u = _verificar_credenciales(request.headers.get("X-Admin-Usuario", ""),
+                                    request.headers.get("X-Admin-Clave", ""))
+        if not u or u.get("rol") != "admin" or u.get("cuenta_id") != "todas":
+            fallos.append(ahora); _admin_fallos[ip] = fallos
+            return jsonify({"ok": False, "msg": "Solo el administrador general puede hacer esto."}), 403
+        _admin_fallos.pop(ip, None)
+        _asegurar_primaria()
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.route("/api/admin/tiendas", methods=["GET"])
+@requiere_admin_plataforma
+def api_tiendas_listar():
+    with _tiendas_lock:
+        lista = [_tienda_publica(t) for t in _tiendas.values()]
+    return jsonify({"ok": True, "tiendas": lista, "multi_tienda": _multi_tienda_activo()})
+
+
+@app.route("/api/admin/tiendas", methods=["POST"])
+@requiere_admin_plataforma
+def api_tiendas_crear():
+    import secrets
+    d = request.get_json(silent=True) or {}
+    nombre = (d.get("nombre") or "").strip()[:40]
+    if not nombre:
+        return jsonify({"ok": False, "msg": "Falta el nombre de la tienda"}), 400
+    with _tiendas_lock:
+        tid = "t_" + secrets.token_hex(3)
+        while tid in _tiendas or tid in _cuentas:
+            tid = "t_" + secrets.token_hex(3)
+        _tiendas[tid] = {"id": tid, "primary": False, "estado": "pendiente_ml", "nombre": nombre,
+                         "subtitulo": (d.get("subtitulo") or "").strip()[:60], "cuentas": [tid],
+                         "creada": datetime.now().isoformat(timespec="seconds")}
+        _tiendas_guardar()
+        pub = _tienda_publica(_tiendas[tid])
+    logger.info(f"[TIENDAS] Creada {tid} ({nombre})")
+    return jsonify({"ok": True, "tienda": pub})
+
+
+@app.route("/api/admin/tiendas/<tid>", methods=["PUT"])
+@requiere_admin_plataforma
+def api_tiendas_editar(tid):
+    import base64
+    d = request.get_json(silent=True) or {}
+    with _tiendas_lock:
+        t = _tiendas.get(tid)
+        if not t:
+            return jsonify({"ok": False, "msg": "Tienda no encontrada"}), 404
+        nombre = (d.get("nombre") if "nombre" in d else None)
+        subt   = (d.get("subtitulo") if "subtitulo" in d else None)
+        logo_raw = None
+        if d.get("logo_b64"):
+            try:
+                logo_raw = base64.b64decode(d["logo_b64"])
+            except Exception:
+                return jsonify({"ok": False, "msg": "Logo inválido"}), 400
+            if len(logo_raw) > 1_500_000 or not _sniff_imagen(logo_raw):
+                return jsonify({"ok": False, "msg": "El logo debe ser PNG, JPG o WEBP de hasta 1.5 MB"}), 400
+        if t.get("primary"):
+            cfg = _cargar_config_app()
+            if nombre is not None: cfg["tienda_nombre"] = nombre.strip()[:40]
+            if subt is not None:   cfg["tienda_subtitulo"] = subt.strip()[:60]
+            if logo_raw is not None:
+                cfg["tienda_logo_b64"] = d["logo_b64"]; cfg["tienda_logo_ext"] = ""
+                cfg["tienda_logo_ts"] = str(int(time.time()))
+            if d.get("quitar_logo"):
+                cfg["tienda_logo_b64"] = ""; cfg["tienda_logo_ts"] = str(int(time.time()))
+            _guardar_config_app(cfg)
+        else:
+            if nombre is not None: t["nombre"] = nombre.strip()[:40]
+            if subt is not None:   t["subtitulo"] = subt.strip()[:60]
+            if logo_raw is not None:
+                os.makedirs(os.path.dirname(_logo_path(tid)), exist_ok=True)
+                with open(_logo_path(tid), "wb") as f:
+                    f.write(logo_raw)
+                t["logo_ts"] = str(int(time.time()))
+            if d.get("quitar_logo") and os.path.exists(_logo_path(tid)):
+                os.remove(_logo_path(tid)); t["logo_ts"] = str(int(time.time()))
+            _tiendas_guardar()
+        pub = _tienda_publica(t)
+    return jsonify({"ok": True, "tienda": pub})
+
+
+@app.route("/api/admin/tiendas/<tid>/invitacion", methods=["POST"])
+@requiere_admin_plataforma
+def api_tiendas_invitacion(tid):
+    """Link de un solo uso (48 h) para que el dueño de la tienda autorice su cuenta de ML."""
+    import secrets, hashlib
+    with _tiendas_lock:
+        t = _tiendas.get(tid)
+        if not t:
+            return jsonify({"ok": False, "msg": "Tienda no encontrada"}), 404
+        if t.get("primary"):
+            return jsonify({"ok": False, "msg": "La tienda principal ya está conectada"}), 400
+        if t.get("estado") == "suspendida":
+            return jsonify({"ok": False, "msg": "La tienda está suspendida"}), 400
+        token = secrets.token_urlsafe(24)
+        t["invitacion"] = {"hash": hashlib.sha256(token.encode()).hexdigest(),
+                           "expira": time.time() + 48 * 3600}
+        _tiendas_guardar()
+    base = ML_REDIRECT.rsplit("/auth/callback", 1)[0] if ML_REDIRECT else request.host_url.rstrip("/")
+    return jsonify({"ok": True, "link": f"{base}/auth/login?invite={token}", "expira_horas": 48,
+                    "multi_tienda_activo": _multi_tienda_activo()})
+
+
+@app.route("/api/admin/tiendas/<tid>/estado", methods=["POST"])
+@requiere_admin_plataforma
+def api_tiendas_estado(tid):
+    d = request.get_json(silent=True) or {}
+    nuevo = d.get("estado")
+    with _tiendas_lock:
+        t = _tiendas.get(tid)
+        if not t or t.get("primary"):
+            return jsonify({"ok": False, "msg": "No se puede cambiar esa tienda"}), 400
+        if nuevo not in ("suspendida", "activa", "pendiente_ml"):
+            return jsonify({"ok": False, "msg": "Estado inválido"}), 400
+        t["estado"] = nuevo
+        _tiendas_guardar()
+        pub = _tienda_publica(t)
+    return jsonify({"ok": True, "tienda": pub})
 
 
 @app.route("/api/admin/compat-stats")
@@ -4713,7 +4990,7 @@ def _aplicar_marca_html(resp):
 def api_branding():
     """Marca pública de la tienda (sin API key: la necesitan el login del
     escritorio y la página móvil antes de autenticarse)."""
-    resp = jsonify(_marca_actual())
+    resp = jsonify(_marca_de(request.args.get("tienda") or None))
     resp.headers["Cache-Control"] = "no-cache"
     return resp
 
@@ -4721,13 +4998,22 @@ def api_branding():
 @app.route("/brand/logo")
 def brand_logo():
     import base64
-    b64 = _cargar_config_app().get("tienda_logo_b64", "")
-    if not b64:
-        return ("", 404)
-    try:
-        raw = base64.b64decode(b64)
-    except Exception:
-        return ("", 404)
+    tid = request.args.get("tienda") or ""
+    t = _tiendas.get(tid)
+    if t and not t.get("primary"):
+        try:
+            with open(_logo_path(tid), "rb") as f:
+                raw = f.read()
+        except Exception:
+            return ("", 404)
+    else:
+        b64 = _cargar_config_app().get("tienda_logo_b64", "")
+        if not b64:
+            return ("", 404)
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            return ("", 404)
     # Solo imágenes ráster (por el contenido real, no por la extensión): un SVG
     # subido como "logo" podría ejecutar scripts en el dominio del servidor.
     if raw.startswith(b"\x89PNG"):
@@ -6800,6 +7086,8 @@ def _startup():
     # gana): antes el archivo solo se miraba si la variable de entorno estaba
     # vacía, y una tienda agregada en runtime se perdía en el siguiente deploy.
     _cargar_tokens_local()
+    _tiendas_cargar()
+    _asegurar_primaria()
     if _cuentas:
         nicks = [t.get("nickname","?") for t in _cuentas.values()]
         logger.info(f"[STARTUP] Tokens cargados: {nicks}")
