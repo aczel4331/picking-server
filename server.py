@@ -1514,7 +1514,11 @@ def api_auth_login():
     resultado = _verificar_credenciales(usuario, clave)
     if resultado:
         logger.info(f"[AUTH] Login OK: {usuario} (rol={resultado['rol']})")
-        return jsonify({"ok": True, "usuario": resultado})
+        cid = resultado.get("cuenta_id")
+        tid = cid if (cid in _tiendas and not _tiendas[cid].get("primary")) else None
+        marca = dict(_marca_de(tid))
+        marca["tienda_id"] = tid or ""
+        return jsonify({"ok": True, "usuario": resultado, "tienda": marca})
     else:
         logger.warning(f"[AUTH] Login FALLIDO: {usuario}")
         return jsonify({"ok": False, "msg": "Usuario o clave incorrectos"}), 401
@@ -2057,18 +2061,31 @@ def api_tiendas_listar():
 @app.route("/api/admin/tiendas", methods=["POST"])
 @requiere_admin_plataforma
 def api_tiendas_crear():
-    import secrets
+    import secrets, base64
     d = request.get_json(silent=True) or {}
     nombre = (d.get("nombre") or "").strip()[:40]
     if not nombre:
         return jsonify({"ok": False, "msg": "Falta el nombre de la tienda"}), 400
+    # El logo es obligatorio para crear una tienda (se ve al iniciar sesión).
+    if not d.get("logo_b64"):
+        return jsonify({"ok": False, "msg": "Para crear la tienda hay que elegir su logo"}), 400
+    try:
+        logo_raw = base64.b64decode(d["logo_b64"])
+    except Exception:
+        return jsonify({"ok": False, "msg": "Logo inválido"}), 400
+    if len(logo_raw) > 1_500_000 or not _sniff_imagen(logo_raw):
+        return jsonify({"ok": False, "msg": "El logo debe ser PNG, JPG o WEBP de hasta 1.5 MB"}), 400
     with _tiendas_lock:
         tid = "t_" + secrets.token_hex(3)
         while tid in _tiendas or tid in _cuentas:
             tid = "t_" + secrets.token_hex(3)
         _tiendas[tid] = {"id": tid, "primary": False, "estado": "pendiente_ml", "nombre": nombre,
                          "subtitulo": (d.get("subtitulo") or "").strip()[:60], "cuentas": [tid],
-                         "creada": datetime.now().isoformat(timespec="seconds")}
+                         "creada": datetime.now().isoformat(timespec="seconds"),
+                         "logo_ts": str(int(time.time()))}
+        os.makedirs(os.path.dirname(_logo_path(tid)), exist_ok=True)
+        with open(_logo_path(tid), "wb") as f:
+            f.write(logo_raw)
         _tiendas_guardar()
         pub = _tienda_publica(_tiendas[tid])
     logger.info(f"[TIENDAS] Creada {tid} ({nombre})")
@@ -2112,8 +2129,8 @@ def api_tiendas_editar(tid):
                 with open(_logo_path(tid), "wb") as f:
                     f.write(logo_raw)
                 t["logo_ts"] = str(int(time.time()))
-            if d.get("quitar_logo") and os.path.exists(_logo_path(tid)):
-                os.remove(_logo_path(tid)); t["logo_ts"] = str(int(time.time()))
+            if d.get("quitar_logo"):
+                return jsonify({"ok": False, "msg": "Una tienda no puede quedar sin logo; elegí otro para reemplazarlo"}), 400
             _tiendas_guardar()
         pub = _tienda_publica(t)
     return jsonify({"ok": True, "tienda": pub})

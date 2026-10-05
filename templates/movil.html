@@ -178,7 +178,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 
 <div class="topbar">
   <div class="t-left">
-    <span class="t-icon">&#x2B21;</span>
+    <span class="t-icon" id="t-icon">&#x2B21;</span>
     <div>
       <div class="t-title">PICKING · FASE 1</div>
       <div class="t-sub" id="t-sub">Colecta en dep&#xF3;sito</div>
@@ -363,6 +363,7 @@ async function intentarLogin() {
       return;
     }
     _colector = d.usuario;   // {usuario, nombre, cuenta_id, rol}
+    if (d.tienda) aplicarMarca(d.tienda);
     localStorage.setItem('colector_activo', JSON.stringify(_colector));
     document.getElementById('login-gate').style.display = 'none';
     const sku = $('sku');
@@ -388,18 +389,35 @@ function cerrarSesionColector() {
   mostrarSelectorInicial();
 }
 
-async function aplicarMarca() {
+// Marca de la tienda del usuario: llega en la respuesta del login (m) o, al
+// recargar la página, se pide la de la última tienda que entró en este celular.
+async function aplicarMarca(m) {
   try {
-    const r = await fetch('/api/branding', { cache: 'no-store' });
-    if (!r.ok) return;
-    const m = await r.json();
+    let tid = '';
+    if (m) { tid = m.tienda_id || ''; try { localStorage.setItem('marca_tienda', tid); } catch(e) {} }
+    else {
+      try { tid = localStorage.getItem('marca_tienda') || ''; } catch(e) {}
+      const r = await fetch('/api/branding' + (tid ? '?tienda=' + encodeURIComponent(tid) : ''), { cache: 'no-store' });
+      if (!r.ok) return;
+      m = await r.json();
+    }
     if (!m.personalizado) return;
+    const logoUrl = '/brand/logo?' + (tid ? 'tienda=' + encodeURIComponent(tid) + '&' : '')
+                  + 'v=' + encodeURIComponent(m.logo_v || '');
+    const ti = $('t-icon');
+    if (ti && m.tiene_logo) {
+      ti.textContent = '';
+      const im = document.createElement('img');
+      im.src = logoUrl; im.alt = m.nombre || '';
+      im.style.cssText = 'height:30px;max-width:90px;border-radius:6px;background:#fff;padding:2px;vertical-align:middle';
+      ti.appendChild(im);
+    }
     const box = $('login-marca');
     if (!box) return;
     box.textContent = '';
     if (m.tiene_logo) {
       const img = document.createElement('img');
-      img.src = '/brand/logo?v=' + encodeURIComponent(m.logo_v || '');
+      img.src = logoUrl;
       img.alt = m.nombre || '';
       img.style.cssText = 'max-height:80px;max-width:220px;border-radius:10px;background:#fff;padding:6px';
       box.appendChild(img);
