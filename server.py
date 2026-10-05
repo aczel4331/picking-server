@@ -31,6 +31,10 @@ logging.getLogger("requests").setLevel(logging.WARNING)
 # ── App ───────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.environ.get("APP_SECRET_KEY", os.urandom(24).hex())
+if not os.environ.get("APP_SECRET_KEY"):
+    logger.warning("[STARTUP] APP_SECRET_KEY no está definida: las sesiones del panel "
+                   "se pierden en cada reinicio y los tokens firmados no podrían "
+                   "sobrevivir un deploy. Definila en Railway → Variables.")
 _lock = threading.Lock()
 
 # ── Templates HTML ─────────────────────────────────────────────────────────────
@@ -58,7 +62,7 @@ ML_APP_ID     = os.environ.get("ML_APP_ID", "")
 ML_SECRET_KEY = os.environ.get("ML_SECRET_KEY", "")
 ML_SITE_ID    = os.environ.get("ML_SITE_ID", "MLU")
 ML_AUTH_URL   = os.environ.get("ML_AUTH_URL", "https://auth.mercadolibre.com.uy")
-ML_API_URL    = "https://api.mercadolibre.com"
+ML_API_URL    = os.environ.get("ML_API_URL", "https://api.mercadolibre.com")
 ML_REDIRECT   = os.environ.get("ML_REDIRECT_URI", "")
 if not ML_REDIRECT:
     # Construir desde RAILWAY_PUBLIC_DOMAIN si está disponible
@@ -296,29 +300,47 @@ def _ts():
 
 # ── Persistencia de tokens ─────────────────────────────────────────────────────
 
+_tokens_io_lock = threading.Lock()
+
+def _fusionar_tokens(data: dict, origen: str):
+    """Mezcla en _cuentas los tokens de una fuente (variable de entorno o archivo).
+    Por cuenta gana el de expires_at más fresco: los refresh tokens de ML rotan,
+    así que una copia vieja (p.ej. ML_TOKENS_JSON pegado a mano en Railway) nunca
+    debe pisar a la más reciente, ni hacer desaparecer cuentas agregadas después."""
+    for cid, tok in data.items():
+        if tok.get("expires_at") and isinstance(tok["expires_at"], str):
+            try:
+                tok["expires_at"] = datetime.fromisoformat(tok["expires_at"])
+            except Exception:
+                tok["expires_at"] = datetime.now() + timedelta(hours=1)
+        actual = _cuentas.get(cid)
+        if actual is None:
+            _cuentas[cid] = tok
+            continue
+        try:
+            if tok.get("expires_at") and actual.get("expires_at") \
+                    and tok["expires_at"] > actual["expires_at"]:
+                _cuentas[cid] = tok
+                logger.info(f"[TOKEN] '{cid}': {origen} es más fresco que la copia previa")
+        except Exception:
+            pass
+    if "cuenta_0" in _cuentas:
+        _tokens.update(_cuentas["cuenta_0"])
+
 def _cargar_tokens_persistidos():
     global _cuentas, _tokens
     raw = os.environ.get(ML_TOKENS_ENV_KEY, "").strip()
     if not raw:
         return
     try:
-        data = json.loads(raw)
-        for cid, tok in data.items():
-            if tok.get("expires_at") and isinstance(tok["expires_at"], str):
-                try:
-                    tok["expires_at"] = datetime.fromisoformat(tok["expires_at"])
-                except Exception:
-                    tok["expires_at"] = datetime.now() + timedelta(hours=1)
-            _cuentas[cid] = tok
-        if "cuenta_0" in _cuentas:
-            _tokens.update(_cuentas["cuenta_0"])
+        _fusionar_tokens(json.loads(raw), "variable de entorno")
         logger.info(f"[TOKEN] Tokens cargados: {list(_cuentas.keys())}")
     except Exception as e:
         logger.error(f"[TOKEN] Error cargando tokens: {e}")
 
 def _serializar_cuentas():
     data = {}
-    for cid, tok in _cuentas.items():
+    for cid, tok in list(_cuentas.items()):
         t = dict(tok)
         if isinstance(t.get("expires_at"), datetime):
             t["expires_at"] = t["expires_at"].isoformat()
@@ -327,11 +349,19 @@ def _serializar_cuentas():
 
 def _persistir_tokens_local():
     try:
-        data = _serializar_cuentas()
-        with open(ML_TOKENS_PATH, "w") as f:
-            f.write(data)
+        # Un solo escritor a la vez y reemplazo atómico: un corte a mitad de
+        # escritura ya no puede dejar ml_tokens.json truncado (= todas las
+        # tiendas desconectadas en el próximo arranque).
+        with _tokens_io_lock:
+            data = _serializar_cuentas()
+            tmp  = ML_TOKENS_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, ML_TOKENS_PATH)
+            os.environ[ML_TOKENS_ENV_KEY] = data
         logger.info(f"[TOKEN] Tokens guardados en {ML_TOKENS_PATH}")
-        os.environ[ML_TOKENS_ENV_KEY] = data
     except Exception as e:
         logger.error(f"[TOKEN] Error guardando: {e}")
 
@@ -344,15 +374,7 @@ def _cargar_tokens_local():
         if os.path.exists(ML_TOKENS_PATH):
             with open(ML_TOKENS_PATH) as f:
                 data = json.loads(f.read())
-            for cid, tok in data.items():
-                if tok.get("expires_at") and isinstance(tok["expires_at"], str):
-                    try:
-                        tok["expires_at"] = datetime.fromisoformat(tok["expires_at"])
-                    except Exception:
-                        tok["expires_at"] = datetime.now() + timedelta(hours=1)
-                _cuentas[cid] = tok
-            if "cuenta_0" in _cuentas:
-                _tokens.update(_cuentas["cuenta_0"])
+            _fusionar_tokens(data, "archivo local")
             logger.info(f"[TOKEN] Tokens cargados desde archivo local: {list(_cuentas.keys())}")
     except Exception as e:
         logger.error(f"[TOKEN] Error cargando local: {e}")
@@ -385,7 +407,7 @@ def _renovar_token_cuenta(cuenta_id):
         return
     try:
         r = requests.post(
-            "https://api.mercadolibre.com/oauth/token",
+            ML_API_URL + "/oauth/token",
             headers={"Accept": "application/json",
                      "Content-Type": "application/x-www-form-urlencoded"},
             data={"grant_type": "refresh_token", "client_id": ML_APP_ID,
@@ -538,6 +560,15 @@ def _sku_info(sku):
     return _sku_db.get(str(sku).upper(), {"nombre": "", "pasillo": "", "estanteria": ""})
 
 # ── HTML helpers ──────────────────────────────────────────────────────────────
+
+def _esc_tpl(v) -> str:
+    """Escapa texto de usuario para incrustarlo en el CÓDIGO de una plantilla
+    Jinja armada por concatenación: escapa HTML y neutraliza { } para que
+    {{ }}, {% %} y {# #} nunca se evalúen en el servidor."""
+    import html as _h
+    return (_h.escape("" if v is None else str(v), quote=True)
+            .replace("{", "&#123;").replace("}", "&#125;"))
+
 
 def _html_ok(titulo, detalle=""):
     return render_template_string("""
@@ -1368,6 +1399,58 @@ def requiere_auth(f):
         return f(*args, **kwargs)
     return decorated
 
+# ── Telemetría de compatibilidad (solo registra, NO bloquea nada) ──────────────
+# Cuenta qué tipo de credencial usa cada llamada a la API. Sirve para saber
+# cuándo ya nadie usa las claves heredadas / llamadas sin clave y se pueden
+# cerrar sin romper a los clientes viejos. Se guarda en compat_stats.json (un
+# archivo que el código anterior nunca lee).
+_compat_stats = {}
+_compat_lock  = threading.Lock()
+_compat_dirty = {"t": 0.0}
+_COMPAT_IGNORAR = ("/api/ping", "/api/branding")
+try:
+    with open(os.path.join(DATA_DIR, "compat_stats.json"), encoding="utf-8") as _f:
+        _compat_stats.update(json.load(_f))
+except Exception:
+    pass
+
+def _tipo_credencial(k: str) -> str:
+    if not k:
+        return "sin_clave"
+    if k in ("everest2024", "everest2025"):
+        return "clave_heredada"
+    if k == API_KEY:
+        return "clave_maestra"
+    return "clave_desconocida"
+
+@app.before_request
+def _telemetria_compat():
+    try:
+        p = request.path
+        if not p.startswith(("/api/", "/auth/", "/webhook/")) or p in _COMPAT_IGNORAR:
+            return
+        k = (request.headers.get("X-API-Key") or request.args.get("key")
+             or request.args.get("api_key") or "").strip()
+        clave = f"{_tipo_credencial(k)}|{request.endpoint or p}"
+        ahora = time.time()
+        with _compat_lock:
+            e = _compat_stats.setdefault(clave, {"n": 0, "primera": ahora, "usuarios": []})
+            e["n"] += 1
+            e["ultima"] = ahora
+            e["version"] = request.headers.get("X-Client-Version", "")
+            u = (request.args.get("usuario") or "").strip().lower()
+            if u and u not in e["usuarios"] and len(e["usuarios"]) < 20:
+                e["usuarios"].append(u)
+            if ahora - _compat_dirty["t"] > 60 and len(_compat_stats) < 2000:
+                _compat_dirty["t"] = ahora
+                tmp = os.path.join(DATA_DIR, "compat_stats.json.tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(_compat_stats, f)
+                os.replace(tmp, os.path.join(DATA_DIR, "compat_stats.json"))
+    except Exception as e:
+        logger.debug(f"[COMPAT] telemetría: {e}")
+
+
 def requiere_api_key(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -1624,13 +1707,56 @@ def _generar_pkce():
     return verifier, challenge
 
 
+_PKCE_TTL  = 15 * 60
+_pkce_lock = threading.Lock()
+
+def _pkce_ruta():
+    return os.path.join(DATA_DIR, "pkce_pending.json")
+
+def _pkce_persistir():
+    """Guarda los PKCE pendientes (sobreviven a un reinicio del servidor entre el
+    clic en 'conectar' y el regreso de ML). Descarta los vencidos. Llamar con el lock."""
+    ahora = time.time()
+    for s in [s for s, e in _pkce_store.items() if ahora - e.get("ts", 0) > _PKCE_TTL]:
+        _pkce_store.pop(s, None)
+    try:
+        tmp = _pkce_ruta() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_pkce_store, f)
+        os.replace(tmp, _pkce_ruta())
+    except Exception as e:
+        logger.error(f"[AUTH] No se pudo persistir PKCE: {e}")
+
+def _pkce_guardar(state, entry):
+    with _pkce_lock:
+        _pkce_store[state] = dict(entry, ts=time.time())
+        _pkce_persistir()
+
+def _pkce_tomar(state):
+    """Devuelve (y consume) el PKCE de ese state, o None si no existe/venció."""
+    with _pkce_lock:
+        entry = _pkce_store.pop(state, None)
+        if entry is None:
+            try:
+                with open(_pkce_ruta(), encoding="utf-8") as f:
+                    entry = json.load(f).get(state)
+            except Exception:
+                entry = None
+        _pkce_persistir()
+    if entry and time.time() - entry.get("ts", 0) > _PKCE_TTL:
+        return None
+    return entry
+
+
 @app.route("/auth/login")
 def auth_login():
     import secrets
-    cuenta_id           = request.args.get("cuenta", "cuenta_0")
+    cuenta_id = request.args.get("cuenta", "cuenta_0")
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", cuenta_id):
+        return _html_error("Cuenta inválida", "El identificador de cuenta no es válido.")
     state               = secrets.token_urlsafe(16)
     verifier, challenge = _generar_pkce()
-    _pkce_store[state]  = {"verifier": verifier, "cuenta_id": cuenta_id}
+    _pkce_guardar(state, {"verifier": verifier, "cuenta_id": cuenta_id})
     url = (f"{ML_AUTH_URL}/authorization?response_type=code"
            f"&client_id={ML_APP_ID}&redirect_uri={ML_REDIRECT}"
            f"&scope=read%20write%20offline_access&state={state}"
@@ -1646,18 +1772,22 @@ def auth_callback():
     if error or not code:
         return _html_error(f"Error de autorizacion: {error or 'sin codigo'}",
                            f"Redirect URI: <code>{ML_REDIRECT}</code>")
-    entry     = _pkce_store.pop(state, None) or {}
-    verifier  = entry.get("verifier") if isinstance(entry, dict) else entry
-    cuenta_id = entry.get("cuenta_id", "cuenta_0") if isinstance(entry, dict) else "cuenta_0"
+    entry = _pkce_tomar(state)
     if not entry:
-        logger.warning(f"[AUTH] State '{state}' no encontrado — posible reinicio")
-        verifier = None; cuenta_id = "cuenta_0"
+        # Antes se seguía igual y el token terminaba pisando a 'cuenta_0'.
+        # Ahora no se registra nada: hay que volver a iniciar la conexión.
+        logger.warning(f"[AUTH] State '{state}' desconocido o vencido — se rechaza")
+        return _html_error("La autorización venció o no se reconoce",
+                           "Volvé a iniciar la conexión con Mercado Libre desde el "
+                           "panel o la app (el enlace dura 15 minutos).")
+    verifier  = entry.get("verifier")
+    cuenta_id = entry.get("cuenta_id", "cuenta_0")
     payload = {"grant_type": "authorization_code", "client_id": ML_APP_ID,
                "client_secret": ML_SECRET_KEY, "code": code, "redirect_uri": ML_REDIRECT}
     if verifier:
         payload["code_verifier"] = verifier
     try:
-        r = requests.post("https://api.mercadolibre.com/oauth/token",
+        r = requests.post(ML_API_URL + "/oauth/token",
                           headers={"Accept": "application/json",
                                    "Content-Type": "application/x-www-form-urlencoded"},
                           data=payload, timeout=15)
@@ -1680,20 +1810,50 @@ def auth_callback():
             tok["nickname"] = me.get("nickname", cuenta_id)
         else:
             tok["user_id"] = ""; tok["nickname"] = cuenta_id
+
+        import html as _html
+        uid = str(tok.get("user_id", ""))
+        # La misma cuenta de ML ya registrada en otro espacio: se renueva ESE
+        # espacio (nunca se duplica la cuenta ni se pisa otro).
+        if uid:
+            for cid, t in list(_cuentas.items()):
+                if cid != cuenta_id and str(t.get("user_id", "")) == uid:
+                    logger.info(f"[TOKEN] La cuenta ML {uid} ya estaba en '{cid}': "
+                                f"se renueva ahí (se pidió '{cuenta_id}')")
+                    cuenta_id = cid
+                    break
+        # Un espacio ocupado por OTRA cuenta de ML nunca se sobrescribe.
+        ocupante = _cuentas.get(cuenta_id)
+        if ocupante and ocupante.get("user_id") and str(ocupante["user_id"]) != uid:
+            logger.warning(f"[AUTH] Rechazado: '{cuenta_id}' pertenece a otra cuenta de ML")
+            return _html_error("Ese espacio ya está ocupado por otra cuenta",
+                               "Esta cuenta de Mercado Libre no coincide con la que ya "
+                               "está conectada en ese lugar, así que no se cambió nada.")
+        if not uid:
+            logger.warning(f"[AUTH] No se pudo verificar el user_id de ML para '{cuenta_id}'")
         _cuentas[cuenta_id] = tok
         if cuenta_id == "cuenta_0":
             _tokens.update(tok)
         _guardar_tokens()
         logger.info(f"[TOKEN] Conectado: {tok.get('nickname','?')} -> {cuenta_id}")
         threading.Thread(target=_refresh_pedidos_worker_cuenta, args=(cuenta_id,), daemon=True).start()
-        return _html_ok(f"Conectado como <b>{tok['nickname']}</b>",
-                        f"Cuenta registrada como <b>{cuenta_id}</b>.")
+        return _html_ok(f"Conectado como <b>{_html.escape(str(tok['nickname']))}</b>",
+                        f"Cuenta registrada como <b>{_html.escape(cuenta_id)}</b>.")
     except Exception as e:
         return _html_error("Error inesperado", str(e))
 
 
 @app.route("/auth/logout")
 def auth_logout():
+    # Desconecta una cuenta de ML: antes lo podía hacer cualquiera con solo
+    # abrir la URL. Ahora exige la clave API o una sesión de panel.
+    k = (request.headers.get("X-API-Key") or request.args.get("key") or "").strip()
+    claves = {API_KEY}
+    if os.environ.get("ALLOW_LEGACY_KEYS", "1").strip() != "0":
+        claves |= {"everest2024", "everest2025"}
+    claves.discard("")
+    if k not in claves and not session.get("admin_panel_usuario"):
+        return jsonify({"ok": False, "msg": "No autorizado"}), 401
     cuenta_id = request.args.get("cuenta", "cuenta_0")
     if cuenta_id in _cuentas:
         del _cuentas[cuenta_id]
@@ -1719,6 +1879,20 @@ def auth_status():
 @app.route("/api/cuentas")
 def api_cuentas():
     return jsonify({"ok": True, "cuentas": _cuentas_info()})
+
+
+@app.route("/api/admin/compat-stats")
+def api_compat_stats():
+    """Uso de credenciales por ruta. Solo con la clave maestra real (no las heredadas)."""
+    k = (request.headers.get("X-API-Key") or "").strip()
+    if not API_KEY or k != API_KEY:
+        return jsonify({"ok": False, "msg": "Requiere la clave maestra"}), 401
+    with _compat_lock:
+        datos = {c: dict(e) for c, e in _compat_stats.items()}
+    por_tipo = {}
+    for c, e in datos.items():
+        por_tipo[c.split("|")[0]] = por_tipo.get(c.split("|")[0], 0) + e["n"]
+    return jsonify({"ok": True, "por_tipo": por_tipo, "detalle": datos})
 
 @app.route("/api/cuentas/<cuenta_id>/logout", methods=["POST"])
 @requiere_api_key
@@ -1966,7 +2140,7 @@ def debug_logistica():
 @app.route("/api/test_credentials")
 def test_credentials():
     try:
-        r = requests.post("https://api.mercadolibre.com/oauth/token",
+        r = requests.post(ML_API_URL + "/oauth/token",
                           headers={"Accept": "application/json",
                                    "Content-Type": "application/x-www-form-urlencoded"},
                           data={"grant_type": "client_credentials",
@@ -4101,9 +4275,13 @@ def admin_usuarios_panel():
         puede_editar   = es_admin or rol == "operario"
         puede_eliminar = es_admin or rol == "operario"
         uname_safe = u.get("usuario","")
+        # Todo texto de usuario que se incrusta en el CÓDIGO de esta plantilla
+        # (armada por concatenación) va escapado por _esc_tpl: sin eso, un
+        # nombre como {{ ... }} se evaluaba como Jinja en el servidor.
+        uname_js = _esc_tpl(json.dumps(uname_safe))
 
         btn_editar = (
-            f"<button onclick=\"editar('{uname_safe}')\" "
+            f"<button onclick=\"editar({uname_js})\" "
             "style='background:#0EA5E9;color:white;border:none;"
             "padding:4px 10px;border-radius:6px;cursor:pointer;"
             "font-size:12px;margin-right:6px'>"
@@ -4112,7 +4290,7 @@ def admin_usuarios_panel():
 
         if puede_eliminar:
             btn_eliminar = (
-                f"<button onclick=\"eliminar('{uname_safe}')\" "
+                f"<button onclick=\"eliminar({uname_js})\" "
                 "style='background:#EF4444;color:white;border:none;"
                 "padding:4px 12px;border-radius:6px;cursor:pointer;"
                 "font-size:12px'>"
@@ -4121,9 +4299,9 @@ def admin_usuarios_panel():
             btn_eliminar = "<span style='color:#334155;font-size:11px'>—</span>"
 
         usuarios_html += f"""<tr>
-          <td>{u.get('nombre','')}</td>
-          <td><code>{u.get('usuario','')}</code></td>
-          <td><code>{u.get('cuenta_id','')}</code></td>
+          <td>{_esc_tpl(u.get('nombre',''))}</td>
+          <td><code>{_esc_tpl(u.get('usuario',''))}</code></td>
+          <td><code>{_esc_tpl(u.get('cuenta_id',''))}</code></td>
           <td><span style='color:{rol_color};font-weight:700'>{rol_emoji} {rol_label}</span></td>
           <td>{btn_editar}{btn_eliminar}</td></tr>"""
 
@@ -5385,7 +5563,8 @@ def panel_estadisticas():
         f'<option value="{o}" {"selected" if op_fil==o.lower() else ""}>{o}</option>'
         for o in ops_unicos)
 
-    titulo_tienda = f" — {cuenta_sesion}" if cuenta_sesion != "todas" else " — Todas las tiendas"
+    titulo_tienda = (f" — {_esc_tpl(cuenta_sesion)}" if cuenta_sesion != "todas"
+                     else " — Todas las tiendas")
 
     return render_template_string("""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8">
@@ -6362,7 +6541,9 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
 const KEY  = '""" + key + """';
 const BASE = window.location.origin;
 let _logob64 = ''; let _logoext = '';
-let _logoPos = '""" + cfg.get('etiqueta_logo_pos','superior_izq') + """';
+let _logoPos = '""" + (cfg.get('etiqueta_logo_pos') if cfg.get('etiqueta_logo_pos') in
+    ('superior_izq','superior_centro','superior_der','inferior_izq','inferior_centro',
+     'inferior_der') else 'superior_izq') + """';
 
 // Marcar posición actual
 document.querySelectorAll('.pos-btn').forEach(b => {
@@ -6680,8 +6861,10 @@ def _startup():
     if cambiado:
         _guardar_usuarios()
         logger.info("[STARTUP] usuarios.json actualizado con rol admin")
-    if not _cuentas:
-        _cargar_tokens_local()
+    # Siempre se leen ambas fuentes y se fusionan por cuenta (la más fresca
+    # gana): antes el archivo solo se miraba si la variable de entorno estaba
+    # vacía, y una tienda agregada en runtime se perdía en el siguiente deploy.
+    _cargar_tokens_local()
     if _cuentas:
         nicks = [t.get("nickname","?") for t in _cuentas.values()]
         logger.info(f"[STARTUP] Tokens cargados: {nicks}")
