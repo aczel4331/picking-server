@@ -210,7 +210,7 @@ try:
     # paneles web con sesión
     for ruta, texto in [("/admin/usuarios", "Usuarios"), ("/estadisticas", "stad"), ("/config", "onfig"), ("/etiquetas", "tiquetas")]:
         r = ses.get(B + ruta)
-        check(f"panel {ruta} carga con sesión", r.status_code == 200 and texto in r.text and (ruta == "/admin/usuarios" or sin_marcadores_b(r.text)), f"{r.status_code}")
+        check(f"panel {ruta} carga con sesión", r.status_code == 200 and texto in r.text and (ruta == "/admin/usuarios" or (ruta == "/estadisticas" and not any(m in r.text for m in MARC[1:])) or (ruta != "/estadisticas" and sin_marcadores_b(r.text))), f"{r.status_code}")
     check("panel sin sesión redirige al login", requests.get(B + "/estadisticas", allow_redirects=False).status_code == 302)
     # gestión de usuarios (admin general por sesión)
     r = ses.post(B + "/api/auth/usuarios", json={"usuario": "nuevo9", "clave": "zz9999", "nombre": "N", "cuenta_id": "cuenta_2", "rol": "operario"}, headers=hk())

@@ -6065,6 +6065,24 @@ def panel_estadisticas():
     rol_sesion    = session.get("admin_panel_rol",      "supervisor")
     cuenta_sesion = session.get("admin_panel_cuenta_id","todas")
 
+    # Admin general (rol admin + cuenta "todas"): puede elegir de qué tienda ver las estadisticas.
+    es_plataforma = (rol_sesion == "admin" and cuenta_sesion == "todas")
+    tienda_ver = ""
+    sel_tienda = ""
+    if es_plataforma:
+        _q = (request.args.get("tienda") or "").strip().lower()
+        if _q in _tiendas and not _tiendas[_q].get("primary") and _tiendas[_q].get("estado") != "suspendida":
+            tienda_ver = _q
+            g.tn = _Tn(_q, "sesion", usuario_panel, rol_sesion)   # metricas/Excel de ESA tienda
+        _ops = ['<option value="">Todas / Everest</option>']
+        for _id, _t in _tiendas.items():
+            if _id and not _t.get("primary"):
+                _ops.append('<option value="%s"%s>%s</option>' % (
+                    _esc_tpl(_id), " selected" if _id == tienda_ver else "",
+                    _esc_tpl(str(_t.get("nombre") or _id))))
+        if len(_ops) > 1:
+            sel_tienda = '<div><label>Tienda</label><select name="tienda">' + "".join(_ops) + '</select></div>'
+
     desde   = request.args.get("desde", "")
     hasta   = request.args.get("hasta", "")
     op_fil  = request.args.get("operario","").strip().lower()
@@ -6317,6 +6335,8 @@ def panel_estadisticas():
 
     titulo_tienda = (f" — {_esc_tpl(cuenta_sesion)}" if cuenta_sesion != "todas"
                      else " — Todas las tiendas")
+    if tienda_ver:
+        titulo_tienda = " — " + _esc_tpl(str(_tiendas[tienda_ver].get("nombre") or tienda_ver))
 
     return render_template_string("""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8">
@@ -6455,6 +6475,7 @@ tr:hover td{background:rgba(255,255,255,.03)}
 <!-- Filtros -->
 <form method="GET" action="/estadisticas">
 <div class="filters">
+  """ + sel_tienda + """
   <div><label>Desde</label>
     <input type="date" name="desde" value="{{ desde }}"></div>
   <div><label>Hasta</label>
@@ -6568,7 +6589,7 @@ tr:hover td{background:rgba(255,255,255,.03)}
 
 <script>
 const BASE = window.location.origin;
-const KEY_ALERTAS = '""" + (_clave_para_panel(_tn_de_sesion()) or "") + """';
+const KEY_ALERTAS = '""" + ("" if tienda_ver else (_clave_para_panel(_tn_de_sesion()) or "")) + """';
 let _alertas_previas = 0;
 let _audio_ctx = null;
 
