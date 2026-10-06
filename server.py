@@ -2548,6 +2548,32 @@ def _resolver_tienda():
     return None
 
 
+@app.route("/api/admin/etiquetas-auditoria")
+def api_etiquetas_auditoria():
+    """Revisa los PDFs guardados y lista los que no tienen contenido. Solo lectura;
+    requiere la clave maestra real."""
+    k = (request.headers.get("X-API-Key") or "").strip()
+    if not API_KEY or k != API_KEY:
+        return jsonify({"ok": False, "msg": "Requiere la clave maestra"}), 401
+    vacias, ilegibles, total = [], [], 0
+    try:
+        nombres = sorted(f for f in os.listdir(ETIQUETAS_DIR) if f.endswith(".pdf"))
+    except OSError:
+        nombres = []
+    for f in nombres:
+        total += 1
+        try:
+            with open(os.path.join(ETIQUETAS_DIR, f), "rb") as fh:
+                c = _pdf_contenido(fh.read())
+        except OSError:
+            c = None
+        if c is None:
+            ilegibles.append(f[:-4])
+        elif not (c[0] >= 30 or c[1] >= 1):
+            vacias.append(f[:-4])
+    return jsonify({"ok": True, "total": total, "vacias": vacias, "ilegibles": ilegibles})
+
+
 @app.route("/api/admin/compat-stats")
 def api_compat_stats():
     """Uso de credenciales por ruta. Solo con la clave maestra real (no las heredadas)."""
@@ -2840,6 +2866,31 @@ def api_test_libs():
         except ImportError:
             resultado[lib] = "NO instalada"
     return jsonify(resultado)
+
+
+def _pdf_contenido(pdf_bytes):
+    """(caracteres_de_texto, imagenes) de la 1a pagina; None si no se pudo leer."""
+    try:
+        import io
+        from pypdf import PdfReader
+        rd = PdfReader(io.BytesIO(pdf_bytes))
+        if not rd.pages:
+            return 0, 0
+        pg = rd.pages[0]
+        txt = len((pg.extract_text() or "").strip())
+        try:
+            imgs = len(pg.images)
+        except Exception:
+            imgs = 0
+        return txt, imgs
+    except Exception:
+        return None
+
+
+def _pdf_con_contenido(pdf_bytes) -> bool:
+    """False solo si el PDF se leyo bien y esta vacio (sin texto ni imagenes)."""
+    c = _pdf_contenido(pdf_bytes)
+    return True if c is None else (c[0] >= 30 or c[1] >= 1)
 
 
 def _aplicar_personalizacion_etiqueta(pdf_bytes, config):
@@ -3169,7 +3220,7 @@ def _api_etiqueta_impl(order_id):
             return _html_error("Token ML no disponible",
                                "Reconecta la cuenta MercadoLibre."), 401
 
-    pdf_content = None; last_status = 0
+    pdf_content = None; last_status = 0; pdf_vacio = None
     for rtype in ["pdf","pdf2","zpl"]:
         try:
             r = requests.get(f"{ML_API_URL}/shipment_labels",
@@ -3179,8 +3230,13 @@ def _api_etiqueta_impl(order_id):
             last_status = r.status_code
             content_type = r.headers.get("Content-Type","")
             if r.status_code == 200 and b"%PDF" in r.content[:20]:
-                pdf_content = r.content
-                break
+                if _pdf_con_contenido(r.content):
+                    pdf_content = r.content
+                    break
+                logger.warning(f"[ETIQUETA] ML devolvio un PDF VACIO para "
+                               f"shipping_id={shipping_id} rtype={rtype}")
+                if pdf_vacio is None:
+                    pdf_vacio = r.content
             elif r.status_code != 200:
                 logger.warning(f"[ETIQUETA] ML devolvio {r.status_code} "
                                f"para shipping_id={shipping_id} rtype={rtype}")
@@ -3203,10 +3259,18 @@ def _api_etiqueta_impl(order_id):
                                   params={"shipment_ids": pack_id, "response_type": "pdf"},
                                   timeout=15)
             if r_pack.status_code == 200 and b"%PDF" in r_pack.content[:20]:
-                pdf_content = r_pack.content
-                logger.info(f"[ETIQUETA] OK con pack_id={pack_id}")
+                if _pdf_con_contenido(r_pack.content):
+                    pdf_content = r_pack.content
+                    logger.info(f"[ETIQUETA] OK con pack_id={pack_id}")
+                elif pdf_vacio is None:
+                    pdf_vacio = r_pack.content
         except Exception as e:
             logger.debug(f"[ETIQUETA] Error con pack_id: {e}")
+
+    cacheable = True
+    if not pdf_content and pdf_vacio:
+        pdf_content = pdf_vacio      # se entrega, pero no se cachea: el proximo pedido reintenta con ML
+        cacheable = False
 
     if pdf_content:
         # Usar el body_data ya leído (evitar leer el stream dos veces)
@@ -3232,12 +3296,20 @@ def _api_etiqueta_impl(order_id):
             logger.debug(f"[ETIQUETA] No se pudo fusionar config Railway: {e}")
 
         pdf_final = _aplicar_personalizacion_etiqueta(pdf_content, config)
+        if pdf_final is not pdf_content:
+            _c0, _c1 = _pdf_contenido(pdf_content) or (0, 0), _pdf_contenido(pdf_final)
+            if _c1 is not None and _c0[0] >= 30 and _c1[0] < _c0[0] * 0.5:
+                logger.error(f"[ETIQUETA] La personalizacion de #{real_oid} dejo la etiqueta "
+                             f"sin contenido ({_c0} -> {_c1}); se usa el original sin logo")
+                pdf_final = pdf_content
 
         logger.info(f"[ETIQUETA] PDF obtenido para #{real_oid} "
                     f"({len(pdf_final)} bytes) — guardando en /data/etiquetas/")
 
         # Guardar en /data/etiquetas/ con metadata para el panel web
         try:
+            if not cacheable:
+                raise RuntimeError("PDF vacio de ML: no se guarda en cache")
             import datetime as _dt_etq
             os.makedirs(ETIQUETAS_DIR, exist_ok=True)  # por si acaso
             _etq_path = os.path.join(ETIQUETAS_DIR, f"{real_oid}.pdf")
