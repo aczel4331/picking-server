@@ -30,11 +30,7 @@ logging.getLogger("requests").setLevel(logging.WARNING)
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-app.secret_key = os.environ.get("APP_SECRET_KEY", os.urandom(24).hex())
-if not os.environ.get("APP_SECRET_KEY"):
-    logger.warning("[STARTUP] APP_SECRET_KEY no está definida: las sesiones del panel "
-                   "se pierden en cada reinicio y los tokens firmados no podrían "
-                   "sobrevivir un deploy. Definila en Railway → Variables.")
+app.secret_key = os.environ.get("APP_SECRET_KEY", "").strip() or os.urandom(24).hex()
 _lock = threading.Lock()
 
 # ── Templates HTML ─────────────────────────────────────────────────────────────
@@ -114,6 +110,38 @@ def _resolver_data_dir():
     return "/tmp"
 
 DATA_DIR       = _resolver_data_dir()
+
+
+def _secreto_persistente():
+    """Clave para firmar sesiones y tokens. Si APP_SECRET_KEY no está definida se
+    genera una vez y se guarda en DATA_DIR (sobrevive a los deploys)."""
+    env = os.environ.get("APP_SECRET_KEY", "").strip()
+    if env:
+        return env
+    ruta = os.path.join(DATA_DIR, ".app_secret")
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            v = f.read().strip()
+        if len(v) >= 32:
+            return v
+    except Exception:
+        pass
+    import secrets as _sec
+    v = _sec.token_hex(32)
+    try:
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(v)
+        logger.info("[STARTUP] Clave de firma generada y guardada en DATA_DIR")
+        return v
+    except Exception as e:
+        logger.warning(f"[STARTUP] No se pudo guardar la clave de firma ({e}): "
+                       "las sesiones se pierden en cada reinicio. Definí APP_SECRET_KEY.")
+        return None
+
+
+_sec_k = _secreto_persistente()
+if _sec_k:
+    app.secret_key = _sec_k
 LOTE_PATH      = os.path.join(DATA_DIR, "lote_estado.json")
 ML_TOKENS_PATH = os.path.join(DATA_DIR, "ml_tokens.json")
 USUARIOS_PATH  = os.path.join(DATA_DIR, "usuarios.json")
@@ -146,7 +174,14 @@ def _limpiar_archivos_viejos():
             try:
                 _lim_5d = _dt.datetime.now() - _dt.timedelta(days=5)
                 _lim_1d = _dt.datetime.now() - _dt.timedelta(days=1)
-                for _dir in [ETIQUETAS_DIR, LOTES_DIR, SESIONES_DIR]:
+                _dirs = [ETIQUETAS_DIR, LOTES_DIR, SESIONES_DIR]
+                _tb = os.path.join(DATA_DIR, "tiendas")
+                if os.path.isdir(_tb):
+                    for _t in os.listdir(_tb):
+                        _d = os.path.join(_tb, _t, "lotes_backup")
+                        if os.path.isdir(_d):
+                            _dirs.append(_d)
+                for _dir in _dirs:
                     # Las sesiones caducan en 1 día, el resto en 5
                     _limite = _lim_1d if _dir == SESIONES_DIR else _lim_5d
                     for _fname in os.listdir(_dir):
@@ -260,6 +295,30 @@ def _get_estado(canal=None):
     if canal not in _estados_canal:
         _estados_canal[canal] = _estado_vacio()
     return _estados_canal[canal]
+
+
+def _guardar_lotes():
+    """Lotes de la primaria → lote_estado.json (como siempre). Los de tiendas nuevas →
+    tiendas/<id>/lote_estado.json (archivos que el código anterior nunca lee)."""
+    try:
+        prim, por_t = {}, {}
+        for k, v in list(_estados_canal.items()):
+            t = (str(k).split(":", 1)[0].lower() if ":" in str(k) else "")
+            if t.startswith("t_"):
+                por_t.setdefault(t, {})[k] = v
+            else:
+                prim[k] = v
+        with open(LOTE_PATH, "w") as f:
+            json.dump({"canales": prim}, f, default=str)
+        for t in set(por_t) | {x for x, r in list(_tiendas.items()) if not r.get("primary")}:
+            d = os.path.join(TIENDAS_DIR, t)
+            if not por_t.get(t) and not os.path.exists(os.path.join(d, "lote_estado.json")):
+                continue
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "lote_estado.json"), "w") as f:
+                json.dump({"canales": por_t.get(t, {})}, f, default=str)
+    except Exception as e:
+        logger.error(f"[LOTE] Error persistiendo: {e}")
 
 
 def _clave_colector(usuario="", cuenta_id="", canal=""):
@@ -496,7 +555,7 @@ def _cuentas_info():
     return [
         {"cuenta_id": cid, "nickname": tok.get("nickname", cid),
          "user_id": tok.get("user_id", ""), "activa": bool(tok.get("access_token"))}
-        for cid, tok in _cuentas.items() if tok.get("access_token")
+        for cid, tok in _cuentas.items() if tok.get("access_token") and _tn_cuenta_ok(cid)
     ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1436,6 +1495,8 @@ except Exception:
 def _tipo_credencial(k: str) -> str:
     if not k:
         return "sin_clave"
+    if k.startswith("tk1."):
+        return "token"
     if k in ("everest2024", "everest2025"):
         return "clave_heredada"
     if k == API_KEY:
@@ -1473,6 +1534,8 @@ def _telemetria_compat():
 def requiere_api_key(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        if _tn().via == "token":        # token firmado ya validado en before_request
+            return f(*args, **kwargs)
         k = (request.headers.get("X-API-Key") or
              request.args.get("key") or request.args.get("api_key") or "").strip()
         # Claves válidas: la definida en Railway + (por defecto) las heredadas
@@ -1496,6 +1559,10 @@ def requiere_api_key(f):
 
 # ── API de usuarios ───────────────────────────────────────────────────────────
 
+_login_fallos = {}
+_login_fallos_lock = threading.Lock()
+
+
 @app.route("/api/auth/login", methods=["POST"])
 def api_auth_login():
     """
@@ -1511,32 +1578,79 @@ def api_auth_login():
     if not usuario or not clave:
         return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
 
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+    ahora = time.time()
+    with _login_fallos_lock:
+        for kk in (ip, f"{ip}|{usuario.lower()}"):
+            _login_fallos[kk] = [t for t in _login_fallos.get(kk, []) if ahora - t < 600]
+        if len(_login_fallos[ip]) >= 40 or len(_login_fallos[f"{ip}|{usuario.lower()}"]) >= 8:
+            return jsonify({"ok": False, "msg": "Demasiados intentos. Esperá unos minutos."}), 429
+
     resultado = _verificar_credenciales(usuario, clave)
     if resultado:
-        logger.info(f"[AUTH] Login OK: {usuario} (rol={resultado['rol']})")
         cid = resultado.get("cuenta_id")
-        tid = cid if (cid in _tiendas and not _tiendas[cid].get("primary")) else None
-        marca = dict(_marca_de(tid))
-        marca["tienda_id"] = tid or ""
-        return jsonify({"ok": True, "usuario": resultado, "tienda": marca})
+        tid = _tienda_de_cuenta(cid)
+        if tid:
+            t = _tiendas.get(tid)
+            if not t or t.get("estado") == "suspendida":
+                return jsonify({"ok": False, "msg": "La tienda está suspendida. Contactá al administrador."}), 403
+        logger.info(f"[AUTH] Login OK: {usuario} (rol={resultado['rol']}, tienda={tid or 'primaria'})")
+        marca = dict(_marca_de(tid or None))
+        marca["tienda_id"] = tid
+        return jsonify({"ok": True, "usuario": resultado, "tienda": marca,
+                        "token": _emitir_token(tid, resultado["usuario"], resultado["rol"])})
     else:
         logger.warning(f"[AUTH] Login FALLIDO: {usuario}")
+        with _login_fallos_lock:
+            _login_fallos[ip].append(ahora)
+            _login_fallos[f"{ip}|{usuario.lower()}"].append(ahora)
         return jsonify({"ok": False, "msg": "Usuario o clave incorrectos"}), 401
+
+
+def _identidad_gestion():
+    """Quién gestiona usuarios, VERIFICADO: token de tienda o sesión del panel web.
+    Los headers X-Panel-Rol / X-Panel-Cuenta ya no se creen (cualquiera podía
+    mandarlos). Devuelve dict {rol, cuenta, tid, plataforma} o None."""
+    tn = _tn()
+    if tn.via == "token":
+        u = _usuario_reg(tn.usuario) or {}
+        rol, cuenta = u.get("rol", ""), u.get("cuenta_id", "")
+    elif session.get("admin_panel_usuario"):
+        rol = session.get("admin_panel_rol", "")
+        cuenta = session.get("admin_panel_cuenta_id", "")
+    else:
+        return None
+    tid = _tienda_de_cuenta(cuenta)
+    return {"rol": rol, "cuenta": cuenta, "tid": tid,
+            "plataforma": rol == "admin" and str(cuenta).lower() == "todas"}
+
+
+def _gestion_alcance(idn, u) -> bool:
+    """¿Puede esta identidad tocar a este usuario? (alcance de tienda + reglas de rol)"""
+    if idn["plataforma"]:
+        return True
+    if _tienda_de_cuenta(u.get("cuenta_id")) != idn["tid"] or str(u.get("cuenta_id", "")).lower() == "todas":
+        return False
+    if idn["rol"] == "supervisor":
+        return u.get("rol") == "operario" and u.get("cuenta_id", "") == idn["cuenta"]
+    return idn["rol"] == "admin"
 
 
 @app.route("/api/auth/usuarios", methods=["GET"])
 @requiere_api_key
 def api_usuarios_lista():
-    """Lista todos los usuarios (sin mostrar claves). Solo supervisores."""
+    """Lista usuarios (sin claves). Cada tienda ve solo los suyos; el admin de la
+    plataforma ve todos; sin identidad se ve solo la tienda primaria (como siempre)."""
+    idn = _identidad_gestion()
+    if idn and idn["plataforma"]:
+        vis = list(_usuarios)
+    else:
+        tid = idn["tid"] if idn else _tn().tid
+        vis = [u for u in _usuarios if _tienda_de_cuenta(u.get("cuenta_id")) == tid]
     return jsonify({
         "ok":      True,
-        "usuarios": [
-            {k: v for k, v in u.items() if k != "clave"}
-            for u in _usuarios
-        ]
+        "usuarios": [{k: v for k, v in u.items() if k != "clave"} for u in vis]
     })
-
-
 
 
 @app.route("/api/auth/usuarios", methods=["POST"])
@@ -1544,9 +1658,9 @@ def api_usuarios_lista():
 def api_usuarios_crear():
     """
     Crea un nuevo usuario.
-    ADMIN    → puede crear admin/supervisor/operario de CUALQUIER tienda
-    SUPERVISOR → solo puede crear operarios de SU tienda
-    OPERARIO → sin acceso al panel, nunca llega aquí
+    ADMIN de plataforma (rol admin, cuenta 'todas') → cualquier rol en cualquier tienda
+    ADMIN de tienda      → supervisor/operario de SU tienda
+    SUPERVISOR           → solo operarios de SU cuenta
     """
     data          = request.get_json(silent=True) or {}
     usuario       = str(data.get("usuario","")).strip().lower()
@@ -1560,31 +1674,32 @@ def api_usuarios_crear():
     if any(u.get("usuario","").lower() == usuario for u in _usuarios):
         return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
 
-    # ── Permisos: header (fetch) → session (navegador) → rechazar ────────────
-    rol_sesion    = (request.headers.get("X-Panel-Rol","") or
-                     session.get("admin_panel_rol",""))
-    cuenta_sesion = (request.headers.get("X-Panel-Cuenta","") or
-                     session.get("admin_panel_cuenta_id",""))
+    idn = _identidad_gestion()
+    if not idn or idn["rol"] not in ("admin", "supervisor"):
+        return jsonify({"ok": False, "msg": "Sin permiso"}), 403
 
-    if rol_sesion == "admin":
-        # Admin: puede crear cualquier rol en cualquier tienda
-        # Validar que el rol sea válido
+    if idn["plataforma"]:
         if rol_nuevo not in ("operario", "supervisor", "admin"):
             return jsonify({"ok": False,
                 "msg": "Rol inválido. Usa: operario, supervisor o admin"}), 400
         if not cuenta:
             return jsonify({"ok": False, "msg": "Falta cuenta_id"}), 400
-
-    elif rol_sesion == "supervisor":
-        # Supervisor: SOLO puede crear operarios de SU tienda
+        if cuenta.lower().startswith("t_") and cuenta.lower() not in _tiendas:
+            return jsonify({"ok": False, "msg": "Esa tienda no existe"}), 400
+    elif idn["rol"] == "supervisor":
         if rol_nuevo != "operario":
             return jsonify({"ok": False,
                 "msg": "El supervisor solo puede crear operarios"}), 403
-        # Forzar la cuenta_id del supervisor — no puede elegir otra tienda
-        cuenta = cuenta_sesion
-
-    else:
-        # Sin sesión válida o es operario — rechazar
+        cuenta = idn["cuenta"]          # no puede elegir otra tienda
+    else:   # admin de una tienda
+        if rol_nuevo not in ("operario", "supervisor"):
+            return jsonify({"ok": False,
+                "msg": "Solo podés crear supervisores u operarios"}), 403
+        if not cuenta:
+            return jsonify({"ok": False, "msg": "Falta cuenta_id"}), 400
+        if cuenta.lower() == "todas" or _tienda_de_cuenta(cuenta) != idn["tid"]:
+            return jsonify({"ok": False, "msg": "No podés crear usuarios de otra tienda"}), 403
+    if cuenta.lower() == "todas" and not idn["plataforma"]:
         return jsonify({"ok": False, "msg": "Sin permiso"}), 403
 
     nuevo = {"usuario": usuario, "clave": clave,
@@ -1592,7 +1707,7 @@ def api_usuarios_crear():
     _usuarios.append(nuevo)
     _guardar_usuarios()
     logger.info(f"[USUARIOS] Creado: {usuario} "
-                f"(rol={rol_nuevo}, cuenta={cuenta}, por={rol_sesion})")
+                f"(rol={rol_nuevo}, cuenta={cuenta}, por={idn['rol']}/{idn['cuenta']})")
     return jsonify({"ok": True,
                     "msg": f"Usuario '{usuario}' creado correctamente",
                     "usuario": {k: v for k, v in nuevo.items() if k != "clave"}})
@@ -1601,25 +1716,30 @@ def api_usuarios_crear():
 @app.route("/api/auth/usuarios/<usuario_id>", methods=["PUT"])
 @requiere_api_key
 def api_usuarios_editar(usuario_id):
-    """Edita un usuario existente (clave, nombre, cuenta_id, rol)."""
+    """Edita un usuario existente (clave, nombre, cuenta_id, rol) dentro del alcance de quien edita."""
     u = next((x for x in _usuarios if x.get("usuario","").lower() == usuario_id.lower()), None)
     if not u:
         return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
 
-    # Mismo criterio de permisos que el cambio de clave: admin edita a cualquiera,
-    # supervisor solo operarios de su tienda (y no puede reasignarlos ni ascenderlos).
-    rol_sesion    = (request.headers.get("X-Panel-Rol","") or session.get("admin_panel_rol",""))
-    cuenta_sesion = (request.headers.get("X-Panel-Cuenta","") or session.get("admin_panel_cuenta_id",""))
-    if rol_sesion == "supervisor":
-        if u.get("rol") != "operario" or u.get("cuenta_id","") != cuenta_sesion:
-            return jsonify({"ok": False, "msg": "Sin permiso sobre ese usuario"}), 403
-    elif rol_sesion != "admin":
-        return jsonify({"ok": False, "msg": "Sin permiso"}), 403
+    idn = _identidad_gestion()
+    if not idn or idn["rol"] not in ("admin", "supervisor") or not _gestion_alcance(idn, u):
+        return jsonify({"ok": False, "msg": "Sin permiso sobre ese usuario"}), 403
 
-    data = request.get_json(silent=True) or {}
-    if rol_sesion == "supervisor":
+    data = dict(request.get_json(silent=True) or {})
+    if idn["rol"] == "supervisor":
         data.pop("rol", None)
         data.pop("cuenta_id", None)
+    if not idn["plataforma"]:
+        # una tienda no se sube a sí misma de nivel ni mueve usuarios a otra tienda
+        if data.get("rol") == "admin":
+            data.pop("rol")
+        nueva_cuenta = (data.get("cuenta_id") or "").strip()
+        if nueva_cuenta and (nueva_cuenta.lower() == "todas"
+                             or _tienda_de_cuenta(nueva_cuenta) != idn["tid"]):
+            return jsonify({"ok": False, "msg": "No podés mover usuarios a otra tienda"}), 403
+    elif (data.get("cuenta_id") or "").strip().lower().startswith("t_") \
+            and data["cuenta_id"].strip().lower() not in _tiendas:
+        return jsonify({"ok": False, "msg": "Esa tienda no existe"}), 400
     if data.get("clave"):
         u["clave"]     = data["clave"].strip()
     if data.get("nombre"):
@@ -1633,33 +1753,20 @@ def api_usuarios_editar(usuario_id):
     return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' actualizado"})
 
 
-
-
-
-
 @app.route("/api/auth/usuarios/<usuario_id>/clave", methods=["PUT"])
 @requiere_api_key
 def api_usuarios_cambiar_clave(usuario_id):
-    """Cambia la clave de un usuario. Admin o supervisor de su tienda."""
-    global _usuarios
+    """Cambia la clave de un usuario dentro del alcance de quien lo pide."""
     u = next((x for x in _usuarios
                if x.get("usuario","").lower() == usuario_id.lower()), None)
     if not u:
         return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
 
-    rol_sesion    = (request.headers.get("X-Panel-Rol","") or
-                     session.get("admin_panel_rol",""))
-    cuenta_sesion = (request.headers.get("X-Panel-Cuenta","") or
-                     session.get("admin_panel_cuenta_id",""))
-
-    # Permisos: admin edita cualquiera, supervisor solo operarios de su tienda
-    if rol_sesion == "supervisor":
-        if u.get("rol") != "operario":
-            return jsonify({"ok": False, "msg": "Solo podés editar operarios"}), 403
-        if u.get("cuenta_id","") != cuenta_sesion:
-            return jsonify({"ok": False, "msg": "Usuario de otra tienda"}), 403
-    elif rol_sesion != "admin":
+    idn = _identidad_gestion()
+    if not idn or idn["rol"] not in ("admin", "supervisor"):
         return jsonify({"ok": False, "msg": "Sin permiso"}), 403
+    if not _gestion_alcance(idn, u):
+        return jsonify({"ok": False, "msg": "Sin permiso sobre ese usuario"}), 403
 
     data = request.get_json(silent=True) or {}
     nueva_clave = (data.get("clave","") or "").strip()
@@ -1669,7 +1776,7 @@ def api_usuarios_cambiar_clave(usuario_id):
     import hashlib
     u["clave"] = hashlib.sha256(nueva_clave.encode()).hexdigest()
     _guardar_usuarios()
-    logger.info(f"[USUARIOS] Clave cambiada: {usuario_id} (por {rol_sesion})")
+    logger.info(f"[USUARIOS] Clave cambiada: {usuario_id} (por {idn['rol']})")
     return jsonify({"ok": True, "msg": f"Clave de '{usuario_id}' actualizada"})
 
 
@@ -1677,9 +1784,8 @@ def api_usuarios_cambiar_clave(usuario_id):
 @requiere_api_key
 def api_usuarios_eliminar(usuario_id):
     """
-    Elimina un usuario.
-    ADMIN    → puede eliminar cualquier usuario (menos el último admin)
-    SUPERVISOR → solo puede eliminar operarios de SU tienda
+    Elimina un usuario dentro del alcance de quien lo pide
+    (nunca el último admin de la plataforma).
     """
     global _usuarios
     u = next((x for x in _usuarios
@@ -1687,33 +1793,22 @@ def api_usuarios_eliminar(usuario_id):
     if not u:
         return jsonify({"ok": False, "msg": "Usuario no encontrado"}), 404
 
-    rol_sesion    = (request.headers.get("X-Panel-Rol","") or
-                     session.get("admin_panel_rol",""))
-    cuenta_sesion = (request.headers.get("X-Panel-Cuenta","") or
-                     session.get("admin_panel_cuenta_id",""))
-
-    if rol_sesion == "admin":
-        # Admin puede eliminar cualquiera menos el último admin
-        admins = [x for x in _usuarios if x.get("rol") == "admin"]
-        if u.get("rol") == "admin" and len(admins) <= 1:
+    idn = _identidad_gestion()
+    if not idn or idn["rol"] not in ("admin", "supervisor"):
+        return jsonify({"ok": False, "msg": "Sin permiso"}), 403
+    if not _gestion_alcance(idn, u):
+        return jsonify({"ok": False, "msg": "No podés eliminar usuarios de otra tienda"}), 403
+    if u.get("rol") == "admin":
+        admins = [x for x in _usuarios if x.get("rol") == "admin"
+                  and str(x.get("cuenta_id", "")).lower() == str(u.get("cuenta_id", "")).lower()]
+        if len(admins) <= 1 and str(u.get("cuenta_id", "")).lower() == "todas":
             return jsonify({"ok": False,
                 "msg": "No podés eliminar el único admin"}), 400
-
-    elif rol_sesion == "supervisor":
-        # Supervisor solo elimina operarios de SU tienda
-        if u.get("rol") != "operario":
-            return jsonify({"ok": False,
-                "msg": "El supervisor solo puede eliminar operarios"}), 403
-        if u.get("cuenta_id","") != cuenta_sesion:
-            return jsonify({"ok": False,
-                "msg": "No podés eliminar usuarios de otra tienda"}), 403
-    else:
-        return jsonify({"ok": False, "msg": "Sin permiso"}), 403
 
     _usuarios = [x for x in _usuarios
                  if x.get("usuario","").lower() != usuario_id.lower()]
     _guardar_usuarios()
-    logger.info(f"[USUARIOS] Eliminado: {usuario_id} (por {rol_sesion})")
+    logger.info(f"[USUARIOS] Eliminado: {usuario_id} (por {idn['rol']})")
     return jsonify({"ok": True, "msg": f"Usuario '{usuario_id}' eliminado"})
 
 
@@ -1911,6 +2006,8 @@ def auth_logout():
     if k not in claves and not session.get("admin_panel_usuario"):
         return jsonify({"ok": False, "msg": "No autorizado"}), 401
     cuenta_id = request.args.get("cuenta", "cuenta_0")
+    if not _tn_cuenta_ok(cuenta_id):
+        _tn_denegar("Cuenta de otra tienda")
     if cuenta_id in _cuentas:
         del _cuentas[cuenta_id]
         for oid in [o for o, p in list(_pedidos_ml.items()) if p.get("_cuenta") == cuenta_id]:
@@ -1922,11 +2019,12 @@ def auth_logout():
 
 @app.route("/auth/status")
 def auth_status():
+    _cta = _cuentas.get(_tn().tid or "cuenta_0", {})
     return jsonify({
-        "autenticado": bool(_cuentas),
-        "nickname":    _cuentas.get("cuenta_0",{}).get("nickname",""),
-        "user_id":     _cuentas.get("cuenta_0",{}).get("user_id",""),
-        "pedidos":     len(_pedidos_ml),
+        "autenticado": bool(_tn_cuentas()),
+        "nickname":    _cta.get("nickname",""),
+        "user_id":     _cta.get("user_id",""),
+        "pedidos":     len(_pv_values()),
         "cuentas":     _cuentas_info(),
         "ultimo_refresh": _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S")
                           if _ultimo_refresh_pedidos else "-",
@@ -2175,6 +2273,281 @@ def api_tiendas_estado(tid):
     return jsonify({"ok": True, "tienda": pub})
 
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TENENCIA (multi-tienda, fase 1) — quién llama y de qué tienda es.
+#
+# · Login → token firmado "tk1.…" que viaja en el MISMO header X-API-Key.
+# · Token válido → esa tienda. Token inválido/vencido → 401 (nunca cae a Everest).
+# · Sin token (clientes viejos / clave heredada / sin clave) → tienda PRIMARIA
+#   (Everest), exactamente como siempre; pero NUNCA puede tocar datos de otra tienda.
+# · Una tienda nueva solo puede usar las rutas de _TENANT_READY (las demás → 403).
+# · TENANT_ENFORCE=on|shadow|off (por defecto on). En shadow solo registra.
+# ══════════════════════════════════════════════════════════════════════════════
+from flask import g, has_request_context
+
+_TK_PREFIX  = "tk1."
+_TK_MAX_AGE = 30 * 24 * 3600
+
+
+class _TnDenegado(Exception):
+    def __init__(self, msg="No autorizado para esta tienda", codigo=403):
+        super().__init__(msg)
+        self.msg, self.codigo = msg, codigo
+
+
+class _Tn:
+    """Tienda de la llamada en curso. tid '' = tienda primaria (Everest)."""
+    __slots__ = ("tid", "via", "usuario", "rol")
+
+    def __init__(self, tid="", via="anon", usuario="", rol=""):
+        self.tid, self.via, self.usuario, self.rol = tid, via, usuario, rol
+
+
+_TN_PRIMARIA = _Tn()
+
+
+def _tn() -> _Tn:
+    if has_request_context():
+        return getattr(g, "tn", None) or _TN_PRIMARIA
+    return _TN_PRIMARIA
+
+
+def _tn_modo() -> str:
+    m = os.environ.get("TENANT_ENFORCE", "on").strip().lower()
+    return m if m in ("on", "shadow", "off") else "on"
+
+
+def _tn_denegar(msg="No autorizado para esta tienda", codigo=403):
+    """Corta la llamada (modo on) o solo la registra (shadow)."""
+    modo = _tn_modo()
+    if modo == "off":
+        return
+    if has_request_context():
+        logger.warning(f"[TENANT-{modo.upper()}] {request.method} {request.path} "
+                       f"tienda='{_tn().tid or 'primaria'}' via={_tn().via} usuario='{_tn().usuario}': {msg}")
+    if modo == "on":
+        raise _TnDenegado(msg, codigo)
+
+
+@app.errorhandler(_TnDenegado)
+def _on_tn_denegado(e):
+    return jsonify({"ok": False, "msg": e.msg}), e.codigo
+
+
+def _tienda_de_cuenta(cid) -> str:
+    """Tienda dueña de una cuenta: las 't_*' son de su propia tienda; todo lo demás
+    ('todas', 'cuenta_0', 'cuenta_2'…) pertenece a la primaria ('')."""
+    c = str(cid or "").strip().lower()
+    return c if c.startswith("t_") else ""
+
+
+def _usuario_reg(usuario):
+    u = str(usuario or "").strip().lower()
+    return next((x for x in _usuarios if str(x.get("usuario", "")).lower() == u), None)
+
+
+def _tn_cuenta_ok(cid) -> bool:
+    """¿Esta cuenta de ML / cuenta_id es de la tienda de la llamada?"""
+    tid = _tn().tid
+    c = str(cid or "").strip().lower()
+    return (c == tid) if tid else (not c.startswith("t_"))
+
+
+def _tn_pedido_ok(p) -> bool:
+    return _tn_cuenta_ok((p or {}).get("_cuenta") or "cuenta_0")
+
+
+def _tn_clave_ok(clave) -> bool:
+    """¿Esta clave de lote (_estados_canal) es de la tienda de la llamada?"""
+    k = str(clave or "")
+    if ":" in k:
+        return _tn_cuenta_ok(k.split(":", 1)[0])
+    return not _tn().tid        # claves heredadas por canal: solo primaria
+
+
+def _tn_usuario_ok(usuario) -> bool:
+    u = _usuario_reg(usuario)
+    tid = _tn().tid
+    if not u:
+        return not tid           # primaria acepta nombres sueltos (clientes viejos)
+    return _tienda_de_cuenta(u.get("cuenta_id")) == tid
+
+
+def _tn_clave(usuario, cuenta_id, canal):
+    """Clave de lote construida en el servidor. Tienda nueva: ignora el cuenta_id
+    que declare el cliente. Primaria: igual que siempre (_clave_colector)."""
+    tn = _tn()
+    usuario = (usuario or "").strip().lower()
+    if tn.tid:
+        usuario = usuario or tn.usuario
+        if not usuario or not _tn_usuario_ok(usuario):
+            _tn_denegar("Usuario de otra tienda")
+        return f"{tn.tid}:{usuario}"
+    if usuario and not _tn_usuario_ok(usuario):
+        _tn_denegar("Usuario de otra tienda")
+    if str(cuenta_id or "").strip().lower().startswith("t_"):
+        _tn_denegar("Cuenta de otra tienda")
+    return _clave_colector(usuario, cuenta_id, canal)
+
+
+def _tn_cuentas() -> list:
+    return [c for c in list(_cuentas) if _tn_cuenta_ok(c)]
+
+
+def _pv_values() -> list:
+    return [p for p in list(_pedidos_ml.values()) if _tn_pedido_ok(p)]
+
+
+def _pv_items() -> list:
+    return [(k, p) for k, p in list(_pedidos_ml.items()) if _tn_pedido_ok(p)]
+
+
+def _pv_dict() -> dict:
+    return {k: p for k, p in list(_pedidos_ml.items()) if _tn_pedido_ok(p)}
+
+
+def _tn_orden_ok(order_id) -> bool:
+    """¿La orden es de la tienda de la llamada? Orden desconocida: solo primaria,
+    salvo que su etiqueta guardada diga de quién es."""
+    oid = str(order_id or "").strip()
+    p = _pedidos_ml.get(oid)
+    if p is None and len(oid) >= 8:
+        suf = oid[-8:]
+        for k, v in list(_pedidos_ml.items()):
+            if k.endswith(suf):
+                p = v
+                break
+    if p is not None:
+        return _tn_pedido_ok(p)
+    try:
+        with open(os.path.join(ETIQUETAS_DIR, re.sub(r"[^0-9A-Za-z_-]", "", oid) + ".json"),
+                  encoding="utf-8") as f:
+            dueno = (json.load(f) or {}).get("_cuenta")
+        if dueno:
+            return _tn_cuenta_ok(dueno)
+    except Exception:
+        pass
+    return not _tn().tid
+
+
+def _tn_exigir_orden(order_id):
+    if not _tn_orden_ok(order_id):
+        _tn_denegar("Pedido de otra tienda")
+
+
+def _tpath(path: str) -> str:
+    """Archivo propio de la tienda de la llamada. Primaria (y segundo plano):
+    la ruta de siempre. Tienda nueva: DATA_DIR/tiendas/<id>/<archivo>."""
+    tid = _tn().tid
+    if not tid:
+        return path
+    d = os.path.join(TIENDAS_DIR, tid)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, os.path.basename(path))
+
+
+# Rutas que una tienda NUEVA puede usar (todas filtran/escopean por tienda).
+_TENANT_READY = {
+    "api_auth_login", "api_branding", "brand_logo", "api_ping", "movil", "manifest", "static",
+    # lotes y escaneo
+    "get_estado", "escanear", "reset_sku", "subir_estado", "limpiar", "api_lote_en_vivo",
+    "fase2_pedidos_completos", "fase2_marcar_impresa",
+    "api_sesion_guardar", "api_sesion_recuperar", "api_sesion_borrar",
+    "api_lote_backup", "api_lote_backup_ultimo",
+    # pedidos y etiquetas
+    "api_pedidos", "api_refresh", "api_pedidos_estados", "api_verificar_ahora",
+    "chequear_impreso", "marcar_impreso", "api_cuentas", "auth_status", "api_cortes",
+    "api_etiqueta", "api_etiqueta_guardada", "api_etiqueta_descargar", "api_etiquetas_zip",
+    "api_imagen_sku",
+    # configuración, alertas, métricas, aprobaciones
+    "api_config_app_get", "api_config_app_post", "api_config_app_excel", "api_config_app_excel_get",
+    "api_alertas_sin_stock", "api_alertas_get", "api_alertas_marcar_leidas", "api_alertas_limpiar",
+    "api_metricas_subir", "api_metricas_lista",
+    "api_auth_solicitar", "api_auth_estado", "api_auth_aprobar", "api_auth_pendientes", "api_auth_rechazar",
+    # usuarios de su propia tienda y paneles web (por sesión)
+    "api_usuarios_lista", "api_usuarios_crear", "api_usuarios_editar",
+    "api_usuarios_cambiar_clave", "api_usuarios_eliminar",
+    "admin_redirect", "admin_logout", "admin_usuarios_panel", "panel_estadisticas", "panel_config",
+    "panel_etiquetas",
+}
+
+
+def _emitir_token(tid: str, usuario: str, rol: str) -> str:
+    from itsdangerous import URLSafeTimedSerializer
+    s = URLSafeTimedSerializer(app.secret_key, salt="logibot-tk1")
+    return _TK_PREFIX + s.dumps({"t": tid or "", "u": usuario, "r": rol})
+
+
+def _leer_token(tok: str):
+    """(datos, error). error: 'vencido' | 'invalido' | None."""
+    from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+    s = URLSafeTimedSerializer(app.secret_key, salt="logibot-tk1")
+    try:
+        return s.loads(tok[len(_TK_PREFIX):], max_age=_TK_MAX_AGE), None
+    except SignatureExpired:
+        return None, "vencido"
+    except BadSignature:
+        return None, "invalido"
+    except Exception:
+        return None, "invalido"
+
+
+def _clave_para_panel(tn=None) -> str:
+    """Credencial que el panel web incrusta en su JS: la clave de siempre para la
+    primaria; un token firmado de su tienda para las demás."""
+    tn = tn or _tn()
+    if tn.tid:
+        return _emitir_token(tn.tid, tn.usuario, tn.rol)
+    return API_KEY or ""
+
+
+def _tn_de_sesion():
+    """Tienda del usuario logueado en el panel web (cookie de sesión firmada)."""
+    nombre = session.get("admin_panel_usuario")
+    if not nombre:
+        return None
+    cuenta = session.get("admin_panel_cuenta_id", "todas")
+    return _Tn(_tienda_de_cuenta(cuenta), "sesion",
+               session.get("admin_panel_login", "") or nombre, session.get("admin_panel_rol", ""))
+
+
+@app.before_request
+def _resolver_tienda():
+    g.tn = _TN_PRIMARIA
+    if _tn_modo() == "off":
+        return None
+    k = (request.headers.get("X-API-Key") or request.args.get("key")
+         or request.args.get("api_key") or "").strip()
+    if k.startswith(_TK_PREFIX):
+        d, err = _leer_token(k)
+        if err:
+            return jsonify({"ok": False, "msg": "Sesión vencida: volvé a iniciar sesión.",
+                            "relogin": True}), 401
+        tid = str(d.get("t") or "")
+        u = _usuario_reg(d.get("u"))
+        if not u or _tienda_de_cuenta(u.get("cuenta_id")) != tid:
+            return jsonify({"ok": False, "msg": "Sesión inválida: volvé a iniciar sesión.",
+                            "relogin": True}), 401
+        if tid:
+            t = _tiendas.get(tid)
+            if not t or t.get("estado") == "suspendida":
+                return jsonify({"ok": False, "msg": "Tienda suspendida o inexistente."}), 403
+        g.tn = _Tn(tid, "token", str(d.get("u") or ""), str(u.get("rol") or ""))
+    else:
+        s = _tn_de_sesion()
+        if s is not None and request.path.startswith(("/admin", "/estadisticas", "/config", "/etiquetas")):
+            g.tn = s
+    tn = g.tn
+    if tn.tid and (request.endpoint or "") not in _TENANT_READY:
+        try:
+            _tn_denegar("Esta función no está disponible para tu tienda")
+        except _TnDenegado as e:
+            return jsonify({"ok": False, "msg": e.msg}), e.codigo
+    return None
+
+
 @app.route("/api/admin/compat-stats")
 def api_compat_stats():
     """Uso de credenciales por ruta. Solo con la clave maestra real (no las heredadas)."""
@@ -2191,10 +2564,12 @@ def api_compat_stats():
 @app.route("/api/cuentas/<cuenta_id>/logout", methods=["POST"])
 @requiere_api_key
 def api_cuenta_logout(cuenta_id):
+    if not _tn_cuenta_ok(cuenta_id):
+        _tn_denegar("Cuenta de otra tienda")
     with _lock:
         if cuenta_id in _cuentas:
             del _cuentas[cuenta_id]
-            for oid in [o for o, p in list(_pedidos_ml.items()) if p.get("_cuenta") == cuenta_id]:
+            for oid in [o for o, p in _pv_items() if p.get("_cuenta") == cuenta_id]:
                 _pedidos_ml.pop(oid, None)
     _guardar_tokens()
     return jsonify({"ok": True, "msg": f"Cuenta {cuenta_id} desvinculada"})
@@ -2205,10 +2580,10 @@ def api_cuenta_logout(cuenta_id):
 
 @app.route("/api/pedidos")
 def api_pedidos():
-    if not _cuentas:
+    if not _tn_cuentas():
         return jsonify({"ok": False, "msg": "login", "pedidos": []}), 200
     with _lock:
-        pedidos = list(_pedidos_ml.values())
+        pedidos = _pv_values()
     for p in pedidos:
         log = p.get("logistica","")
         if log and (not p.get("tipo") or p.get("tipo") == "desconocido"):
@@ -2218,12 +2593,14 @@ def api_pedidos():
     # Lanzarlo aquí multiplicaba la carga en Waitress con cada poll del cliente.
     return jsonify({
         "ok": True, "pedidos": pedidos, "total": len(pedidos),
-        "sync_pausado": _sync_pausado(), "sync_estados": dict(_sync_estado_canal),
+        "sync_pausado": _sync_pausado(),
+        "sync_estados": {k: v for k, v in _sync_estado_canal.items() if _tn_clave_ok(k)},
         "ts": _ultimo_refresh_pedidos.strftime("%d/%m %H:%M:%S") if _ultimo_refresh_pedidos else "-",
     })
 
 
 _cortes_cache = {"ts": 0.0, "data": None}
+_cortes_cache_t = {}    # tiendas nuevas: su propio cache
 _DIAS_ML = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
 
 def _merge_dia_colecta(actual, info):
@@ -2253,7 +2630,7 @@ def _merge_dia_colecta(actual, info):
     return nuevo if (to_ or cutoff) > (actual.get("to") or actual.get("cutoff") or "") else actual
 
 
-def _calcular_cortes():
+def _calcular_cortes(solo=None):
     """Consulta a ML la agenda real de corte por canal (doc oficial):
       · Colecta: /users/{uid}/shipping/schedule/{cross_docking,xd_drop_off}
                  → por día: work + detail[].{from,to,cutoff,carrier}
@@ -2268,6 +2645,8 @@ def _calcular_cortes():
     """
     out = {"colecta": {}, "flex": {}}
     for cuenta_id, tok in list(_cuentas.items()):
+        if (cuenta_id not in solo) if solo is not None else cuenta_id.startswith("t_"):
+            continue
         uid = tok.get("user_id")
         if not uid or not tok.get("access_token"):
             continue
@@ -2327,27 +2706,29 @@ def api_cortes():
     'pedido de hoy vs de mañana'. Cache 12 h; ?force=1 lo recalcula."""
     import time as _t_c
     ahora = _t_c.time()
+    _tid  = _tn().tid
+    _cc   = _cortes_cache if not _tid else _cortes_cache_t.setdefault(_tid, {"ts": 0.0, "data": None})
     if (request.args.get("force") != "1"
-            and _cortes_cache["data"] is not None
-            and ahora - _cortes_cache["ts"] < 43200):
-        return jsonify({**_cortes_cache["data"], "cache": True})
-    if not _cuentas:
+            and _cc["data"] is not None
+            and ahora - _cc["ts"] < 43200):
+        return jsonify({**_cc["data"], "cache": True})
+    if not _tn_cuentas():
         return jsonify({"ok": False, "msg": "login", "colecta": {}, "flex": {}}), 200
-    data = _calcular_cortes()
+    data = _calcular_cortes({_tid} if _tid else None)
     if data.get("ok"):
-        _cortes_cache["data"] = data
-        _cortes_cache["ts"]   = ahora
+        _cc["data"] = data
+        _cc["ts"]   = ahora
     return jsonify({**data, "cache": False})
 
 
 @app.route("/api/pedidos/refresh", methods=["POST"])
 def api_refresh():
-    if not _cuentas:
+    if not _tn_cuentas():
         return jsonify({"ok": False, "msg": "No hay cuentas ML conectadas"}), 400
     body    = request.get_json(silent=True) or {}
     f_desde = body.get("fecha_desde")
     f_hasta = body.get("fecha_hasta")
-    for cid in list(_cuentas.keys()):
+    for cid in _tn_cuentas():
         threading.Thread(target=_refresh_pedidos_worker_cuenta,
                          args=(cid, f_desde, f_hasta), daemon=True).start()
     return jsonify({"ok": True, "msg": f"Actualizando ({f_desde or 'ultimos 7 dias'} a {f_hasta or 'hoy'})"})
@@ -2356,7 +2737,7 @@ def api_refresh():
 @app.route("/api/diag-colecta")
 def api_diag_colecta():
     with _lock:
-        pedidos = list(_pedidos_ml.values())
+        pedidos = _pv_values()
     LOGS_COLECTA = ("cross_docking","xd_drop_off","xd_same_day","drop_off")
     SUBS_IMPRESOS = {"printed","ready_for_pickup","in_packing_list","in_hub","shipped","delivered","ready_to_ship_wt_route"}
     colecta_pendientes = []; colecta_impresos = []; sin_logistica = []
@@ -2396,7 +2777,7 @@ def api_diag_sku(sku):
             if encontrado: break
         result["en_lote"][canal] = encontrado or "no encontrado"
     with _lock:
-        pedidos_snap = list(_pedidos_ml.values())
+        pedidos_snap = _pv_values()
     for ped in pedidos_snap[:300]:
         for it in ped.get("items",[]):
             if str(it.get("sku","")).upper() == sku:
@@ -2417,7 +2798,7 @@ def api_diag_sku(sku):
 @app.route("/api/debug_logistica")
 def debug_logistica():
     with _lock:
-        snap = dict(_pedidos_ml)
+        snap = _pv_dict()
     conteo_tipo = {}; conteo_log = {}; ejemplos = {}
     for oid, p in list(snap.items())[:100]:
         log  = p.get("logistica","") or "(vacio)"
@@ -2596,7 +2977,7 @@ def api_diag_etiqueta(order_id):
     def paso(nombre, ok, detalle=""):
         diag["pasos"].append({"paso": nombre, "ok": ok, "detalle": str(detalle)[:400]})
     with _lock:
-        snap      = dict(_pedidos_ml)
+        snap      = _pv_dict()
         snap_lote = dict(_estado.get("pedidos",{}))
     pedido = snap.get(order_id); origen = "pedidos_ml" if pedido else None
     if not pedido:
@@ -2652,6 +3033,7 @@ def api_diag_etiqueta(order_id):
 
 @app.route("/api/etiqueta/<order_id>", methods=["GET","POST"])
 def api_etiqueta(order_id):
+    _tn_exigir_orden(order_id)
     try:
         return _api_etiqueta_impl(order_id)
     except Exception as e:
@@ -2690,6 +3072,7 @@ def _api_etiqueta_impl(order_id):
                             "ts":          _dt_chk.datetime.now(_dt_chk.timezone(_dt_chk.timedelta(hours=-3))).strftime("%Y-%m-%d %H:%M:%S"),
                             "fecha":       _ped_chk.get("fecha",""),
                             "fecha_cierre":_ped_chk.get("fecha_cierre",""),
+                            "_cuenta":     _ped_chk.get("_cuenta", ""),
                         }
                         with open(_meta_path, "w", encoding="utf-8") as _fm:
                             json.dump(_meta_chk, _fm, ensure_ascii=False)
@@ -2719,9 +3102,11 @@ def _api_etiqueta_impl(order_id):
 
     with _lock:
         cached    = _etiquetas_cache.get(order_id)
-        snap      = dict(_pedidos_ml)
+        snap      = _pv_dict()
         snap_lote = {}
         for canal_name, canal_est in _estados_canal.items():
+            if not _tn_clave_ok(canal_name):
+                continue
             for k, v in canal_est.get("pedidos",{}).items():
                 snap_lote[k] = v
 
@@ -2739,11 +3124,11 @@ def _api_etiqueta_impl(order_id):
             for p_num, p_data in snap_lote.items():
                 if str(p_data.get("_order_id","")) == order_id:
                     pedido = p_data; break
-        cuenta_id   = (pedido or {}).get("_cuenta","cuenta_0")
+        cuenta_id   = (pedido or {}).get("_cuenta") or (_tn().tid or "cuenta_0")
         at          = _cuentas.get(cuenta_id,{}).get("access_token","")
-        # Intentar con todas las cuentas si no hay token
+        # Intentar con todas las cuentas de ESTA tienda si no hay token
         if not at:
-            for cid, ctok in _cuentas.items():
+            for cid, ctok in [(c, _cuentas[c]) for c in _tn_cuentas()]:
                 tok = ctok.get("access_token","")
                 if tok: at = tok; break
         if not at:
@@ -2879,6 +3264,7 @@ def _api_etiqueta_impl(order_id):
                 "ts":          _dt_etq.datetime.now(_dt_etq.timezone(_dt_etq.timedelta(hours=-3))).strftime("%Y-%m-%d %H:%M:%S"),
                 "fecha":       _pedido_safe.get("fecha",""),
                 "fecha_cierre":_pedido_safe.get("fecha_cierre",""),
+                "_cuenta":     _pedido_safe.get("_cuenta", ""),
             }
             with open(_meta_path, "w", encoding="utf-8") as _fm:
                 json.dump(_meta, _fm, ensure_ascii=False)
@@ -2920,6 +3306,13 @@ def _api_etiqueta_impl(order_id):
         f"<b>HTTP:</b> {last_status}<br><br>{desc}{btn_alt}"), 200
 
 
+def _meta_etiqueta_ok(meta) -> bool:
+    """¿Esta etiqueta guardada es de la tienda de la llamada? Sin dueño anotado
+    (etiquetas anteriores a multi-tienda) es de la primaria."""
+    dueno = (meta or {}).get("_cuenta")
+    return _tn_cuenta_ok(dueno) if dueno else (not _tn().tid)
+
+
 @app.route("/etiquetas")
 def panel_etiquetas():
     """Panel web para ver y descargar etiquetas guardadas."""
@@ -2942,6 +3335,8 @@ def panel_etiquetas():
                 pdf_path = os.path.join(ETIQUETAS_DIR,
                                         f"{meta['order_id']}.pdf")
                 meta["tiene_pdf"] = os.path.exists(pdf_path)
+                if not _meta_etiqueta_ok(meta):
+                    continue
                 etiquetas.append(meta)
             except Exception:
                 continue
@@ -3063,7 +3458,7 @@ input,select{background:#0F172A;border:1px solid #334155;color:#F1F5F9;
 function descargarZip(canal) {
   const msg = document.getElementById('msg-zip');
   msg.textContent = '⏳ Generando ZIP...';
-  const KEY = '""" + (API_KEY or "everest2024") + """';
+  const KEY = '""" + (_clave_para_panel() or "everest2024") + """';
   const url = BASE + '/api/etiquetas/descargar-zip?canal=' + canal + '&key=' + KEY;
 
   // Timeout de seguridad — si tarda más de 90s, avisar
@@ -3163,6 +3558,8 @@ def api_sesion_guardar():
     usuario = (data.get("usuario","") or "").strip()
     if not usuario:
         return jsonify({"ok": False, "msg": "Falta el usuario"}), 400
+    if not _tn_usuario_ok(usuario):
+        _tn_denegar("Usuario de otra tienda")
 
     estado = {
         "usuario":         usuario,
@@ -3206,6 +3603,8 @@ def api_sesion_recuperar(usuario):
     Solo devuelve sesiones de menos de 24 horas.
     """
     import datetime as _dsr
+    if not _tn_usuario_ok(usuario):
+        _tn_denegar("Usuario de otra tienda")
     p = _ruta_sesion(usuario)
     if not os.path.exists(p):
         return jsonify({"ok": True, "hay_sesion": False})
@@ -3241,6 +3640,8 @@ def api_sesion_recuperar(usuario):
 @requiere_api_key
 def api_sesion_borrar(usuario):
     """Borra la sesión de un operario (al terminar el lote o descartarlo)."""
+    if not _tn_usuario_ok(usuario):
+        _tn_denegar("Usuario de otra tienda")
     try:
         p = _ruta_sesion(usuario)
         if os.path.exists(p):
@@ -3249,6 +3650,16 @@ def api_sesion_borrar(usuario):
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+def _lotes_dir_tn() -> str:
+    """Backups de lote: carpeta de siempre para la primaria, propia para cada tienda nueva."""
+    tid = _tn().tid
+    if not tid:
+        return LOTES_DIR
+    d = os.path.join(TIENDAS_DIR, tid, "lotes_backup")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 @app.route("/api/lote-backup", methods=["POST"])
@@ -3265,10 +3676,10 @@ def api_lote_backup():
         if not data:
             return jsonify({"ok": False, "msg": "Sin datos"}), 400
 
-        canal = data.get("canal", "lote")
+        canal = re.sub(r"[^A-Za-z0-9_-]", "_", str(data.get("canal", "lote")))[:30] or "lote"
         ts    = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-3))).strftime("%Y-%m-%d_%H%M%S")
         fname = f"{ts}_{canal}.json"
-        fpath = os.path.join(LOTES_DIR, fname)
+        fpath = os.path.join(_lotes_dir_tn(), fname)
 
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
@@ -3286,13 +3697,14 @@ def api_lote_backup():
 def api_lote_backup_ultimo():
     """Devuelve el último lote_backup guardado (para recuperación)."""
     try:
+        _ld = _lotes_dir_tn()
         archivos = sorted([
-            f for f in os.listdir(LOTES_DIR) if f.endswith(".json")
+            f for f in os.listdir(_ld) if f.endswith(".json")
         ], reverse=True)
         if not archivos:
             return jsonify({"ok": True, "backup": None})
         ultimo = archivos[0]
-        with open(os.path.join(LOTES_DIR, ultimo), encoding="utf-8") as f:
+        with open(os.path.join(_ld, ultimo), encoding="utf-8") as f:
             data = json.load(f)
         return jsonify({"ok": True, "backup": data, "archivo": ultimo})
     except Exception as e:
@@ -3303,6 +3715,7 @@ def api_lote_backup_ultimo():
 def api_etiqueta_guardada(order_id):
     """Sirve el PDF guardado en /data/etiquetas/."""
     order_id = str(order_id).strip()
+    _tn_exigir_orden(order_id)
     pdf_path = os.path.join(ETIQUETAS_DIR, f"{order_id}.pdf")
     if not os.path.exists(pdf_path):
         return f"Etiqueta #{order_id} no encontrada en el servidor", 404
@@ -3317,7 +3730,7 @@ def api_etiqueta_guardada(order_id):
 def api_etiqueta_descargar(order_id):
     try:
         with _lock:
-            snap = dict(_pedidos_ml)
+            snap = _pv_dict()
         pedido = snap.get(order_id)
         if not pedido and len(order_id) >= 8:
             for k, v in snap.items():
@@ -3384,7 +3797,7 @@ def _procesar_notificacion_orden(order_id, user_id):
     _time.sleep(2)
     cuenta_id = next((cid for cid, tok in _cuentas.items()
                       if str(tok.get("user_id","")) == str(user_id)), None)
-    if not cuenta_id and _cuentas:
+    if not cuenta_id and len(_cuentas) == 1:    # con varias tiendas, nunca adivinar
         cuenta_id = list(_cuentas.keys())[0]
     if not cuenta_id:
         return
@@ -3452,7 +3865,7 @@ def _procesar_notificacion_orden(order_id, user_id):
 def _procesar_notificacion_shipment(shipment_id, user_id):
     cuenta_id = next((cid for cid, tok in _cuentas.items()
                       if str(tok.get("user_id","")) == str(user_id)), None)
-    if not cuenta_id and _cuentas:
+    if not cuenta_id and len(_cuentas) == 1:    # con varias tiendas, nunca adivinar
         cuenta_id = list(_cuentas.keys())[0]
     if not cuenta_id:
         return
@@ -3503,6 +3916,8 @@ def api_etiquetas_zip():
                     meta = json.load(f)
                 canal = meta.get("canal","flex")
                 if canal_filtro != "todos" and canal != canal_filtro:
+                    continue
+                if not _meta_etiqueta_ok(meta):
                     continue
                 pdf_path = os.path.join(ETIQUETAS_DIR,
                                         f"{meta['order_id']}.pdf")
@@ -3571,6 +3986,8 @@ def api_etiquetas_cache():
         resultado = []; total_kb = 0.0; pdfs_activos = 0
         for oid, data in _etiquetas_cache.items():
             ped = _pedidos_ml.get(oid,{})
+            if (ped and not _tn_pedido_ok(ped)) or (not ped and _tn().tid):
+                continue
             kb  = round(len(data.get("pdf") or b"") / 1024, 1)
             total_kb += kb
             tiene_pdf = data.get("pdf") is not None
@@ -3587,13 +4004,14 @@ def api_etiquetas_cache():
 @app.route("/api/pedidos/impreso/<order_id>", methods=["GET"])
 def chequear_impreso(order_id):
     order_id = str(order_id).strip()
+    _tn_exigir_orden(order_id)
     impreso = False; fuente = None; ts = None
     with _lock:
         for k in (order_id, str(order_id)):
             p = _pedidos_ml.get(k)
             if p and p.get("impreso"):
                 impreso = True; fuente = "pedidos_ml"; ts = p.get("impreso_ts",""); break
-        if not impreso:
+        if not impreso and not _tn().tid:
             impresas = _estado.get("etiquetas_impresas",[])
             if order_id in impresas or str(order_id) in impresas:
                 impreso = True; fuente = "etiquetas_impresas"
@@ -3607,6 +4025,7 @@ def chequear_impreso(order_id):
 @app.route("/api/pedidos/marcar_impreso/<order_id>", methods=["POST"])
 @requiere_auth
 def marcar_impreso(order_id):
+    _tn_exigir_orden(order_id)
     with _lock:
         if order_id in _pedidos_ml:
             _pedidos_ml[order_id]["impreso"] = True
@@ -3628,7 +4047,7 @@ def api_tokens_export():
         return jsonify({"ok": False, "msg": "No hay cuentas conectadas."}), 400
     tokens_json  = _serializar_cuentas()
     cuentas_info = []
-    for cid, tok in _cuentas.items():
+    for cid, tok in [(c, _cuentas[c]) for c in _tn_cuentas()]:
         exp = tok.get("expires_at")
         exp_str = f"vence en {(exp - datetime.now()).total_seconds()/3600:.1f}h"                   if isinstance(exp, datetime) else "desconocido"
         cuentas_info.append({"cuenta_id": cid, "nickname": tok.get("nickname","?"), "expira": exp_str})
@@ -3639,7 +4058,7 @@ def api_tokens_export():
 @app.route("/api/token_status")
 def api_token_status():
     result = []
-    for cid, tok in _cuentas.items():
+    for cid, tok in [(c, _cuentas[c]) for c in _tn_cuentas()]:
         exp = tok.get("expires_at")
         if isinstance(exp, datetime):
             horas = (exp - datetime.now()).total_seconds() / 3600
@@ -3661,12 +4080,12 @@ def api_token_status():
 def ping():
     return jsonify({
         "ok": True, "version": SERVER_VERSION, "ts": _ts(),
-        "cargado": any(e.get("cargado") for e in _estados_canal.values()),
+        "cargado": any(e.get("cargado") for c, e in _estados_canal.items() if _tn_clave_ok(c)),
         "canales": {c: {"cargado": e.get("cargado",False), "skus": e.get("total_skus",0)}
-                    for c, e in _estados_canal.items()},
-        "skus": len(_sku_db), "autenticado": bool(_cuentas),
-        "cuentas": [t.get("nickname","?") for t in _cuentas.values()],
-        "pedidos_ml": len(_pedidos_ml), "data_dir": DATA_DIR,
+                    for c, e in _estados_canal.items() if _tn_clave_ok(c)},
+        "skus": len(_sku_db) if not _tn().tid else 0, "autenticado": bool(_tn_cuentas()),
+        "cuentas": [_cuentas[c].get("nickname","?") for c in _tn_cuentas()],
+        "pedidos_ml": len(_pv_values()), "data_dir": DATA_DIR,
         "persistente": DATA_DIR != "/tmp",
     })
 
@@ -3678,7 +4097,7 @@ def subir_estado():
     if not data or "grupos" not in data:
         return jsonify({"ok": False, "msg": "Datos invalidos"}), 400
     canal  = data.get("canal","default")
-    clave  = _clave_colector(data.get("usuario",""), data.get("cuenta_id",""), canal)
+    clave  = _tn_clave(data.get("usuario",""), data.get("cuenta_id",""), canal)
     est    = _get_estado(clave)
     with _lock:
         nueva_fase = data.get("fase",1)
@@ -3705,7 +4124,10 @@ def subir_estado():
             not est.get("cargado")
             or (_lote_id_in and _lote_id_in != est.get("lote_id",""))
             or (not _lote_id_in and _firma and _firma != est.get("_firma_lote",""))
-            or est.get("total_skus",0) != data.get("total_skus",0)
+            # El conteo de SKUs solo decide cuando el cliente NO manda lote_id: si
+            # manda el mismo id y el lote creció ("➕ Agregar al lote") es el MISMO
+            # lote y no se debe borrar lo ya colectado.
+            or (not _lote_id_in and est.get("total_skus",0) != data.get("total_skus",0))
         )
 
         _colecta_in = data.get("colecta",{}) or {}   # se procesa aparte del update()
@@ -3786,8 +4208,7 @@ def subir_estado():
             est["etiquetas_impresas"] = []
         _actualizar_sync_estado(clave)
     try:
-        with open(LOTE_PATH,"w") as f:
-            json.dump({"canales": _estados_canal}, f, default=str)
+        _guardar_lotes()
     except Exception as e:
         logger.error(f"[LOTE] Error persistiendo: {e}")
     logger.info(f"[LOTE] '{clave}' (canal={canal}) cargado: {est['total_skus']} SKUs, fase {nueva_fase}")
@@ -3811,7 +4232,9 @@ def api_lote_en_vivo():
         return jsonify({"ok": True, "lotes": [], "descanso": True})
 
     lotes_activos = []
-    for canal, est in _estados_canal.items():
+    for canal, est in list(_estados_canal.items()):
+        if not _tn_clave_ok(canal):
+            continue
         if not est.get("cargado") or est.get("total_skus", 0) == 0:
             continue
 
@@ -3899,7 +4322,7 @@ def api_lote_en_vivo():
 @app.route("/api/estado")
 def get_estado():
     canal = request.args.get("canal","default")
-    clave = _clave_colector(request.args.get("usuario",""), request.args.get("cuenta_id",""), canal)
+    clave = _tn_clave(request.args.get("usuario",""), request.args.get("cuenta_id",""), canal)
     est   = _get_estado(clave)
     with _lock:
         estado = dict(est)
@@ -3907,7 +4330,7 @@ def get_estado():
     estado.setdefault("canal", canal)
     estado["canales_disponibles"] = {
         c: {"cargado": e.get("cargado",False), "total_skus": e.get("total_skus",0), "fase": e.get("fase",1)}
-        for c, e in _estados_canal.items()
+        for c, e in _estados_canal.items() if _tn_clave_ok(c)
     }
     return jsonify(estado)
 
@@ -3940,7 +4363,7 @@ def _pedidos_completos_segun_colecta(canal="default"):
 @app.route("/api/fase2/pedidos-completos", methods=["GET"])
 def fase2_pedidos_completos():
     canal = request.args.get("canal","default")
-    clave = _clave_colector(request.args.get("usuario",""), request.args.get("cuenta_id",""), canal)
+    clave = _tn_clave(request.args.get("usuario",""), request.args.get("cuenta_id",""), canal)
     est   = _get_estado(clave)
     with _lock:
         completos = _pedidos_completos_segun_colecta(clave)
@@ -3953,12 +4376,13 @@ def fase2_pedidos_completos():
 def fase2_marcar_impresa(order_id):
     data  = request.get_json(silent=True) or {}
     canal = data.get("canal", request.args.get("canal","default"))
-    clave = _clave_colector(
+    clave = _tn_clave(
         data.get("usuario", request.args.get("usuario","")),
         data.get("cuenta_id", request.args.get("cuenta_id","")),
         canal)
     est   = _get_estado(clave)
     nuevo_estado = "idle"
+    _tn_exigir_orden(order_id)
     with _lock:
         if order_id not in est.get("etiquetas_impresas",[]):
             est.setdefault("etiquetas_impresas",[]).append(order_id)
@@ -3969,8 +4393,7 @@ def fase2_marcar_impresa(order_id):
         if nuevo_estado == "casi_listo":
             logger.info(f"[SYNC] '{clave}' casi_listo — reactivando consultas ML")
         try:
-            with open(LOTE_PATH,"w") as f:
-                json.dump({"canales": _estados_canal}, f, default=str)
+            _guardar_lotes()
         except Exception:
             pass
     return jsonify({"ok": True, "order_id": order_id, "sync_estado": nuevo_estado})
@@ -3981,7 +4404,7 @@ def escanear():
     data  = request.get_json(force=True)
     sku   = str(data.get("sku","")).strip().upper()
     canal = data.get("canal","default")
-    clave = _clave_colector(data.get("usuario",""), data.get("cuenta_id",""), canal)
+    clave = _tn_clave(data.get("usuario",""), data.get("cuenta_id",""), canal)
     est   = _get_estado(clave)
     if not sku:
         return jsonify({"ok": False, "msg": "SKU vacio"})
@@ -4006,8 +4429,7 @@ def escanear():
             logger.info(f"[FASE] '{clave}' (canal={canal}): Colecta completa -> Fase 2")
         nuevo = colecta[sku]
     try:
-        with open(LOTE_PATH,"w") as f:
-            json.dump({"canales": _estados_canal}, f, default=str)
+        _guardar_lotes()
     except Exception:
         pass
     return jsonify({"ok": True, "tipo": "completo" if nuevo >= req else "parcial",
@@ -4022,7 +4444,7 @@ def reset_sku():
     data  = request.get_json(force=True)
     sku   = str(data.get("sku","")).strip().upper()
     canal = data.get("canal","default")
-    clave = _clave_colector(data.get("usuario",""), data.get("cuenta_id",""), canal)
+    clave = _tn_clave(data.get("usuario",""), data.get("cuenta_id",""), canal)
     est   = _get_estado(clave)
     with _lock:
         col = est["colecta"]
@@ -4040,7 +4462,7 @@ def reset_sku():
 def limpiar():
     data  = request.get_json(silent=True) or {}
     canal = data.get("canal") or request.args.get("canal") or "default"
-    clave = _clave_colector(
+    clave = _tn_clave(
         data.get("usuario", request.args.get("usuario","")),
         data.get("cuenta_id", request.args.get("cuenta_id","")),
         canal)
@@ -4053,8 +4475,7 @@ def limpiar():
                     "ultima_actualizacion":_ts()})
         _actualizar_sync_estado(clave)
     try:
-        with open(LOTE_PATH,"w") as f:
-            json.dump({"canales": _estados_canal}, f, default=str)
+        _guardar_lotes()
     except Exception as e:
         logger.error(f"[LOTE] Error persistiendo limpiar: {e}")
     logger.info(f"[LOTE] '{clave}' (canal={canal}) limpiado")
@@ -4154,14 +4575,14 @@ def api_imagen_sku(sku):
     try:
         # item_id puede venir directo desde la app (más rápido y confiable)
         item_id_param = request.args.get("item_id","").strip()
-        item_id = None; nombre_local = None; cuenta_id = "cuenta_0"
+        item_id = None; nombre_local = None; cuenta_id = _tn().tid or "cuenta_0"
 
         if item_id_param:
             # La app ya sabe el item_id — usarlo directo sin buscar en memoria
             item_id = item_id_param
             # Buscar la cuenta que tenga token válido para este item
             with _lock:
-                for oid, ped in _pedidos_ml.items():
+                for oid, ped in _pv_items():
                     for it in ped.get("items",[]):
                         if str(it.get("item_id","")) == item_id:
                             cuenta_id = ped.get("_cuenta","cuenta_0")
@@ -4170,6 +4591,8 @@ def api_imagen_sku(sku):
             # Buscar el item_id a partir del SKU en la memoria del servidor
             with _lock:
                 for canal_name, canal_est in _estados_canal.items():
+                    if not _tn_clave_ok(canal_name):
+                        continue
                     for oid, ped in canal_est.get("pedidos",{}).items():
                         for item in ped.get("items",[]):
                             if str(item.get("sku","")).strip().upper() == sku:
@@ -4181,6 +4604,8 @@ def api_imagen_sku(sku):
                     if item_id: break
                 if not item_id:
                     for canal_name, canal_est in _estados_canal.items():
+                        if not _tn_clave_ok(canal_name):
+                            continue
                         for grupo in canal_est.get("grupos",[]):
                             for item in grupo.get("items",[]):
                                 if item.get("sku","").upper() == sku:
@@ -4190,7 +4615,7 @@ def api_imagen_sku(sku):
                             if item_id: break
                         if item_id: break
                 if not item_id:
-                    for oid, ped in _pedidos_ml.items():
+                    for oid, ped in _pv_items():
                         for it in ped.get("items",[]):
                             if str(it.get("sku","")).upper() == sku and it.get("item_id"):
                                 item_id = it["item_id"]
@@ -4202,7 +4627,7 @@ def api_imagen_sku(sku):
             return jsonify({"ok": True, "existe": False, "sku": sku, "imagen_url": None}), 200
 
         r_item = None
-        for cid in [cuenta_id] + [c for c in _cuentas.keys() if c != cuenta_id]:
+        for cid in [cuenta_id] + [c for c in _tn_cuentas() if c != cuenta_id]:
             try: _token_valido_cuenta(cid)
             except Exception: pass
             at = _cuentas.get(cid,{}).get("access_token","")
@@ -4423,7 +4848,7 @@ def _descargar_etiquetas_lote(order_ids):
 def api_diag_pedidos():
     """Diagnostico: lista cada pedido con su logistica y tipo calculado."""
     with _lock:
-        pedidos = list(_pedidos_ml.values())
+        pedidos = _pv_values()
     detalle    = []
     contadores = {"flex":0,"colecta":0,"me1":0,"full":0,"desconocido":0,"sin_logistica":0}
     for p in pedidos:
@@ -4506,6 +4931,8 @@ def admin_logout():
     """Cierra la sesión del panel admin."""
     session.pop("admin_panel_usuario", None)
     session.pop("admin_panel_rol", None)
+    session.pop("admin_panel_cuenta_id", None)
+    session.pop("admin_panel_login", None)
     return redirect("/admin/usuarios")
 
 
@@ -4530,6 +4957,7 @@ def admin_usuarios_panel():
                 session["admin_panel_usuario"]  = resultado.get("nombre", u)
                 session["admin_panel_rol"]       = resultado.get("rol","supervisor")
                 session["admin_panel_cuenta_id"] = resultado.get("cuenta_id","todas")
+                session["admin_panel_login"]     = u
                 logger.info(f"[ADMIN-PANEL] Login OK: {u} "
                             f"(rol={resultado.get('rol')} "
                             f"cuenta={resultado.get('cuenta_id')})")
@@ -4540,7 +4968,7 @@ def admin_usuarios_panel():
         else:
             return render_template_string(_PANEL_LOGIN_HTML, error="")
 
-    key            = API_KEY
+    key            = _clave_para_panel(_tn_de_sesion())
     if not key:
         return "Servidor no configurado (PICKING_API_KEY vacío)", 503
 
@@ -4550,10 +4978,16 @@ def admin_usuarios_panel():
 
     # Supervisor solo ve usuarios de su tienda
     # Admin ve todos
-    usuarios_visibles = _usuarios if es_admin else [
-        u for u in _usuarios
-        if u.get("cuenta_id","") == cuenta_sesion
-    ]
+    if es_admin and str(cuenta_sesion).lower() == "todas":
+        usuarios_visibles = list(_usuarios)             # admin de la plataforma
+    elif es_admin:                                       # admin de una tienda
+        _tid_s = _tienda_de_cuenta(cuenta_sesion)
+        usuarios_visibles = [u for u in _usuarios
+                             if _tienda_de_cuenta(u.get("cuenta_id")) == _tid_s
+                             and str(u.get("cuenta_id", "")).lower() != "todas"]
+    else:
+        usuarios_visibles = [u for u in _usuarios
+                             if u.get("cuenta_id","") == cuenta_sesion]
 
     usuarios_html = ""
     for u in usuarios_visibles:
@@ -4670,9 +5104,9 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
 <div class="card">
   <h2>Agregar usuario</h2>
   <label>Nombre visible</label>
-  <input id="f-nombre" placeholder="Ej: Everest Shopping">
+  <input id="f-nombre" placeholder="Ej: Nombre y apellido">
   <label>Usuario (para el login)</label>
-  <input id="f-usuario" placeholder="Ej: everest">
+  <input id="f-usuario" placeholder="Ej: juan">
   <label>Clave</label>
   <input id="f-clave" type="password" placeholder="Minimo 4 caracteres">
   <label>cuenta_id ML</label>
@@ -4842,11 +5276,13 @@ async function editar(usuario, nombre_actual) {
 # CONFIG APP — Excel, etiqueta, código supervisor
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _cargar_config_app() -> dict:
-    """Carga la configuración de la app desde /data/config_app.json."""
+def _cargar_config_app(primaria: bool = False) -> dict:
+    """Carga la configuración de la app (config_app.json). Cada tienda nueva tiene
+    la suya; primaria=True fuerza la de la tienda primaria (marca por defecto)."""
     try:
-        if os.path.exists(CONFIG_APP_PATH):
-            with open(CONFIG_APP_PATH, encoding="utf-8") as f:
+        _ruta = CONFIG_APP_PATH if primaria else _tpath(CONFIG_APP_PATH)
+        if os.path.exists(_ruta):
+            with open(_ruta, encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
         logger.error(f"[CONFIG-APP] Error cargando: {e}")
@@ -4856,7 +5292,7 @@ def _cargar_config_app() -> dict:
 def _guardar_config_app(data: dict):
     """Persiste la configuración en /data/config_app.json."""
     try:
-        with open(CONFIG_APP_PATH, "w", encoding="utf-8") as f:
+        with open(_tpath(CONFIG_APP_PATH), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"[CONFIG-APP] Error guardando: {e}")
@@ -4879,6 +5315,8 @@ def api_config_app_post():
     """Guarda la configuración de la app."""
     data = request.get_json(silent=True) or {}
     cfg  = _cargar_config_app()
+    if _tn().tid:       # la marca de una tienda nueva solo la cambia el admin de la plataforma
+        data = {k: v for k, v in data.items() if not k.startswith("tienda_")}
     # Actualizar campos permitidos
     campos = [
         "codigo_supervisor",
@@ -4915,7 +5353,7 @@ def api_config_app_excel():
     try:
         excel_bytes = base64.b64decode(b64)
         # Guardar en /data/
-        excel_path = os.path.join(DATA_DIR, "planilla_pasillos.xlsx")
+        excel_path = _tpath(os.path.join(DATA_DIR, "planilla_pasillos.xlsx"))
         with open(excel_path, "wb") as f:
             f.write(excel_bytes)
         cfg = _cargar_config_app()
@@ -4936,7 +5374,7 @@ def api_config_app_excel():
 def api_config_app_excel_get():
     """Devuelve el Excel en base64 para que la app lo descargue."""
     import base64
-    excel_path = os.path.join(DATA_DIR, "planilla_pasillos.xlsx")
+    excel_path = _tpath(os.path.join(DATA_DIR, "planilla_pasillos.xlsx"))
     if not os.path.exists(excel_path):
         return jsonify({"ok": False, "msg": "No hay Excel subido aún"}), 404
     try:
@@ -4956,7 +5394,7 @@ def api_config_app_excel_get():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _marca_actual() -> dict:
-    cfg    = _cargar_config_app()
+    cfg    = _cargar_config_app(primaria=True)
     nombre = (cfg.get("tienda_nombre") or "").strip()
     tiene_logo = bool(cfg.get("tienda_logo_b64"))
     return {
@@ -4973,12 +5411,20 @@ _nombre_tienda_cache = {"mtime": None, "nombre": ""}
 def _nombre_tienda_html() -> str:
     """Nombre de la tienda ya saneado para incrustarlo en HTML/JS. Cacheado por
     fecha de modificación de config_app.json (se consulta en cada página)."""
+    _tid = _tn().tid
+    if not _tid and has_request_context() and request.path.startswith(("/admin", "/estadisticas", "/config", "/etiquetas")):
+        _s = _tn_de_sesion()    # panel: la sesión puede haberse creado en ESTA misma llamada (login)
+        _tid = _s.tid if _s else ""
+    if _tid:    # páginas de una tienda nueva: su propio nombre
+        n = str((_tiendas.get(_tid) or {}).get("nombre", "")).strip()
+        n = re.sub(r"[\\\r\n]", "", n).replace("'", "’").replace('"', "”")
+        return n.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")[:60]
     try:
         mtime = os.path.getmtime(CONFIG_APP_PATH)
     except OSError:
         return ""
     if _nombre_tienda_cache["mtime"] != mtime:
-        n = (_cargar_config_app().get("tienda_nombre") or "").strip()
+        n = (_cargar_config_app(primaria=True).get("tienda_nombre") or "").strip()
         n = re.sub(r"[\\\r\n]", "", n).replace("'", "’").replace('"', "”")
         n = n.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         _nombre_tienda_cache.update(mtime=mtime, nombre=n[:60])
@@ -5024,7 +5470,7 @@ def brand_logo():
         except Exception:
             return ("", 404)
     else:
-        b64 = _cargar_config_app().get("tienda_logo_b64", "")
+        b64 = _cargar_config_app(primaria=True).get("tienda_logo_b64", "")
         if not b64:
             return ("", 404)
         try:
@@ -5051,8 +5497,9 @@ def brand_logo():
 def _cargar_metricas_servidor():
     """Carga métricas desde /data/metricas.json."""
     try:
-        if os.path.exists(METRICAS_PATH):
-            with open(METRICAS_PATH, encoding="utf-8") as f:
+        _mp = _tpath(METRICAS_PATH)
+        if os.path.exists(_mp):
+            with open(_mp, encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
         logger.error(f"[METRICAS] Error cargando: {e}")
@@ -5062,7 +5509,7 @@ def _cargar_metricas_servidor():
 def _guardar_metricas_servidor(data: list):
     """Persiste métricas en /data/metricas.json."""
     try:
-        with open(METRICAS_PATH, "w", encoding="utf-8") as f:
+        with open(_tpath(METRICAS_PATH), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"[METRICAS] Error guardando: {e}")
@@ -5090,6 +5537,8 @@ def api_verificar_ahora():
         oid = str(oid).strip()
         with _lock:
             ped = _pedidos_ml.get(oid)
+        if ped and not _tn_pedido_ok(ped):
+            ped = None
         if not ped:
             resultados[oid] = {"existe": False}
             continue
@@ -5211,7 +5660,7 @@ def api_pedidos_estados():
                 "substatus":   v.get("substatus",""),
                 "estado_envio":v.get("estado_envio",""),
             }
-            for k, v in _pedidos_ml.items()
+            for k, v in _pv_items()
         ]
     return jsonify({"ok": True, "pedidos": pedidos,
                     "ts": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-3))).strftime("%H:%M:%S")})
@@ -5246,7 +5695,7 @@ def _diagnostico_canales():
 
     with _lock:
         # Copiar la lista para no mantener el lock durante todo el cálculo
-        _snapshot = list(_pedidos_ml.values())
+        _snapshot = _pv_values()
 
     for p in _snapshot:
             log = (p.get("logistica","") or "").lower()
@@ -5299,7 +5748,7 @@ def api_verificar_etiquetas():
     """
     import datetime as _dve
     with _lock:
-        snap = list(_pedidos_ml.values())
+        snap = _pv_values()
 
     ships = {}
     for p in snap:
@@ -5357,7 +5806,7 @@ def api_tokens_estado():
     """
     import datetime as _dte
     info = {}
-    for cid, t in _cuentas.items():
+    for cid, t in [(c, _cuentas[c]) for c in _tn_cuentas()]:
         exp = t.get("expires_at")
         mins = None
         if isinstance(exp, datetime):
@@ -5372,11 +5821,11 @@ def api_tokens_estado():
         }
 
     with _lock:
-        n_ped = len(_pedidos_ml)
+        n_ped = len(_pv_values())
 
     return jsonify({
         "ok":              True,
-        "n_cuentas":       len(_cuentas),
+        "n_cuentas":       len(_tn_cuentas()),
         "cuentas":         info,
         "pedidos_memoria": n_ped,
         "modo_descanso":   _en_modo_descanso(),
@@ -5398,7 +5847,7 @@ def api_forzar_carga():
     """
     import datetime as _dfc
     detalle = {
-        "cuentas_conectadas": list(_cuentas.keys()),
+        "cuentas_conectadas": _tn_cuentas(),
         "tokens_validos":     {},
         "pedidos_antes":      0,
         "pedidos_despues":    0,
@@ -5406,14 +5855,14 @@ def api_forzar_carga():
     }
 
     with _lock:
-        detalle["pedidos_antes"] = len(_pedidos_ml)
+        detalle["pedidos_antes"] = len(_pv_values())
 
-    if not _cuentas:
+    if not _tn_cuentas():
         detalle["error"] = "No hay cuentas ML conectadas. Conectá desde /auth/login"
         return jsonify({"ok": False, "detalle": detalle}), 400
 
     # Verificar tokens
-    for cid in _cuentas:
+    for cid in _tn_cuentas():
         tok = _cuentas.get(cid, {})
         exp = tok.get("expires_at")
         valido = bool(tok.get("access_token"))
@@ -5437,12 +5886,12 @@ def api_forzar_carga():
             logger.info("[FORZAR-CARGA] Iniciando carga manual...")
             _refresh_pedidos_worker()
             with _lock:
-                n = len(_pedidos_ml)
+                n = len(_pv_values())
             logger.info(f"[FORZAR-CARGA] ✅ {n} pedidos cargados")
 
             if n > 0:
                 with _lock:
-                    pend = [p for p in _pedidos_ml.values()
+                    pend = [p for p in _pv_values()
                             if p.get("shipping_id") and not p.get("substatus")]
                 if pend:
                     logger.info(f"[FORZAR-CARGA] Consultando "
@@ -5486,7 +5935,7 @@ def api_diagnostico():
     _hoy  = _dt.datetime.now(_uy).date()
     col_total = col_pend = col_hoy = col_futuro = col_sin_hl = 0
     with _lock:
-        for p in _pedidos_ml.values():
+        for p in _pv_values():
             if (p.get("logistica","") or "").lower() == "cross_docking":
                 col_total += 1
                 if not p.get("impreso"):
@@ -5518,7 +5967,7 @@ def api_diagnostico():
         },
         "alertas_pendientes": len([a for a in alertas if not a.get("leida")]),
         "usuarios":      usuarios,
-        "pedidos_ml":    len(_pedidos_ml),
+        "pedidos_ml":    len(_pv_values()),
         "canales": _diagnostico_canales(),
         "ml_tokens": {
             cid: {
@@ -5530,9 +5979,9 @@ def api_diagnostico():
                     int((t["expires_at"] - datetime.now()).total_seconds() // 60)
                     if isinstance(t.get("expires_at"), datetime) else None),
             }
-            for cid, t in _cuentas.items()
+            for cid, t in [(c, _cuentas[c]) for c in _tn_cuentas()]
         },
-        "n_cuentas_ml": len(_cuentas),
+        "n_cuentas_ml": len(_tn_cuentas()),
         "ultimo_refresh": (_ultimo_refresh_pedidos.strftime("%H:%M:%S")
                            if _ultimo_refresh_pedidos else "nunca"),
         "colecta_diagnostico": {
@@ -6119,7 +6568,7 @@ tr:hover td{background:rgba(255,255,255,.03)}
 
 <script>
 const BASE = window.location.origin;
-const KEY_ALERTAS = '""" + (API_KEY or "") + """';
+const KEY_ALERTAS = '""" + (_clave_para_panel(_tn_de_sesion()) or "") + """';
 let _alertas_previas = 0;
 let _audio_ctx = null;
 
@@ -6649,7 +7098,7 @@ def panel_config():
 
     rol_sesion = session.get("admin_panel_rol","supervisor")
     cfg        = _cargar_config_app()
-    key        = API_KEY
+    key        = _clave_para_panel(_tn_de_sesion())
 
     excel_info = ""
     if cfg.get("excel_ts"):
@@ -6787,7 +7236,7 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
     <div>
       <label>Texto adicional en la etiqueta</label>
       <textarea id="etiqueta-texto" rows="3"
-                placeholder="Ej: EVEREST SHOPPING · Tel: 099 000 000"
+                placeholder="Ej: NOMBRE DE LA TIENDA · Tel: 099 000 000"
                 >{{ cfg.get('etiqueta_texto','') }}</textarea>
 
       <label>Posición del texto</label>
@@ -6951,6 +7400,7 @@ def api_auth_solicitar():
         "ts":          _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-3))).strftime("%H:%M:%S"),
         "operario":    operario,
         "incompletos": incompletos,
+        "_tid":        _tn().tid,
     }
     logger.info(f"[AUTH-REMOTA] Solicitud {token} de {operario}")
     return jsonify({"ok": True, "token": token})
@@ -6961,7 +7411,7 @@ def api_auth_solicitar():
 def api_auth_estado(token):
     """La app hace polling para saber si el supervisor aprobó."""
     sol = _auth_pendientes.get(token)
-    if not sol:
+    if not sol or sol.get("_tid", "") != _tn().tid:
         return jsonify({"ok": False, "msg": "Token no encontrado"}), 404
     return jsonify({"ok": True, "aprobado": sol["aprobado"]})
 
@@ -6971,7 +7421,7 @@ def api_auth_estado(token):
 def api_auth_aprobar(token):
     """El supervisor aprueba desde el panel web."""
     sol = _auth_pendientes.get(token)
-    if not sol:
+    if not sol or sol.get("_tid", "") != _tn().tid:
         return jsonify({"ok": False, "msg": "Solicitud no encontrada"}), 404
     sol["aprobado"] = True
     logger.info(f"[AUTH-REMOTA] Token {token} aprobado por panel web")
@@ -6984,7 +7434,8 @@ def api_auth_pendientes():
     """Lista de solicitudes pendientes para el panel web."""
     if _en_modo_descanso():
         return jsonify({"ok": True, "pendientes": [], "descanso": True})
-    pendientes = [v for v in _auth_pendientes.values() if not v["aprobado"]]
+    pendientes = [v for v in _auth_pendientes.values()
+                  if not v["aprobado"] and v.get("_tid", "") == _tn().tid]
     return jsonify({"ok": True, "pendientes": pendientes})
 
 
@@ -6992,7 +7443,7 @@ def api_auth_pendientes():
 @requiere_api_key
 def api_auth_rechazar(token):
     """El supervisor cierra/rechaza una solicitud desde el panel web."""
-    if token in _auth_pendientes:
+    if token in _auth_pendientes and _auth_pendientes[token].get("_tid", "") == _tn().tid:
         _auth_pendientes.pop(token, None)
         logger.info(f"[AUTH-REMOTA] Token {token} rechazado/cerrado por panel web")
     return jsonify({"ok": True})
@@ -7000,8 +7451,9 @@ def api_auth_rechazar(token):
 
 def _cargar_alertas() -> list:
     try:
-        if os.path.exists(ALERTAS_PATH):
-            with open(ALERTAS_PATH, encoding="utf-8") as f:
+        _ap = _tpath(ALERTAS_PATH)
+        if os.path.exists(_ap):
+            with open(_ap, encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
         pass
@@ -7010,7 +7462,7 @@ def _cargar_alertas() -> list:
 
 def _guardar_alertas(data: list):
     try:
-        with open(ALERTAS_PATH, "w", encoding="utf-8") as f:
+        with open(_tpath(ALERTAS_PATH), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"[ALERTAS] Error guardando: {e}")
@@ -7167,6 +7619,21 @@ def _startup():
     except Exception as e:
         logger.error(f"[STARTUP] Error restaurando lote: {e}")
 
+    # Lotes de tiendas nuevas (tiendas/<id>/lote_estado.json)
+    try:
+        _base_t = os.path.join(DATA_DIR, "tiendas")
+        for _tid in (os.listdir(_base_t) if os.path.isdir(_base_t) else []):
+            _rt = os.path.join(_base_t, _tid, "lote_estado.json")
+            if _tid.startswith("t_") and os.path.exists(_rt):
+                with open(_rt) as f:
+                    _dt = json.load(f)
+                for canal, est_data in (_dt.get("canales") or {}).items():
+                    if _lote_restaurable(est_data):
+                        _estados_canal[canal] = est_data
+                        logger.info(f"[STARTUP] Lote de tienda '{canal}' restaurado")
+    except Exception as e:
+        logger.error(f"[STARTUP] Error restaurando lotes de tiendas: {e}")
+
 _startup()
 
 
@@ -7179,7 +7646,7 @@ def index():
 
 @app.route("/manifest.json")
 def manifest():
-    _n = (_cargar_config_app().get("tienda_nombre") or "").strip()[:30]
+    _n = (_cargar_config_app(primaria=True).get("tienda_nombre") or "").strip()[:30]
     return jsonify({"name": _n or "Picking App", "short_name": _n or "Picking",
                     "start_url": "/movil", "display": "standalone",
                     "background_color": "#0F172A", "theme_color": "#1E293B",

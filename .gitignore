@@ -64,3 +64,10 @@ docs/traspaso-sesion-2026-09-05.md
 Logibot_v4.1.9.zip
 
 marca_cache.json
+
+# pruebas: datos temporales y foto de pedidos reales
+pruebas/snap/
+pruebas/old_head/
+pruebas/data_*/
+pruebas/*.log
+pruebas/__pycache__/
