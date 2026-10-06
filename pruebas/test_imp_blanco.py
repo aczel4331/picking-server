@@ -1,9 +1,8 @@
-"""Impresion: no se gasta una etiqueta cuando el PDF/render esta en blanco."""
-import os, sys, io, tempfile, types, zipfile
+"""Impresion: el diagnostico de etiqueta en blanco SOLO anota en el log; nunca bloquea."""
+import os, sys, tempfile, types, zipfile
 sys.stdout.reconfigure(encoding="utf-8")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); sys.path.insert(0, REPO)
-import app_deposito as A, pymupdf
-from PIL import Image
+import app_deposito as A
 from reportlab.pdfgen import canvas
 ok = fa = 0
 def check(n, c, x=""):
@@ -28,23 +27,23 @@ def vacia(c): c.showPage()
 def texto_blanco(c):
     c.setFillColorRGB(1, 1, 1); c.setFont("Helvetica", 12)
     for i in range(10): c.drawString(20, 500 - i * 30, f"TEXTO EN BLANCO LINEA NUMERO {i}")
-check("etiqueta con contenido: pasa", verificar(mk("ok.pdf", buena)) is None)
-check("queda el % en el log", any("% oscuro" in m for m in logs), logs)
-try: verificar(mk("v.pdf", vacia)); r = "paso"
-except A.EtiquetaVaciaError: r = "vacia"
-except Exception as e: r = type(e).__name__
-check("hoja en blanco: NO se imprime (EtiquetaVaciaError)", r == "vacia", r)
-try: verificar(mk("t.pdf", texto_blanco)); r = "paso"
-except A.EtiquetaVaciaError: r = "vacia"
-except RuntimeError: r = "render"
-check("PDF con texto pero render blanco: prueba otro metodo (RuntimeError)", r == "render", r)
-T = os.environ.get("TEMP", "")
-z = os.path.join(T, "z1.zip")
+logs.clear(); verificar(mk("ok.pdf", buena))
+check("etiqueta con contenido: queda el % en el log, sin aviso", any("% oscuro" in m for m in logs) and not any("ATENCION" in m for m in logs), logs)
+logs.clear()
+try: verificar(mk("v.pdf", vacia)); r = "sigue"
+except Exception as e: r = "BLOQUEO " + type(e).__name__
+check("hoja en blanco: NO bloquea la impresion", r == "sigue", r)
+check("hoja en blanco: queda ATENCION en el log (PDF vacio)", any("ATENCION" in m and "ya esta vacio" in m for m in logs), logs)
+logs.clear()
+try: verificar(mk("t.pdf", texto_blanco)); r = "sigue"
+except Exception as e: r = "BLOQUEO " + type(e).__name__
+check("PDF con texto y render blanco: NO bloquea", r == "sigue", r)
+check("...y el log dice que es el render", any("ATENCION" in m and "render" in m for m in logs), logs)
+z = os.path.join(os.environ.get("TEMP", ""), "z1.zip")
 if os.path.exists(z):
-    zf = zipfile.ZipFile(z); n = 0; mal = 0
+    zf = zipfile.ZipFile(z); n = 0; avisos = 0
     for f in [x for x in zf.namelist() if x.endswith(".pdf")][:15]:
         p = os.path.join(d, "r.pdf"); open(p, "wb").write(zf.read(f)); n += 1
-        try: verificar(A.recortar_pdf_a_contenido(p))
-        except Exception: mal += 1
-    check(f"{n} etiquetas reales de Everest: ninguna se bloquea", mal == 0, mal)
+        logs.clear(); verificar(A.recortar_pdf_a_contenido(p)); avisos += any("ATENCION" in m for m in logs)
+    check(f"{n} etiquetas reales de Everest: ningun aviso falso", avisos == 0, avisos)
 print(f"\nRESULTADO impresion: {ok} ok, {fa} fallas"); sys.exit(1 if fa else 0)
