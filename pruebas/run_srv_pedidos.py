@@ -9,6 +9,9 @@ sys.path.insert(0, REPO); os.chdir(REPO)
 import server as S
 from flask import request, jsonify
 
+# Las pruebas deben dar lo mismo de día y de noche: se simula horario laboral.
+S._en_modo_descanso = lambda: False
+
 fut = datetime.now() + timedelta(hours=5)
 snap = os.environ.get("PEDIDOS_SNAP")
 if snap and os.path.exists(snap):

@@ -24,7 +24,7 @@ shutil.copytree(os.path.join(REPO, "templates"), os.path.join(viejo, "templates"
 
 env = dict(os.environ, PYTHONIOENCODING="utf-8")
 fallas = 0
-for t in ("test_agregar.py", "test_integral.py", "test_diff2.py"):
+for t in ("test_agregar.py", "test_integral.py", "test_p2.py", "test_diff2.py"):
     print(f"\n════ {t} ════", flush=True)
     fallas += subprocess.call([sys.executable, os.path.join(AQUI, t)], env=env) != 0
 print("\nTODO EN VERDE" if not fallas else f"\n{fallas} grupo(s) con fallas")

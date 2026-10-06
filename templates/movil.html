@@ -317,6 +317,21 @@ catch(e) { _colector = null; }
 // Timestamp del último lote recibido — para detectar lotes nuevos
 let _loteTimestamp = '';
 
+// Credencial de sesión: solo las tiendas nuevas reciben token (Everest sigue como siempre).
+function _hdr(extra) {
+  const h = Object.assign({}, extra || {});
+  if (_colector && _colector.token) h['X-API-Key'] = _colector.token;
+  return h;
+}
+
+function _sesionVencida() {
+  try { localStorage.removeItem('colector_activo'); } catch (e) {}
+  _colector = null; E = null; _loteTimestamp = '';
+  _actualizarBotonColector();
+  mostrarSelectorInicial();
+  toast('Tu sesión venció: volvé a iniciar sesión', 'err');
+}
+
 function _paramsColector() {
   if (!_colector) return '';
   return 'usuario=' + encodeURIComponent(_colector.usuario || '') +
@@ -363,6 +378,7 @@ async function intentarLogin() {
       return;
     }
     _colector = d.usuario;   // {usuario, nombre, cuenta_id, rol}
+    if (d.token && d.tienda && d.tienda.tienda_id) _colector.token = d.token;
     if (d.tienda) aplicarMarca(d.tienda);
     localStorage.setItem('colector_activo', JSON.stringify(_colector));
     document.getElementById('login-gate').style.display = 'none';
@@ -446,7 +462,8 @@ function _actualizarBotonColector() {
 async function load() {
   if (!_colector) return;
   try {
-    const r = await fetch('/api/estado?' + _paramsColector());
+    const r = await fetch('/api/estado?' + _paramsColector(), { headers: _hdr() });
+    if (r.status === 401 && _colector && _colector.token) { _sesionVencida(); return; }
     if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
     E = await r.json();
     setConexion('ok');
@@ -463,7 +480,8 @@ async function load() {
 async function loadQ() {
   if (!_colector) return;
   try {
-    const r = await fetch('/api/estado?' + _paramsColector());
+    const r = await fetch('/api/estado?' + _paramsColector(), { headers: _hdr() });
+    if (r.status === 401 && _colector && _colector.token) { _sesionVencida(); return; }
     if (!r.ok) { setConexion('warn'); return; }
     const nuevo = await r.json();
     setConexion('ok');
@@ -514,7 +532,7 @@ async function resolverImagen(sku) {
   if (_imgPedida.has(sku)) return null;
   _imgPedida.add(sku);
   try {
-    const r = await fetch(`/api/imagen-sku/${sku}`);
+    const r = await fetch(`/api/imagen-sku/${sku}`, { headers: _hdr() });
     const d = await r.json();
     const url = (d.existe && d.imagen_url) ? d.imagen_url : null;
     _imgCache[sku] = url;
@@ -780,7 +798,7 @@ async function scan(raw) {
   try {
     const r = await fetch('/api/escanear', {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: _hdr({ 'Content-Type': 'application/json' }),
       body:    JSON.stringify({ sku, usuario: (_colector && _colector.usuario) || '',
                                  cuenta_id: (_colector && _colector.cuenta_id) || '' })
     });

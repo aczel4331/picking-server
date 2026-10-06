@@ -71,3 +71,5 @@ pruebas/old_head/
 pruebas/data_*/
 pruebas/*.log
 pruebas/__pycache__/
+marca_cache_*.json
+logo_cache_*.png

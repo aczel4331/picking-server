@@ -1,4 +1,4 @@
-"""PRUEBA INTEGRAL de Logibot con los pedidos REALES de Everest (foto de solo lectura de
+﻿"""PRUEBA INTEGRAL de Logibot con los pedidos REALES de Everest (foto de solo lectura de
 producción) sobre un servidor LOCAL: nada se escribe en producción ni en Mercado Libre.
 
 Secciones: A login/tokens · B tráfico de Everest (clientes viejos) · C tienda nueva con
@@ -124,7 +124,7 @@ try:
     print("B) Everest con los clientes actuales (clave heredada y sin clave)")
     r = req("GET", "/api/pedidos")
     d = j(r)
-    check("GET /api/pedidos (sin clave) → 73 pedidos reales", d.get("ok") and d["total"] == 73, f"{d.get('total')}")
+    check("GET /api/pedidos (sin clave) → todos los pedidos reales", d.get("ok") and d["total"] == len(real), f"{d.get('total')}")
     check("…ninguno de otra tienda", sin_marcadores_b(r.text))
     check("…los pedidos reales llegan completos", {p["order_id"] for p in d["pedidos"]} == {str(p["order_id"]) for p in real})
     for ruta in ["/api/cuentas", "/auth/status", "/api/ping", "/api/token_status", "/api/etiquetas_cache", "/api/lote-en-vivo",
@@ -132,7 +132,7 @@ try:
                  "/api/tokens_export", "/api/auth/usuarios", "/api/alertas/sin-stock", "/api/metricas", "/api/config-app"]:
         r = req("GET", ruta, headers=hk())
         check(f"GET {ruta} responde y no filtra datos de otra tienda", r.status_code in (200, 400) and sin_marcadores_b(r.text), f"{r.status_code} {r.text[:120]}")
-    check("/auth/status: 73 pedidos y solo Everest", j(req("GET", "/auth/status"))["pedidos"] == 73)
+    check("/auth/status: todos los pedidos y solo Everest", j(req("GET", "/auth/status"))["pedidos"] == len(real))
     cu = j(req("GET", "/api/cuentas"))["cuentas"]
     check("/api/cuentas: solo EVEREST_SHOPPING.UY", [c["nickname"] for c in cu] == ["EVEREST_SHOPPING.UY"], str(cu))
 
@@ -325,7 +325,7 @@ try:
         r = req("GET", "/api/pedidos", headers=ht(t_))
         check(f"token {n} → 401 (nunca cae a Everest)", r.status_code == 401 and "pedidos" not in r.text.replace("msg", ""), f"{r.status_code} {r.text[:80]}")
     r = req("GET", "/api/pedidos", headers=ht(TK_E))
-    check("token válido de Everest = tienda primaria (73 pedidos)", j(r).get("total") == 73)
+    check("token válido de Everest = tienda primaria (todos sus pedidos)", j(r).get("total") == len(real))
     # cruces: clave heredada / sin clave hacia datos de la tienda nueva
     cruces = [("GET", f"/api/estado?usuario=bop&cuenta_id={TID}&canal=colecta"), ("GET", f"/api/estado?usuario=bop&cuenta_id=cuenta_2"),
               ("GET", f"/api/pedidos/impreso/{OID_B}"), ("GET", f"/api/etiqueta/{OID_B}"), ("GET", f"/api/etiqueta/{OID_B}/guardada"),
@@ -362,7 +362,7 @@ try:
     j(req("POST", f"/api/admin/tiendas/{TID}/estado", headers=ADM, json={"estado": "suspendida"}))
     check("tienda suspendida: el token deja de valer", req("GET", "/api/pedidos", headers=ht(TK_B)).status_code == 403)
     check("tienda suspendida: no puede iniciar sesión", req("POST", "/api/auth/login", json={"usuario": "bop", "clave": "bpw2"}).status_code == 403)
-    check("Everest sigue idéntico con la tienda suspendida", j(req("GET", "/api/pedidos"))["total"] == 73)
+    check("Everest sigue idéntico con la tienda suspendida", j(req("GET", "/api/pedidos"))["total"] == len(real))
     j(req("POST", f"/api/admin/tiendas/{TID}/estado", headers=ADM, json={"estado": "activa"}))
     check("reactivada: vuelve a entrar", req("GET", "/api/pedidos", headers=ht(TK_B)).status_code == 200)
 
@@ -423,3 +423,4 @@ finally:
 print(f"\nRESULTADO INTEGRAL: {ok_n} ok, {fail_n} fallas")
 for f in fallas: print("  ✗", f)
 sys.exit(1 if fail_n else 0)
+
