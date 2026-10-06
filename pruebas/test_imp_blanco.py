@@ -46,4 +46,17 @@ if os.path.exists(z):
         p = os.path.join(d, "r.pdf"); open(p, "wb").write(zf.read(f)); n += 1
         logs.clear(); verificar(A.recortar_pdf_a_contenido(p)); avisos += any("ATENCION" in m for m in logs)
     check(f"{n} etiquetas reales de Everest: ningun aviso falso", avisos == 0, avisos)
+# archivo temporal bloqueado por otro programa ([Errno 13])
+import ctypes
+ruta = os.path.join(d, "etiqueta_ml_18.pdf")
+r0 = A.escribir_pdf_tmp(ruta, b"%PDF-1")
+check("sin bloqueo: usa el mismo nombre", r0 == ruta and open(ruta, "rb").read() == b"%PDF-1")
+h = ctypes.windll.kernel32.CreateFileW(ruta, 0x80000000, 0, None, 3, 0x80, None)   # abierto SIN compartir
+try:
+    r1 = A.escribir_pdf_tmp(ruta, b"%PDF-2")
+    check("archivo bloqueado: no falla, usa otro nombre", r1 != ruta and open(r1, "rb").read() == b"%PDF-2", r1)
+finally:
+    ctypes.windll.kernel32.CloseHandle(h)
+r2 = A.escribir_pdf_tmp(ruta, b"%PDF-3")
+check("liberado: vuelve al nombre normal", r2 == ruta and open(ruta, "rb").read() == b"%PDF-3")
 print(f"\nRESULTADO impresion: {ok} ok, {fa} fallas"); sys.exit(1 if fa else 0)
