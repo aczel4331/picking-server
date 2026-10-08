@@ -1085,24 +1085,48 @@ def _warmup_matutino():
 
 _refresh_lock = threading.Semaphore(1)  # solo 1 refresh completo a la vez
 
+def _intervalo_auto_refresh(ultima_duracion: float = 0.0) -> float:
+    """Segundos hasta el próximo refresco automático de la lista de pedidos.
+    Más seguido alrededor del corte Flex (18:00 UY) y nunca menos de 2 veces lo
+    que tardó el último refresco (para no saturar a ML cuando hay muchos pedidos)."""
+    ahora = _hora_uruguay()
+    m = ahora.hour * 60 + ahora.minute
+    if 17 * 60 <= m < 18 * 60 + 30:
+        base = 60
+    elif 18 * 60 + 30 <= m < 19 * 60:
+        base = 300
+    else:
+        base = 180
+    return max(base, 2 * ultima_duracion)
+
+
 def _auto_refresh_loop():
     """
-    Refresca lista completa de pedidos ML cada 8 minutos.
-    Usa semáforo para evitar dos refresh simultáneos que saturen Waitress.
+    Refresca la lista completa de pedidos ML de forma automática (cada ~3 min; cada
+    60 s entre 17:00 y 18:30 UY por el corte Flex). Usa semáforo para evitar dos
+    refresh simultáneos que saturen Waitress.
+
+    NO se pausa por tener lotes activos: la lista de pedidos (_pedidos_ml) es
+    independiente de los lotes en curso (_estados_canal), y pausarla hacía que los
+    pedidos nuevos no aparecieran mientras alguien trabajaba un lote. Solo descansa
+    de 19:00 a 06:45.
     """
+    dur = 0.0
     while True:
-        time.sleep(480)  # 8 minutos
+        time.sleep(_intervalo_auto_refresh(dur))
         if not _cuentas:
             continue
         # Excepción: si la memoria está vacía, refrescar aunque sea descanso
         with _lock:
             _vacio = len(_pedidos_ml) == 0
-        if _sync_pausado() and not _vacio:
+        if _en_modo_descanso() and not _vacio:
             continue
         if _refresh_lock.acquire(blocking=False):
+            t0 = time.time()
             try:
                 _refresh_pedidos_worker()
             finally:
+                dur = time.time() - t0
                 _refresh_lock.release()
 
 
@@ -3903,6 +3927,9 @@ def _procesar_notificacion_orden(order_id, user_id):
         pedido  = {
             "order_id": str(order_id), "pack_id": str(order.get("pack_id","")) if order.get("pack_id") else "",
             "fecha": order.get("date_created","")[:10], "fecha_cierre": order.get("date_closed","")[:10],
+            # hora completa: el escritorio la compara con el corte del canal (18:00 Flex)
+            "fecha_ts": order.get("date_created","") or "",
+            "fecha_cierre_ts": order.get("date_closed","") or "",
             "comprador": (order.get("buyer") or {}).get("nickname",""),
             "total": order.get("total_amount",0), "moneda": order.get("currency_id","UYU"),
             "items": items, "shipping_id": ship_id, "logistica": "", "estado_envio": "",
