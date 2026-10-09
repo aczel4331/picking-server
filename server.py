@@ -3893,8 +3893,8 @@ def _procesar_notificacion_orden(order_id, user_id):
     _time.sleep(2)
     cuenta_id = next((cid for cid, tok in _cuentas.items()
                       if str(tok.get("user_id","")) == str(user_id)), None)
-    if not cuenta_id and len(_cuentas) == 1:    # con varias tiendas, nunca adivinar
-        cuenta_id = list(_cuentas.keys())[0]
+    if not cuenta_id and not user_id and len(_cuentas) == 1:    # sin user_id y una sola tienda
+        cuenta_id = list(_cuentas.keys())[0]                    # (un user_id ajeno NUNCA se asigna a una tienda)
     if not cuenta_id:
         return
     at = _cuentas.get(cuenta_id,{}).get("access_token","")
@@ -3964,8 +3964,8 @@ def _procesar_notificacion_orden(order_id, user_id):
 def _procesar_notificacion_shipment(shipment_id, user_id):
     cuenta_id = next((cid for cid, tok in _cuentas.items()
                       if str(tok.get("user_id","")) == str(user_id)), None)
-    if not cuenta_id and len(_cuentas) == 1:    # con varias tiendas, nunca adivinar
-        cuenta_id = list(_cuentas.keys())[0]
+    if not cuenta_id and not user_id and len(_cuentas) == 1:    # sin user_id y una sola tienda
+        cuenta_id = list(_cuentas.keys())[0]                    # (un user_id ajeno NUNCA se asigna a una tienda)
     if not cuenta_id:
         return
     at = _cuentas.get(cuenta_id,{}).get("access_token","")

@@ -60,6 +60,15 @@ S._procesar_notificacion_orden("777", "502960739")
 p = S._pedidos_ml.get("777")
 check("el pedido del webhook trae fecha_cierre_ts y fecha_ts", p and p.get("fecha_cierre_ts") == orden["date_closed"] and p.get("fecha_ts") == orden["date_created"], p)
 
+print("aviso de OTRA cuenta de ML: se ignora")
+S._pedidos_ml.pop("777", None); llamadas_ml = []
+S.requests = types.SimpleNamespace(get=lambda *a, **k: (llamadas_ml.append(a), R(orden))[1], post=None)
+S._procesar_notificacion_orden("777", "3121869818")
+S._procesar_notificacion_shipment("5", "3121869818")
+check("user_id ajeno: no consulta a ML ni agrega pedidos", llamadas_ml == [] and "777" not in S._pedidos_ml, (llamadas_ml, list(S._pedidos_ml)))
+S._procesar_notificacion_orden("777", "")
+check("sin user_id y una sola tienda: sigue funcionando como antes", "777" in S._pedidos_ml)
+
 print("la app oculta ese pedido (cerro 18:07 > corte 18:00) y muestra uno de 17:55")
 sys.path.insert(0, REPO)
 import app_deposito as A
