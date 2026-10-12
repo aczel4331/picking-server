@@ -4251,6 +4251,18 @@ def subir_estado():
             est["lote_id"]          = _lote_id_in or f"{clave}_{int(_t_lid.time())}_{_firma[:6]}"
             logger.info(f"[LOTE] '{clave}' (canal={canal}): lote NUEVO "
                         f"(id={est['lote_id']}, firma={_firma[:8]}) — colecta reseteada a 0")
+        elif not data.get("grupos"):
+            # "Lote vacío": el escritorio terminó el lote. Antes la colecta vieja quedaba en
+            # el servidor y el escritorio/celular la mezclaban con el lote siguiente
+            # ("ya buscaste este SKU" sin haberlo buscado). Se limpia todo.
+            est["colecta"]          = {}
+            est["colecta_completa"] = False
+            est["ultimos_scans"]    = []
+            est["_colecta_prev"]    = {}
+            est["_firma_lote"]      = ""
+            est["lote_id"]          = ""
+            est["pedidos"]          = {}
+            logger.info(f"[LOTE] '{clave}' (canal={canal}): lote vaciado — colecta limpiada")
         else:
             # Mismo lote → fusionar la colecta por MÁXIMO por SKU: nunca bajar
             # contadores (así no se pierde un escaneo hecho en un celular mientras
