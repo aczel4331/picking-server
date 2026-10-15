@@ -718,6 +718,96 @@ def _calcular_tipo(logistica, tags_order=None, shipping_id=""):
 # HELPERS ML — Pedidos, SKUs, Shipments
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _clave_item_envio(it):
+    """Clave de una línea dentro de un envío: (sku o item_id, color, talle).
+    En ML distintas variantes (color/talle) de UN producto comparten el item.id, así que se
+    distinguen por color/talle; y una línea sin SKU (se completa después con
+    _enriquecer_skus_cuenta) se identifica por su item_id para NO fusionarla con otra
+    línea sin SKU que sea de otro producto."""
+    return (it.get("sku") or it.get("item_id") or "", it.get("color", ""), it.get("talle", ""))
+
+
+def _fusionar_orden_en(principal, ped):
+    """Suma en `principal` los items de `ped` (otra orden del MISMO envío = misma etiqueta).
+    Cantidad: se suma cuando es la misma línea; si es otra línea se agrega.
+    Idempotente: si alguna orden de `ped` ya figura en principal["_orders_agrupadas"] no hace
+    nada (devuelve False), así un aviso repetido del webhook nunca duplica cantidades.
+    Devuelve True si fusionó."""
+    ordenes_principal = principal.setdefault("_orders_agrupadas", [str(principal.get("order_id", ""))])
+    ordenes_ped = [str(o) for o in (ped.get("_orders_agrupadas") or [ped.get("order_id", "")])]
+    if any(o in ordenes_principal for o in ordenes_ped):
+        return False
+    existentes = {_clave_item_envio(it): it for it in principal.get("items", [])}
+    for it in ped.get("items", []):
+        clave = _clave_item_envio(it)
+        if clave in existentes:
+            existentes[clave]["cantidad"] = int(existentes[clave].get("cantidad", 0) or 0) + int(it.get("cantidad", 0) or 0)
+        else:
+            nuevo = dict(it)
+            principal.setdefault("items", []).append(nuevo)
+            existentes[clave] = nuevo
+    principal["total"] = principal.get("total", 0) + ped.get("total", 0)
+    ordenes_principal.extend(ordenes_ped)
+    return True
+
+
+def _agrupar_por_envio(pedidos):
+    """{order_id: pedido} → mismo dict con UNA entrada por envío (shipping_id). La entrada
+    que queda es la primera orden del envío; las demás se funden en ella."""
+    agrupados, principales = {}, {}
+    for oid, ped in pedidos.items():
+        ship_id = ped.get("shipping_id", "")
+        if not ship_id:
+            # Sin shipping_id no hay etiqueta posible — mantener separado
+            agrupados[oid] = ped
+        elif ship_id not in principales:
+            principales[ship_id] = oid
+            agrupados[oid] = ped
+        else:
+            oid_principal = principales[ship_id]
+            _fusionar_orden_en(agrupados[oid_principal], ped)
+            logger.debug(f"[PACK] Agrupado {oid} -> {oid_principal} (mismo shipping_id {ship_id})")
+    return agrupados
+
+
+def _registrar_orden_webhook(cuenta_id, pedido):
+    """Agrega al listado la orden que avisó el webhook SIN deshacer el agrupado por envío
+    (antes se guardaba cada orden suelta y se pisaba al pedido principal ya fusionado: la app
+    pedía solo una parte de los productos y la etiqueta del envío traía todos).
+    Devuelve 'nueva' (se creó la entrada), 'existente' (la orden ya estaba como entrada propia),
+    'fusionada' (se sumó a otra orden del mismo envío) o 'ya_incluida' (ya formaba parte de un grupo)."""
+    oid = str(pedido.get("order_id", ""))
+    ship = str(pedido.get("shipping_id", "") or "")
+    with _lock:
+        actual = _pedidos_ml.get(oid)
+        # Ya es el principal de un grupo, o ya está fusionada en otro pedido: no se toca.
+        if actual is not None and len(actual.get("_orders_agrupadas") or []) > 1:
+            return "ya_incluida"
+        for k, p in _pedidos_ml.items():
+            if k != oid and p.get("_cuenta") == cuenta_id and oid in (p.get("_orders_agrupadas") or []):
+                return "ya_incluida"
+        principal = None
+        if ship:
+            for k, p in _pedidos_ml.items():
+                if k != oid and p.get("_cuenta") == cuenta_id and p.get("shipping_id") == ship:
+                    principal = p
+                    break
+        if principal is None:
+            if actual is not None:
+                return "existente"        # conservar lo que ya trajo el refresco (logística, estado...)
+            _pedidos_ml[oid] = pedido
+            return "nueva"
+        _fusionar_orden_en(principal, pedido)
+        if actual is not None:
+            _pedidos_ml.pop(oid, None)    # estaba suelta: ahora forma parte del principal
+        # Consolidar cualquier otra entrada suelta del mismo envío
+        for k in [k for k, p in _pedidos_ml.items()
+                  if p is not principal and p.get("_cuenta") == cuenta_id and p.get("shipping_id") == ship]:
+            if _fusionar_orden_en(principal, _pedidos_ml[k]):
+                _pedidos_ml.pop(k, None)
+        return "fusionada"
+
+
 def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
     """
     Trae SOLO los pedidos PENDIENTES DE IMPRIMIR desde ML.
@@ -830,47 +920,8 @@ def _ml_get_all_orders_cuenta(cuenta_id, fecha_desde=None, fecha_hasta=None):
     # La etiqueta se descarga con /shipment_labels?shipment_ids=XXX
     # Si dos órdenes comparten shipping_id → misma etiqueta → mismo paquete.
     # Si tienen shipping_id distinto → son 2 etiquetas aunque compartan pack_id.
-    pedidos_agrupados = {}
-    packs_vistos = {}
-    for oid, ped in pedidos.items():
-        ship_id = ped.get("shipping_id", "")
-        if not ship_id:
-            # Sin shipping_id no hay etiqueta posible — mantener separado
-            pedidos_agrupados[oid] = ped
-        elif ship_id not in packs_vistos:
-            packs_vistos[ship_id] = oid
-            pedidos_agrupados[oid] = ped
-        else:
-            oid_principal = packs_vistos[ship_id]
-            ped_principal = pedidos_agrupados[oid_principal]
-            # Clave por (sku, color, talle) — NO por item_id: en ML, distintas
-            # variantes de color/talle de UN MISMO producto comparten el
-            # mismo "item.id" (el id es del aviso, no de la variación). Usar
-            # item_id acá hacía que, al fusionar dos órdenes del mismo pack,
-            # una variante (ej. color Transparente) con el mismo SKU que otra
-            # ya vista (ej. color Negro) no calzara ni por "nuevo" ni por
-            # "mismo item_id" → se perdía en silencio, sin sumar cantidad ni
-            # aparecer en la lista. Con (sku, color, talle) cada variante
-            # real se preserva como línea propia y sólo se suma cantidad
-            # cuando es genuinamente la misma variante repetida.
-            def _clave_item(it):
-                return (it["sku"], it.get("color",""), it.get("talle",""))
-            existentes = {_clave_item(it): it for it in ped_principal["items"]}
-            for it in ped.get("items", []):
-                clave = _clave_item(it)
-                if clave in existentes:
-                    existentes[clave]["cantidad"] += it["cantidad"]
-                else:
-                    ped_principal["items"].append(it)
-                    existentes[clave] = it
-            ped_principal["total"] = ped_principal.get("total", 0) + ped.get("total", 0)
-            # Registrar las órdenes que componen este pack
-            ped_principal.setdefault("_orders_agrupadas", [oid_principal])
-            ped_principal["_orders_agrupadas"].append(oid)
-            logger.debug(f"[PACK] Agrupado {oid} -> {oid_principal} "
-                         f"(mismo shipping_id {ship_id})")
-
-    _n_orig  = len(pedidos)
+    _n_orig = len(pedidos)
+    pedidos_agrupados = _agrupar_por_envio(pedidos)
     _n_final = len(pedidos_agrupados)
     if _n_orig != _n_final:
         logger.info(f"[PACK] {_n_orig} órdenes de ML → {_n_final} etiquetas "
@@ -939,6 +990,22 @@ def _enriquecer_skus_cuenta(pedidos, cuenta_id):
                         ped["estado_envio"] = status
                         ped["substatus"]    = substatus
                         ped["tipo"]         = _calcular_tipo(logistica, ped.get("tags",[]), ped.get("shipping_id",""))
+
+                        # Control (solo informativo): unidades del envío según ML vs las que
+                        # tenemos agrupadas. No cambia el pedido; deja un log para detectar
+                        # envíos incompletos.
+                        try:
+                            _si = sd.get("shipping_items") or []
+                            if _si:
+                                _uds_ml  = sum(int(x.get("quantity") or 0) for x in _si)
+                                _uds_ped = sum(int(i.get("cantidad") or 0) for i in ped.get("items", []))
+                                ped["unidades_envio"] = _uds_ml
+                                if _uds_ml != _uds_ped:
+                                    logger.warning(f"[PACK-CHECK] envío {ped.get('shipping_id')}: ML dice "
+                                                   f"{_uds_ml} unidades, el pedido tiene {_uds_ped} "
+                                                   f"(órdenes {ped.get('_orders_agrupadas') or [oid]})")
+                        except Exception as _e_pc:
+                            logger.debug(f"[PACK-CHECK] {oid}: {_e_pc}")
 
                         # Fechas de compromiso (doc oficial ML — nodo lead_time)
                         #   estimated_handling_limit  → límite para DESPACHAR
@@ -3936,10 +4003,13 @@ def _procesar_notificacion_orden(order_id, user_id):
             "impreso": False, "tags": order.get("tags",[]),
             "_cuenta": cuenta_id, "_nickname": nick, "_via_webhook": True,
         }
-        with _lock:
-            _pedidos_ml[str(order_id)] = pedido
-        logger.info(f"[WEBHOOK] Orden {order_id} agregada ({nick}) — {len(items)} items")
-        if ship_id:
+        estado_reg = _registrar_orden_webhook(cuenta_id, pedido)
+        if estado_reg in ("nueva", "existente"):
+            logger.info(f"[WEBHOOK] Orden {order_id} agregada ({nick}) — {len(items)} items")
+        else:
+            logger.info(f"[WEBHOOK] Orden {order_id} ({nick}) {estado_reg}: comparte envío {ship_id} "
+                        f"con otra orden del listado")
+        if ship_id and estado_reg in ("nueva", "existente"):
             def _fetch_ship_now():
                 try:
                     rs = _ml_get_cuenta(f"/shipments/{ship_id}", cuenta_id)
@@ -3981,11 +4051,17 @@ def _procesar_notificacion_shipment(shipment_id, user_id):
         order_id = str(sd.get("order_id",""))
         logistic = sd.get("logistic_type","") or (sd.get("logistic") or {}).get("type","")
         logger.info(f"[WEBHOOK] Shipment {shipment_id} estado={estado} order={order_id}")
-        if order_id and order_id in _pedidos_ml:
-            with _lock:
-                _pedidos_ml[order_id]["estado_envio"] = estado
-                _pedidos_ml[order_id]["logistica"]    = logistic
-                _pedidos_ml[order_id]["shipping_id"]  = str(shipment_id)
+        with _lock:
+            destino = _pedidos_ml.get(order_id) if order_id else None
+            if destino is None:
+                # La orden del aviso puede estar fusionada dentro de otro pedido del mismo envío
+                destino = next((p for p in _pedidos_ml.values()
+                                if p.get("_cuenta") == cuenta_id
+                                and str(p.get("shipping_id", "")) == str(shipment_id)), None)
+            if destino is not None:
+                destino["estado_envio"] = estado
+                destino["logistica"]    = logistic
+                destino["shipping_id"]  = str(shipment_id)
     except Exception as e:
         logger.error(f"[WEBHOOK] Error procesando shipment {shipment_id}: {e}")
 
@@ -4242,6 +4318,14 @@ def subir_estado():
         if es_lote_nuevo and data.get("grupos"):
             # Lote nuevo → arrancar la colecta de cero para que el móvil no
             # muestre como "ya buscado" lo que era del lote previo.
+            # Diagnóstico: un lote recién generado NO debería traer colecta. Si la PC mandó
+            # alguna, el arrastre nace en la PC; si la tenía el servidor, nace acá.
+            if _colecta_in:
+                logger.warning(f"[ARRASTRE?] '{clave}': la PC subió un lote NUEVO con colecta "
+                               f"{dict(list(_colecta_in.items())[:8])} (ignorada)")
+            if est.get("colecta"):
+                logger.info(f"[LOTE] '{clave}': al abrir el lote nuevo se descartó la colecta anterior del "
+                            f"servidor ({len(est.get('colecta') or {})} SKUs)")
             est["colecta"]          = {}
             est["colecta_completa"] = False
             est["inicio_ts"]        = _dt_est.datetime.now().isoformat()
@@ -4529,6 +4613,16 @@ def escanear():
         req = sku_info["req"]
         col = colecta.get(sku,0)
         if col >= req:
+            try:
+                _ini = est.get("inicio_ts") or ""
+                if _ini:
+                    import datetime as _dt_arr
+                    _seg = (_dt_arr.datetime.now() - _dt_arr.datetime.fromisoformat(_ini)).total_seconds()
+                    if 0 <= _seg < 90:
+                        logger.warning(f"[ARRASTRE?] '{clave}': '{sku}' ya figura completo ({col}/{req}) a "
+                                       f"los {int(_seg)} s de abrir el lote {est.get('lote_id','')}")
+            except Exception:
+                pass
             return jsonify({"ok": True, "tipo": "ya_completo",
                             "msg": f"'{sku}' ya completo ({req}/{req})", "collected": col, "req": req})
         colecta[sku] = col + 1

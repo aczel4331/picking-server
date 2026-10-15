@@ -101,22 +101,25 @@ try:
                 if sku:
                     req[sku] = req.get(sku, 0) + it.get("cantidad", 1)
             app.pedidos[i] = {"pagina": i, "skus_requeridos": req, "skus_escaneados": {}, "impreso": False,
-                              "descripcion": p.get("comprador", ""), "_order_id": p["order_id"],
+                              "descripcion": p.get("comprador", ""), "_order_id": p["order_id"], "_orders": A.ordenes_de_pedido(p),
                               "_cuenta": p.get("_cuenta", "cuenta_0"), "_shipping_id": p.get("shipping_id", ""),
                               "_logistica": p.get("logistica", ""), "items": p.get("items", []),
                               "comprador": p.get("comprador", "")}
 
     colecta_ped = [p for p in pedidos_ml.values()
                    if app._ml_en_scope(p, "colecta", True)]
-    print(f"imprimibles de Colecta (reales): {len(colecta_ped)}")
-    check("hay pedidos reales imprimibles para probar", len(colecta_ped) >= 6)
-    N0 = max(3, len(colecta_ped) // 2)
-    lote_inicial(colecta_ped, N0)
+    # un pedido del lote = un ENVÍO (varias órdenes del mismo envío = una etiqueta)
+    grupos_col = A.agrupar_por_envio(colecta_ped, universo=list(pedidos_ml.values()),
+                                     valido=lambda q: not app._ml_pedido_finalizado(q))
+    print(f"imprimibles de Colecta (reales): {len(colecta_ped)} órdenes en {len(grupos_col)} envíos")
+    check("hay pedidos reales imprimibles para probar", len(grupos_col) >= 6)
+    N0 = max(3, len(grupos_col) // 2)
+    lote_inicial(grupos_col, N0)
 
     print("1) botón: se habilita al tener lote (sin esperar el refresco de 60 s)")
     app._actualizar_btn_agregar()
     cand = app._ml_candidatos_agregar()
-    check("candidatos = pendientes que NO están en el lote", len(cand) == len(colecta_ped) - N0, f"{len(cand)} vs {len(colecta_ped) - N0}")
+    check("candidatos = envíos pendientes que NO están en el lote", len(cand) == len(grupos_col) - N0, f"{len(cand)} vs {len(grupos_col) - N0}")
     check("botón habilitado y con contador", app.btn_ml_agregar_lote.cfg["state"] == "normal"
           and f"({len(cand)})" in app.btn_ml_agregar_lote.cfg["text"], str(app.btn_ml_agregar_lote.cfg))
     app.fase_actual = 2; app._actualizar_btn_agregar()
@@ -143,9 +146,14 @@ try:
     app._ml_agregar_al_lote()
     check("la app agregó pedidos (sin errores ni avisos)", not any(t in ("error", "warn") for t, _ in dialogos), str(dialogos))
     check("el lote creció", len(app.pedidos) > N0, f"{len(app.pedidos)} vs {N0}")
-    check("lote = todos los pendientes del canal, sin duplicados",
-          len({d["_order_id"] for d in app.pedidos.values()}) == len(app.pedidos) == len(colecta_ped),
-          f"{len(app.pedidos)} / {len(colecta_ped)}")
+    check("lote = todos los envíos pendientes del canal, sin duplicados",
+          len({d["_order_id"] for d in app.pedidos.values()}) == len(app.pedidos) == len(grupos_col),
+          f"{len(app.pedidos)} / {len(grupos_col)}")
+    cubiertas = {o for d in app.pedidos.values() for o in d["_orders"]}
+    check("TODAS las órdenes reales del canal quedan dentro de algún pedido del lote",
+          {str(p["order_id"]) for p in colecta_ped} <= cubiertas, len({str(p["order_id"]) for p in colecta_ped} - cubiertas))
+    envios = [d["_shipping_id"] for d in app.pedidos.values() if d["_shipping_id"]]
+    check("ningún envío aparece en dos pedidos (una etiqueta = un pedido)", len(envios) == len(set(envios)))
     check("los pedidos agregados llevan _cuenta", all(d.get("_cuenta") == "cuenta_2" for d in app.pedidos.values()))
     check("la app subió el lote ampliado", len(subidas) == 1)
     check("botón sin pendientes tras agregar", "(" not in app.btn_ml_agregar_lote.cfg["text"], str(app.btn_ml_agregar_lote.cfg))
@@ -162,7 +170,7 @@ try:
     # agregar de nuevo no duplica
     dialogos.clear(); app._ml_agregar_al_lote()
     check("segundo clic: avisa que no hay nada nuevo", any("Sin pedidos nuevos" in str(t) for t in dialogos) or any(k == "info" for k, _ in dialogos), str(dialogos))
-    check("segundo clic no duplicó pedidos", len(app.pedidos) == len(colecta_ped))
+    check("segundo clic no duplicó pedidos", len(app.pedidos) == len(grupos_col))
 
     print("4) canal: con un lote de Colecta no se cuelan pedidos Flex aunque la pestaña sea Flex")
     app._ml_filtro_tipo.set("flex")
