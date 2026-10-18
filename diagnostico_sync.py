@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script para diagnosticar sincronización en tiempo real
-Verifica que el endpoint /api/estado-picking está retornando datos correctamente
+Verifica que el endpoint /api/estado está retornando datos correctamente
 """
 
 import requests
@@ -10,7 +10,7 @@ import time
 
 # URL del servidor (cambiar si es diferente)
 SERVIDOR = "https://picking-server-production.up.railway.app"
-ENDPOINT = f"{SERVIDOR}/api/estado-picking"
+ENDPOINT = f"{SERVIDOR}/api/estado"
 
 print("=" * 70)
 print("DIAGNÓSTICO DE SINCRONIZACIÓN EN TIEMPO REAL")

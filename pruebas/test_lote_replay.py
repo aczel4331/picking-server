@@ -54,6 +54,7 @@ try:
     # urlopen con control: se puede RETENER la subida del 'lote vacío' para entregarla tarde
     _urlopen = urllib.request.urlopen
     retener = {"vaciado": False}; parked = []
+    bloq = {"ev": None, "n": 0}
     class Resp:
         def __enter__(self): return self
         def __exit__(self, *a): return False
@@ -62,6 +63,8 @@ try:
         url = getattr(req, "full_url", str(req))
         if "verificar-ahora" in url or "/api/sesion" in url or "/api/imagen-sku" in url:
             raise OSError("fuera de la prueba")
+        if bloq["ev"] is not None and url.endswith("/api/subir_estado") and getattr(req, "data", None):
+            ev, bloq["ev"] = bloq["ev"], None; bloq["n"] += 1; ev.wait(10)      # la subida queda "en vuelo"
         if retener["vaciado"] and getattr(req, "data", None) and url.endswith("/api/subir_estado") and b'"grupos": []' in req.data:
             parked.append((req, a, k)); return Resp()
         return _urlopen(req, *a, **k)
@@ -195,6 +198,88 @@ try:
     for _ in range(60): app._on_subida_ok({"ok": True, "lote_id": L6}, L6)
     cadenas = [1 for ms, fn in app.root.pend.values() if getattr(fn, "__name__", "") == "_sondeo_tick"]
     check("tras 60 confirmaciones de subida hay UNA sola cadena de sondeo programada", len(cadenas) == 1, len(cadenas))
+
+    # ── F. subidas solapadas de la PC + el celular escaneando a la vez: no se pierde ningún escaneo ──
+    print("F) subidas solapadas de la PC con el celular escaneando")
+    import inspect
+    check("el escaneo de Fase 1 de la PC marca el SKU como pendiente",
+          "_marcar_colecta_pendiente(sku)" in inspect.getsource(A.AsistenteDepositoApp._procesar_escaneo_fase1))
+    terminar_lote(); esperar(lambda: est()["colecta"] == {})
+    LF = generar([orden(10, "S10", {"F100": 2, "F200": 2, "F300": 2})])
+    sondear()
+    ev = threading.Event(); bloq["ev"] = ev; bloq["n"] = 0
+    app.colecta_global["F100"] = 1; app._marcar_colecta_pendiente("F100")
+    app._subir_a_nube_async()                                  # subida 1: queda en vuelo
+    check("la subida 1 está en vuelo", esperar(lambda: bloq["n"] == 1 and app._subida_en_vuelo))
+    app.colecta_global["F200"] = 1; app._marcar_colecta_pendiente("F200")
+    app._subir_a_nube_async()                                  # subida 2 mientras la 1 sigue en vuelo
+    check("una sola subida a la vez: la 2ª queda anotada para reenviar", app._subida_en_vuelo and app._subida_reenviar)
+    celular_escanea("F300")                                    # el celular avanza el rev antes de que la 1ª llegue
+    ev.set()
+    check("el servidor termina con F100 y F200 (PC) y F300 (celular): nada perdido",
+          esperar(lambda: est()["colecta"] == {"F100": 1, "F200": 1, "F300": 1}), est()["colecta"])
+    esperar(lambda: not app._subida_en_vuelo and not app._subida_reenviar)
+    sondear()
+    check("la PC conserva sus escaneos y suma el del celular", app.colecta_global == {"F100": 1, "F200": 1, "F300": 1}, app.colecta_global)
+    check("nada queda pendiente una vez confirmado por el servidor", app._colecta_pendiente == set(), app._colecta_pendiente)
+
+    # ── G. un sondeo que llega antes de subir el escaneo local no lo borra ─────────
+    print("G) sondeo autoritativo durante la espera de la subida")
+    terminar_lote(); esperar(lambda: est()["colecta"] == {})
+    LG = generar([orden(11, "S11", {"G100": 2, "G200": 2})])
+    sondear()
+    app.colecta_global["G100"] = 1; app._marcar_colecta_pendiente("G100")
+    for _ in range(3): sondear()
+    check("el escaneo local sobrevive a sondeos que traen la colecta sin él", app.colecta_global.get("G100") == 1, app.colecta_global)
+    app._subir_a_nube_async()
+    check("...y al subirlo el servidor lo recibe", esperar(lambda: est()["colecta"].get("G100") == 1), est()["colecta"])
+    esperar(lambda: not app._subida_en_vuelo)
+    sondear()
+    check("después de confirmado sigue ahí y ya no está pendiente", app.colecta_global.get("G100") == 1 and "G100" not in app._colecta_pendiente)
+
+    # ── H. retomar la sesión cuando el servidor ya no tiene el lote ───────────────
+    print("H) retomar la sesión guardada con el servidor sin el lote")
+    terminar_lote(); esperar(lambda: est()["colecta"] == {})
+    LH = generar([orden(12, "S12", {"H100": 2, "H200": 1})])
+    sondear()
+    app.colecta_global["H100"] = 1; app._marcar_colecta_pendiente("H100"); app._subir_a_nube_async()
+    esperar(lambda: est()["colecta"].get("H100") == 1); esperar(lambda: not app._subida_en_vuelo)
+    sesion = {"pedidos": {str(pn): {"skus_requeridos": d["skus_requeridos"], "skus_escaneados": d.get("skus_escaneados", {}),
+                                    "_order_id": d.get("_order_id", ""), "_cuenta": "cuenta_2", "_shipping_id": d.get("_shipping_id", ""),
+                                    "descripcion": d.get("descripcion", ""), "comprador": d.get("comprador", ""), "items": d.get("items", [])}
+                          for pn, d in app.pedidos.items()},
+              "colecta_global": {"H100": 1}, "canal": "flex", "fase": 1, "cola_pack": [], "lote_id": LH}
+    requests.post(B + "/api/limpiar", headers={"X-API-Key": "everest2024"}, json={"usuario": "col1", "cuenta_id": "cuenta_2", "canal": "flex"})
+    check("el servidor perdió el lote (simulado)", est().get("lote_id", "") == "" and est()["colecta"] == {}, est())
+    app.pedidos.clear(); app.colecta_global = {}; app._lote_id_local = None          # la PC se reinició
+    app._restaurar_sesion(sesion)
+    check("se retoma el mismo lote_id y se pide reanudar", app._lote_id_local == LH and app._reanudar_sesion is True, (app._lote_id_local, app._reanudar_sesion))
+    check("el servidor acepta la colecta retomada (no la descarta como arrastre)",
+          esperar(lambda: est().get("lote_id") == LH and est()["colecta"] == {"H100": 1}), est())
+    esperar(lambda: not app._subida_en_vuelo)
+    check("terminada la reanudación se apaga el pedido de reanudar", app._reanudar_sesion is False)
+    sondear()
+    check("la PC no pierde lo retomado", app.colecta_global == {"H100": 1}, app.colecta_global)
+    # control: sin reanudar, un lote 'nuevo' con colecta SIGUE descartándose (no hay arrastre)
+    r = requests.post(B + "/api/subir_estado", headers={"X-API-Key": "everest2024"},
+                      json={"usuario": "col1", "cuenta_id": "cuenta_2", "canal": "flex", "lote_id": "OTRO", "fase": 1, "colecta": {"H100": 1},
+                            "grupos": [{"pasillo": "P", "items": [{"sku": "H100", "nombre": "x", "req": 2, "pasillo": "P"}]}]}).json()
+    check("control: lote nuevo con colecta y SIN reanudar se sigue descartando", est()["colecta"] == {} and est()["lote_id"] == "OTRO", est())
+
+    # ── I. el servidor retrocede su rev (reinició sin restaurar el lote): la PC no queda congelada ──
+    print("I) rev que retrocede")
+    real_on = A.AsistenteDepositoApp._on_sync_nube.__get__(app)
+    app._on_sync_nube = real_on
+    L_I = app._lote_id_local
+    app._registrar_rev_nube(L_I, 10**13)
+    app._rev_viejos = 0; app.colecta_global = {}
+    def info_rev(): return {"ok": True, "n": 1, "colecta": {"H200": 1}, "lote_id": L_I, "lote_id_local": L_I, "fase": 1, "rev": 5,
+                            "autoritativo": True, "t0": time.time() + 30}
+    app._on_sync_nube(info_rev()); app._on_sync_nube(info_rev())
+    check("las dos primeras respuestas con rev menor se descartan", app.colecta_global == {}, app.colecta_global)
+    app._on_sync_nube(info_rev())
+    check("a la tercera seguida se acepta el retroceso (no queda congelada)", app.colecta_global.get("H200") == 1 and app._rev_nube == 5,
+          (app.colecta_global, app._rev_nube))
 finally:
     srv.kill()
     urllib.request.urlopen = urllib.request.urlopen

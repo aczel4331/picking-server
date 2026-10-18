@@ -11,7 +11,7 @@ REPOS = {"viejo": (os.path.join(S_DIR, "old_head"), "5121"), "nuevo": (REPO_DEFA
 USERS = [{"usuario": "admin", "clave": "1234", "nombre": "Admin", "cuenta_id": "todas", "rol": "admin"},
          {"usuario": "sup2", "clave": "abcd", "nombre": "Sup", "cuenta_id": "cuenta_2", "rol": "supervisor"},
          {"usuario": "colector1", "clave": "c1", "nombre": "C1", "cuenta_id": "cuenta_2", "rol": "operario"}]
-RUIDO = {"ultima_act", "ts", "ultimo_refresh", "servidor_ts", "ultima_actualizacion", "inicio_ts", "ts_scan", "token", "tienda", "lote_id", "ultimos_scans", "clave_firma"}
+RUIDO = {"ultima_act", "ts", "ultimo_refresh", "servidor_ts", "ultima_actualizacion", "inicio_ts", "ts_scan", "token", "tienda", "lote_id", "ultimos_scans", "clave_firma", "rev"}
 
 
 def limpiar(o):

@@ -326,7 +326,7 @@ function _hdr(extra) {
 
 function _sesionVencida() {
   try { localStorage.removeItem('colector_activo'); } catch (e) {}
-  _colector = null; E = null; _loteTimestamp = '';
+  _colector = null; E = null; _loteTimestamp = ''; _revReiniciar();
   _actualizarBotonColector();
   mostrarSelectorInicial();
   toast('Tu sesión venció: volvé a iniciar sesión', 'err');
@@ -337,6 +337,33 @@ function _paramsColector() {
   return 'usuario=' + encodeURIComponent(_colector.usuario || '') +
          '&cuenta_id=' + encodeURIComponent(_colector.cuenta_id || '');
 }
+
+// ── GUARDA ANTI-RESPUESTA-VIEJA ──────────────────────────────────────────────
+// El servidor manda lote_id + rev (entero monótono por lote) en estado /
+// escanear / reset_sku. Una respuesta con el MISMO lote_id y rev menor a la
+// última aplicada es vieja (un GET que se cruzó con un escaneo o un deshacer)
+// y se descarta; otro lote_id es un lote nuevo. Sin esos campos (servidor
+// viejo) no se filtra nada.
+let _loteId = null, _rev = -1, _staleN = 0;
+function _revEstado(d) {          // 'stale' | 'nuevo' | 'ok'
+  if (!d || typeof d.rev !== 'number') return 'ok';
+  if (d.lote_id != null && d.lote_id !== _loteId) return 'nuevo';
+  return d.rev < _rev ? 'stale' : 'ok';
+}
+function _revAplicar(d) {
+  if (!d || typeof d.rev !== 'number') return;
+  if (d.lote_id != null && d.lote_id !== _loteId) { _loteId = d.lote_id; _rev = -1; }
+  if (d.rev > _rev) _rev = d.rev;
+}
+// Lectura de /api/estado: true = respuesta vieja que se cruzó con un escaneo -> descartar.
+// Si el servidor "retrocede" (reinició sin restaurar el lote) llegan varias seguidas con rev menor:
+// a la 3ª se acepta y se reinicia la guarda, así el celular nunca queda congelado.
+function _revDescartar(d) {
+  if (_revEstado(d) !== 'stale') { _staleN = 0; return false; }
+  if (++_staleN >= 3) { _staleN = 0; _loteId = null; _rev = -1; return false; }
+  return true;
+}
+function _revReiniciar() { _loteId = null; _rev = -1; _staleN = 0; }
 
 // ── LOGIN (bloqueante) ───────────────────────────────────────────────────────
 // Se muestra SOLO si el celular no tiene una sesión guardada todavía.
@@ -377,6 +404,7 @@ async function intentarLogin() {
       $('login-clave').value = '';
       return;
     }
+    _revReiniciar(); E = null; _loteTimestamp = '';   // otro colector: empezar sin la guarda del anterior
     _colector = d.usuario;   // {usuario, nombre, cuenta_id, rol}
     if (d.token && d.tienda && d.tienda.tienda_id) _colector.token = d.token;
     if (d.tienda) aplicarMarca(d.tienda);
@@ -398,7 +426,7 @@ function cerrarSesionColector() {
   if (!confirm('¿Cerrar sesión de ' + (_colector.nombre || _colector.usuario) + '?')) return;
   _colector = null;
   localStorage.removeItem('colector_activo');
-  E = null; _loteTimestamp = '';
+  E = null; _loteTimestamp = ''; _revReiniciar();
   _actualizarBotonColector();
   fb('neu', '🔫 Listo para escanear');
   _tintarPorCanal('');
@@ -465,8 +493,12 @@ async function load() {
     const r = await fetch('/api/estado?' + _paramsColector(), { headers: _hdr() });
     if (r.status === 401 && _colector && _colector.token) { _sesionVencida(); return; }
     if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
-    E = await r.json();
+    const nuevoE = await r.json();
     setConexion('ok');
+    if (!E) _revReiniciar();                       // sin estado en pantalla no hay nada que proteger
+    if (_revDescartar(nuevoE)) return;
+    _revAplicar(nuevoE);
+    E = nuevoE;
     _loteTimestamp = E.ultima_actualizacion || '';
     render();
   } catch(e) {
@@ -485,6 +517,13 @@ async function loadQ() {
     if (!r.ok) { setConexion('warn'); return; }
     const nuevo = await r.json();
     setConexion('ok');
+
+    // Respuesta vieja (rev menor): no pisar el estado optimista/deshacer.
+    if (!E) _revReiniciar();
+    if (_revDescartar(nuevo)) return;
+    const _estRev = _revEstado(nuevo);
+    const _revAvanzo = typeof nuevo.rev === 'number' && nuevo.rev > _rev;
+    _revAplicar(nuevo);
 
     // ── Caso A: Lote nuevo (timestamp cambió) ─────────────────────────────
     const tsNuevo = nuevo.ultima_actualizacion || '';
@@ -511,7 +550,8 @@ async function loadQ() {
       const colVieja = E.colecta || {};
       const totNuevo = Object.values(colNueva).reduce((s, v) => s + Number(v), 0);
       const totViejo = Object.values(colVieja).reduce((s, v) => s + Number(v), 0);
-      if (totNuevo !== totViejo) {
+      // Los deshacer (decrementos) son autoritativos: rev nuevo => aplicar.
+      if (totNuevo !== totViejo || _revAvanzo || _estRev === 'nuevo') {
         E = nuevo; render(true);
       }
     }
@@ -818,7 +858,11 @@ async function scan(raw) {
       fb('ok', txt);
 
       if (!E.colecta) E.colecta = {};
-      E.colecta[sku] = d.collected;
+      const _est = _revEstado(d);
+      if (_est === 'nuevo') E.colecta = {};
+      // Respuesta de escaneo que llegó desordenada: no retroceder el contador visible.
+      E.colecta[sku] = _est === 'stale' ? Math.max(Number(E.colecta[sku] || 0), Number(d.collected) || 0) : d.collected;
+      _revAplicar(d);
 
       if (d.todo_completo) {
         E.colecta_completa = true;

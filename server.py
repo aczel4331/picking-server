@@ -216,6 +216,10 @@ _tokens        = {}
 _cuenta_activa = "cuenta_0"
 _pedidos_ml    = {}
 
+# Base de las revisiones: milisegundos al arrancar el servidor. Asi `rev` NUNCA retrocede aunque el
+# servidor reinicie sin restaurar el lote (los clientes descartan respuestas con rev menor a la vista).
+_REV_BASE = int(time.time() * 1000)
+
 def _estado_vacio():
     return {
         "fase": 1, "grupos": [], "colecta": {}, "colecta_completa": False,
@@ -229,7 +233,63 @@ def _estado_vacio():
         # Identidad del lote — para no arrastrar la colecta de un lote al siguiente
         "lote_id":        "",   # id del lote (lo asigna el desktop o el server)
         "_firma_lote":    "",   # hash del contenido (sku+req) del lote actual
+        "rev":            _REV_BASE,  # revisión monotónica de la colecta (sync móvil/PC)
+        "sku_rev":        {},   # sku -> rev del último cambio hecho por escanear/reset_sku (celular)
     }
+
+
+def _bump_rev(est):
+    """Incrementa la revisión de colecta del lote (llamar con _lock tomado). Nunca baja de _REV_BASE."""
+    try:
+        actual = int(est.get("rev", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        actual = 0
+    est["rev"] = max(actual + 1, _REV_BASE)
+    return est["rev"]
+
+
+def _marcar_sku_rev(est, sku):
+    """Anota que `sku` cambió en la revisión actual (escaneo/deshacer de un celular)."""
+    sr = est.get("sku_rev")
+    if not isinstance(sr, dict):
+        sr = est["sku_rev"] = {}
+    sr[str(sku)] = est.get("rev", 0)
+
+
+def _fase_int(v, default=1):
+    """Fase siempre 1 o 2. Acepta 1/2, '1', 'fase2', 2.0...; cualquier otra cosa -> default."""
+    try:
+        if isinstance(v, str):
+            m = re.search(r"\d+", v)
+            n = int(m.group()) if m else default
+        else:
+            n = int(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return 1 if n < 1 else (2 if n > 2 else n)
+
+
+def _colecta_limpia(c):
+    """Colecta enviada por un cliente -> {sku(str): int>=0}; descarta lo que no sea numérico."""
+    out = {}
+    if not isinstance(c, dict):
+        return out
+    for k, v in c.items():
+        try:
+            n = int(v)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if n > 0:
+            out[str(k)] = n
+    return out
+
+
+def _todo_completo(grupos, colecta):
+    try:
+        return bool(grupos) and all(int(colecta.get(it["sku"], 0) or 0) >= int(it["req"])
+                                    for g in grupos for it in g.get("items", []))
+    except Exception:
+        return False
 
 _estados_canal = {
     "flex":    _estado_vacio(),
@@ -297,26 +357,47 @@ def _get_estado(canal=None):
     return _estados_canal[canal]
 
 
+_guardar_lotes_lock = threading.Lock()
+
+
+def _dump_json_seguro(obj):
+    """json.dumps que reintenta si otro hilo cambia un dict mientras se serializa."""
+    for intento in range(4):
+        try:
+            return json.dumps(obj, default=str)
+        except RuntimeError:          # "dictionary changed size during iteration"
+            time.sleep(0.01 * (intento + 1))
+    return json.dumps(obj, default=str)
+
+
+def _escribir_atomico(path, texto):
+    """Escribe a un temporal y lo mueve: un corte a mitad nunca deja el archivo de lotes truncado."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        f.write(texto)
+    os.replace(tmp, path)
+
+
 def _guardar_lotes():
     """Lotes de la primaria → lote_estado.json (como siempre). Los de tiendas nuevas →
     tiendas/<id>/lote_estado.json (archivos que el código anterior nunca lee)."""
     try:
-        prim, por_t = {}, {}
-        for k, v in list(_estados_canal.items()):
-            t = (str(k).split(":", 1)[0].lower() if ":" in str(k) else "")
-            if t.startswith("t_"):
-                por_t.setdefault(t, {})[k] = v
-            else:
-                prim[k] = v
-        with open(LOTE_PATH, "w") as f:
-            json.dump({"canales": prim}, f, default=str)
-        for t in set(por_t) | {x for x, r in list(_tiendas.items()) if not r.get("primary")}:
-            d = os.path.join(TIENDAS_DIR, t)
-            if not por_t.get(t) and not os.path.exists(os.path.join(d, "lote_estado.json")):
-                continue
-            os.makedirs(d, exist_ok=True)
-            with open(os.path.join(d, "lote_estado.json"), "w") as f:
-                json.dump({"canales": por_t.get(t, {})}, f, default=str)
+        with _guardar_lotes_lock:
+            prim, por_t = {}, {}
+            for k, v in list(_estados_canal.items()):
+                t = (str(k).split(":", 1)[0].lower() if ":" in str(k) else "")
+                if t.startswith("t_"):
+                    por_t.setdefault(t, {})[k] = v
+                else:
+                    prim[k] = v
+            _escribir_atomico(LOTE_PATH, _dump_json_seguro({"canales": prim}))
+            for t in set(por_t) | {x for x, r in list(_tiendas.items()) if not r.get("primary")}:
+                d = os.path.join(TIENDAS_DIR, t)
+                if not por_t.get(t) and not os.path.exists(os.path.join(d, "lote_estado.json")):
+                    continue
+                os.makedirs(d, exist_ok=True)
+                _escribir_atomico(os.path.join(d, "lote_estado.json"),
+                                  _dump_json_seguro({"canales": por_t.get(t, {})}))
     except Exception as e:
         logger.error(f"[LOTE] Error persistiendo: {e}")
 
@@ -3728,6 +3809,7 @@ def api_sesion_guardar():
         "usuario":         usuario,
         "canal":           data.get("canal",""),
         "fase":            data.get("fase", 1),
+        "lote_id":         data.get("lote_id", ""),
         "pedidos":         data.get("pedidos", {}),
         "colecta_global":  data.get("colecta_global", {}),
         "cola_pack":       data.get("cola_pack", []),
@@ -4268,14 +4350,14 @@ def ping():
 @app.route("/api/subir_estado", methods=["POST"])
 @requiere_api_key
 def subir_estado():
-    data = request.get_json(force=True)
-    if not data or "grupos" not in data:
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("grupos"), list):
         return jsonify({"ok": False, "msg": "Datos invalidos"}), 400
     canal  = data.get("canal","default")
     clave  = _tn_clave(data.get("usuario",""), data.get("cuenta_id",""), canal)
     est    = _get_estado(clave)
     with _lock:
-        nueva_fase = data.get("fase",1)
+        nueva_fase = _fase_int(data.get("fase",1))
         import datetime as _dt_est, hashlib as _hl_est, time as _t_lid
 
         # ── Huella determinística del contenido del lote (sku + req) ──────────
@@ -4305,12 +4387,32 @@ def subir_estado():
             or (not _lote_id_in and est.get("total_skus",0) != data.get("total_skus",0))
         )
 
-        _colecta_in = data.get("colecta",{}) or {}   # se procesa aparte del update()
+        _colecta_in = _colecta_limpia(data.get("colecta"))   # se procesa aparte del update()
+        _colecta_antes = dict(est.get("colecta") or {})
+        _rev_srv = int(est.get("rev", 0) or 0)
+        try:
+            _base_rev = int(data["base_rev"]) if data.get("base_rev") is not None else None
+        except (TypeError, ValueError, OverflowError):
+            _base_rev = None
+        # PC con revisión vieja del mismo lote: NO se descarta lo suyo; solo gana el servidor en los
+        # SKU que un celular cambió (escanear/deshacer) DESPUÉS de lo que la PC vio (sku_rev > base_rev).
+        _stale = (_base_rev is not None and _base_rev < _rev_srv and not es_lote_nuevo
+                  and bool(data.get("grupos")))
+        # "Agregar al lote": mismo lote_id pero cambió el contenido (firma) -> el lote creció y ya no
+        # está completo; fase y completitud se recalculan en vez de quedar fijas.
+        _lote_crecio = (not es_lote_nuevo and bool(_firma) and bool(est.get("_firma_lote"))
+                        and _firma != est.get("_firma_lote"))
+        # Nunca retroceder fase / colecta_completa dentro del mismo lote (salvo que el lote haya crecido)
+        if not es_lote_nuevo and not _lote_crecio:
+            nueva_fase = max(_fase_int(est.get("fase",1)), nueva_fase)
+            _completa_in = bool(data.get("colecta_completa",False)) or bool(est.get("colecta_completa"))
+        else:
+            _completa_in = data.get("colecta_completa",False)
 
         est.update({
             "fase": nueva_fase, "grupos": data.get("grupos",[]),
             "total_skus": data.get("total_skus",0), "total_uds": data.get("total_uds",0),
-            "colecta_completa": data.get("colecta_completa",False),
+            "colecta_completa": _completa_in,
             "ultima_actualizacion": _ts(), "cargado": True, "canal": canal,
             "operario": data.get("operario","") or est.get("operario",""),
         })
@@ -4320,19 +4422,27 @@ def subir_estado():
             # muestre como "ya buscado" lo que era del lote previo.
             # Diagnóstico: un lote recién generado NO debería traer colecta. Si la PC mandó
             # alguna, el arrastre nace en la PC; si la tenía el servidor, nace acá.
-            if _colecta_in:
+            _reanuda = data.get("reanudar") is True
+            if _colecta_in and not _reanuda:
                 logger.warning(f"[ARRASTRE?] '{clave}': la PC subió un lote NUEVO con colecta "
                                f"{dict(list(_colecta_in.items())[:8])} (ignorada)")
             if est.get("colecta"):
                 logger.info(f"[LOTE] '{clave}': al abrir el lote nuevo se descartó la colecta anterior del "
                             f"servidor ({len(est.get('colecta') or {})} SKUs)")
             est["colecta"]          = {}
+            est["sku_rev"]          = {}
             est["colecta_completa"] = False
             est["inicio_ts"]        = _dt_est.datetime.now().isoformat()
             est["ultimos_scans"]    = []
             est["_colecta_prev"]    = {}
             est["_firma_lote"]      = _firma
             est["lote_id"]          = _lote_id_in or f"{clave}_{int(_t_lid.time())}_{_firma[:6]}"
+            if _reanuda and _colecta_in and _lote_id_in:
+                # La PC RETOMA una sesión guardada (mismo lote_id que ella generó) y el servidor ya no
+                # tiene ese lote: su colecta es progreso real, no arrastre de otro lote.
+                est["colecta"] = dict(_colecta_in)
+                logger.info(f"[LOTE] '{clave}': lote {_lote_id_in} REANUDADO por la PC con "
+                            f"{len(_colecta_in)} SKUs ya colectados")
             logger.info(f"[LOTE] '{clave}' (canal={canal}): lote NUEVO "
                         f"(id={est['lote_id']}, firma={_firma[:8]}) — colecta reseteada a 0")
         elif not data.get("grupos"):
@@ -4340,6 +4450,7 @@ def subir_estado():
             # el servidor y el escritorio/celular la mezclaban con el lote siguiente
             # ("ya buscaste este SKU" sin haberlo buscado). Se limpia todo.
             est["colecta"]          = {}
+            est["sku_rev"]          = {}
             est["colecta_completa"] = False
             est["ultimos_scans"]    = []
             est["_colecta_prev"]    = {}
@@ -4351,16 +4462,32 @@ def subir_estado():
             # Mismo lote → fusionar la colecta por MÁXIMO por SKU: nunca bajar
             # contadores (así no se pierde un escaneo hecho en un celular mientras
             # el desktop subía un estado más viejo).
-            _prev = est.get("colecta",{}) or {}
+            _prev = _colecta_limpia(est.get("colecta"))
+            _skrev = est.get("sku_rev") if isinstance(est.get("sku_rev"), dict) else {}
             _merged = {}
+            _gano_srv = []
             for s in set(_prev) | set(_colecta_in):
+                pv, iv = int(_prev.get(s, 0) or 0), int(_colecta_in.get(s, 0) or 0)
                 try:
-                    _merged[s] = max(int(_prev.get(s,0) or 0), int(_colecta_in.get(s,0) or 0))
-                except Exception:
-                    _merged[s] = _prev.get(s,0) or _colecta_in.get(s,0) or 0
-            est["colecta"] = _merged
-            if _firma and not est.get("_firma_lote"):
+                    cambio_srv = _stale and int(_skrev.get(s, 0) or 0) > _base_rev
+                except (TypeError, ValueError, OverflowError):
+                    cambio_srv = False
+                if cambio_srv:
+                    _merged[s] = pv           # un celular lo cambió después de lo que vio la PC
+                    if iv != pv:
+                        _gano_srv.append(s)
+                else:
+                    _merged[s] = max(pv, iv)  # fusión por MÁXIMO: nunca perder un escaneo
+            if _stale:
+                logger.info(f"[SYNC] '{clave}': subida con base_rev={_base_rev} < rev={_rev_srv} — "
+                            f"fusión por SKU (el servidor gana en {_gano_srv or 'ninguno'})")
+            est["colecta"] = {k: v for k, v in _merged.items() if v > 0}
+            if _firma and (not est.get("_firma_lote") or _lote_crecio):
                 est["_firma_lote"] = _firma
+            if _lote_crecio:
+                est["colecta_completa"] = _todo_completo(data.get("grupos", []), est["colecta"])
+                logger.info(f"[LOTE] '{clave}': el lote creció (Agregar al lote) — completitud recalculada: "
+                            f"{est['colecta_completa']}")
 
         # ── Saneo: la colecta sólo puede contener SKUs presentes en los grupos
         # que se acaban de subir. Mata cualquier arrastre de un lote anterior.
@@ -4376,7 +4503,7 @@ def subir_estado():
         # Registrar últimos escaneos comparando la colecta anterior con la nueva
         try:
             colecta_ant = est.get("_colecta_prev", {})
-            colecta_new = data.get("colecta", {})
+            colecta_new = est.get("colecta", {}) or {}
             scans = est.get("ultimos_scans", [])
             for sku, qty in colecta_new.items():
                 if int(qty) > int(colecta_ant.get(sku, 0)):
@@ -4399,17 +4526,25 @@ def subir_estado():
             logger.debug(f"[LOTE] Error registrando scans: {_e_scan}")
         if "pedidos" in data and isinstance(data["pedidos"], dict):
             est["pedidos"] = data["pedidos"]
-        if nueva_fase == 1 and not data.get("colecta"):
+        if nueva_fase == 1 and not _colecta_in:
             est["etiquetas_impresas"] = []
+        if es_lote_nuevo or not data.get("grupos") or dict(est.get("colecta") or {}) != _colecta_antes:
+            _bump_rev(est)
         _actualizar_sync_estado(clave)
     try:
         _guardar_lotes()
     except Exception as e:
         logger.error(f"[LOTE] Error persistiendo: {e}")
     logger.info(f"[LOTE] '{clave}' (canal={canal}) cargado: {est['total_skus']} SKUs, fase {nueva_fase}")
-    return jsonify({"ok": True, "canal": canal, "clave": clave,
-                    "lote_id": est.get("lote_id",""),
-                    "msg": f"Canal '{canal}': {est['total_skus']} SKUs"})
+    _resp = {"ok": True, "canal": canal, "clave": clave,
+             "lote_id": est.get("lote_id",""), "rev": int(est.get("rev",0) or 0),
+             "msg": f"Canal '{canal}': {est['total_skus']} SKUs"}
+    if _stale:
+        _resp["stale"] = True
+        _resp["colecta"] = dict(est.get("colecta") or {})
+        _resp["fase"] = est.get("fase",1)
+        _resp["colecta_completa"] = bool(est.get("colecta_completa"))
+    return jsonify(_resp)
 
 
 @app.route("/api/lote-en-vivo")
@@ -4521,6 +4656,9 @@ def get_estado():
     est   = _get_estado(clave)
     with _lock:
         estado = dict(est)
+    estado["rev"] = int(estado.get("rev",0) or 0)
+    estado.pop("sku_rev", None)          # interno: no viaja a los clientes
+    estado.setdefault("lote_id", "")
     estado["cargado"] = bool(estado.get("cargado",False))
     estado.setdefault("canal", canal)
     estado["canales_disponibles"] = {
@@ -4596,7 +4734,9 @@ def fase2_marcar_impresa(order_id):
 
 @app.route("/api/escanear", methods=["POST"])
 def escanear():
-    data  = request.get_json(force=True)
+    data  = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("sku",""), (str, int)):
+        return jsonify({"ok": False, "msg": "Datos invalidos"}), 400
     sku   = str(data.get("sku","")).strip().upper()
     canal = data.get("canal","default")
     clave = _tn_clave(data.get("usuario",""), data.get("cuenta_id",""), canal)
@@ -4624,20 +4764,25 @@ def escanear():
             except Exception:
                 pass
             return jsonify({"ok": True, "tipo": "ya_completo",
+                            "lote_id": est.get("lote_id",""), "rev": int(est.get("rev",0) or 0),
                             "msg": f"'{sku}' ya completo ({req}/{req})", "collected": col, "req": req})
         colecta[sku] = col + 1
+        _bump_rev(est)
+        _marcar_sku_rev(est, sku)
         est["ultima_actualizacion"] = _ts()
         todo = all(colecta.get(it["sku"],0) >= it["req"] for g in est["grupos"] for it in g["items"])
         est["colecta_completa"] = todo
-        if todo and est.get("fase",1) == 1:
+        if todo and _fase_int(est.get("fase",1)) == 1:
             est["fase"] = 2
             logger.info(f"[FASE] '{clave}' (canal={canal}): Colecta completa -> Fase 2")
         nuevo = colecta[sku]
-    try:
-        _guardar_lotes()
-    except Exception:
-        pass
+        _rev_out, _lote_out = est["rev"], est.get("lote_id","")
+        try:
+            _guardar_lotes()
+        except Exception:
+            pass
     return jsonify({"ok": True, "tipo": "completo" if nuevo >= req else "parcial",
+                    "lote_id": _lote_out, "rev": _rev_out,
                     "sku": sku, "nombre": sku_info.get("nombre",""),
                     "pasillo": sku_info.get("pasillo",""), "estanteria": sku_info.get("estanteria",""),
                     "collected": nuevo, "req": req, "todo_completo": todo,
@@ -4646,7 +4791,9 @@ def escanear():
 
 @app.route("/api/reset_sku", methods=["POST"])
 def reset_sku():
-    data  = request.get_json(force=True)
+    data  = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("sku",""), (str, int)):
+        return jsonify({"ok": False, "msg": "Datos invalidos"}), 400
     sku   = str(data.get("sku","")).strip().upper()
     canal = data.get("canal","default")
     clave = _tn_clave(data.get("usuario",""), data.get("cuenta_id",""), canal)
@@ -4658,8 +4805,17 @@ def reset_sku():
             if col[sku] == 0: del col[sku]
             est["colecta_completa"] = False
             est["ultima_actualizacion"] = _ts()
-            return jsonify({"ok": True, "msg": f"Deshecho: {sku}"})
-    return jsonify({"ok": False, "msg": "Nada que deshacer"})
+            _bump_rev(est)
+            _marcar_sku_rev(est, sku)
+            try:
+                _guardar_lotes()
+            except Exception:
+                pass
+            return jsonify({"ok": True, "msg": f"Deshecho: {sku}",
+                            "lote_id": est.get("lote_id",""), "rev": est["rev"]})
+        _rev_out = int(est.get("rev",0) or 0)
+    return jsonify({"ok": False, "msg": "Nada que deshacer",
+                    "lote_id": est.get("lote_id",""), "rev": _rev_out})
 
 
 @app.route("/api/limpiar", methods=["POST"])
@@ -4676,8 +4832,9 @@ def limpiar():
         est.update({"grupos":[],"colecta":{},"colecta_completa":False,
                     "cargado":False,"total_skus":0,"total_uds":0,
                     "ultimos_scans":[],"_colecta_prev":{},"inicio_ts":"",
-                    "lote_id":"","_firma_lote":"","etiquetas_impresas":[],
+                    "lote_id":"","_firma_lote":"","etiquetas_impresas":[],"sku_rev":{},
                     "ultima_actualizacion":_ts()})
+        _bump_rev(est)
         _actualizar_sync_estado(clave)
     try:
         _guardar_lotes()

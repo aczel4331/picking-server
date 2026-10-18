@@ -272,10 +272,38 @@ document.addEventListener('DOMContentLoaded', () => {
 // ═══════════════════════════════════════════════════════════
 //  CARGAR ESTADO DESDE EL SERVIDOR
 // ═══════════════════════════════════════════════════════════
+// Guarda anti-respuesta-vieja: lote_id + rev (monótono por lote) del servidor.
+// Mismo lote_id y rev menor a la última aplicada => respuesta vieja, se descarta.
+// Otro lote_id => lote nuevo. Sin esos campos (servidor viejo) no filtra.
+let _loteId = null, _rev = -1, _staleN = 0;
+function _revEstado(d) {          // 'stale' | 'nuevo' | 'ok'
+  if (!d || typeof d.rev !== 'number') return 'ok';
+  if (d.lote_id != null && d.lote_id !== _loteId) return 'nuevo';
+  return d.rev < _rev ? 'stale' : 'ok';
+}
+function _revAplicar(d) {
+  if (!d || typeof d.rev !== 'number') return;
+  if (d.lote_id != null && d.lote_id !== _loteId) { _loteId = d.lote_id; _rev = -1; }
+  if (d.rev > _rev) _rev = d.rev;
+}
+// Lectura de /api/estado: true = respuesta vieja que se cruzó con un escaneo -> descartar.
+// Si el servidor "retrocede" (reinició sin restaurar el lote) llegan varias seguidas con rev menor:
+// a la 3ª se acepta y se reinicia la guarda, así el celular nunca queda congelado.
+function _revDescartar(d) {
+  if (_revEstado(d) !== 'stale') { _staleN = 0; return false; }
+  if (++_staleN >= 3) { _staleN = 0; _loteId = null; _rev = -1; return false; }
+  return true;
+}
+function _revReiniciar() { _loteId = null; _rev = -1; _staleN = 0; }
+
 async function cargarEstado() {
   try {
     const r = await fetch('/api/estado');
-    estado = await r.json();
+    const nuevo = await r.json();
+    if (!estado) _revReiniciar();
+    if (_revDescartar(nuevo)) return;
+    _revAplicar(nuevo);
+    estado = nuevo;
     renderLista();
   } catch(e) {
     mostrarFeedback('error', '❌ Sin conexión con la PC. Verificá el WiFi.');
@@ -285,7 +313,11 @@ async function cargarEstado() {
 async function cargarEstadoSilencioso() {
   try {
     const r = await fetch('/api/estado');
-    estado = await r.json();
+    const nuevo = await r.json();
+    if (!estado) _revReiniciar();
+    if (_revDescartar(nuevo)) return;
+    _revAplicar(nuevo);
+    estado = nuevo;
     renderLista(true);  // silent=true: no scrollea
   } catch(e) {}
 }
@@ -414,7 +446,10 @@ async function procesarSKU(raw) {
 
       // Actualizar estado local sin refetch
       if (!estado.colecta) estado.colecta = {};
-      estado.colecta[sku] = data.collected;
+      const _est = _revEstado(data);
+      if (_est === 'nuevo') estado.colecta = {};
+      estado.colecta[sku] = _est === 'stale' ? Math.max(Number(estado.colecta[sku] || 0), Number(data.collected) || 0) : data.collected;
+      _revAplicar(data);
       if (data.todo_completo) {
         estado.colecta_completa = true;
         toast('🎉 ¡Colecta completa!', 'success');
