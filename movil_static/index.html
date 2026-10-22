@@ -247,7 +247,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window._scanTimeout = setTimeout(() => {
       const v2 = input.value.trim();
       if (v2.length >= 4) { procesarSKU(v2); input.value = ''; }
-    }, 400);
+    }, 600);
   });
 
   document.getElementById('btn-refresh').addEventListener('click', () => {
@@ -412,7 +412,7 @@ function toggleGrupo(header) {
 //  PROCESAR ESCANEO
 // ═══════════════════════════════════════════════════════════
 async function procesarSKU(raw) {
-  const sku = raw.trim().toUpperCase();
+  const sku = String(raw || '').replace(/\s+/g, ' ').trim().toUpperCase();
   if (!sku || sku.length < 2) return;
 
   // Anti-doble lectura (100ms)
@@ -443,12 +443,13 @@ async function procesarSKU(raw) {
         ? `✔ ${data.nombre || sku} — ¡Completo!`
         : `${data.nombre || sku}  ${data.collected}/${data.req}`;
       mostrarFeedback('ok', txt);
+      const skuL = data.sku || sku;   // el SKU exactamente como está en la venta
 
       // Actualizar estado local sin refetch
       if (!estado.colecta) estado.colecta = {};
       const _est = _revEstado(data);
       if (_est === 'nuevo') estado.colecta = {};
-      estado.colecta[sku] = _est === 'stale' ? Math.max(Number(estado.colecta[sku] || 0), Number(data.collected) || 0) : data.collected;
+      estado.colecta[skuL] = _est === 'stale' ? Math.max(Number(estado.colecta[skuL] || 0), Number(data.collected) || 0) : data.collected;
       _revAplicar(data);
       if (data.todo_completo) {
         estado.colecta_completa = true;
@@ -458,7 +459,7 @@ async function procesarSKU(raw) {
 
       // Scroll al item
       setTimeout(() => {
-        const el = document.querySelector(`[data-sku="${sku}"]`);
+        const el = document.querySelector(`[data-sku="${skuL}"]`);
         if (el) el.scrollIntoView({behavior:'smooth', block:'center'});
       }, 100);
     }

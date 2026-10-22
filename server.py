@@ -269,6 +269,17 @@ def _fase_int(v, default=1):
     return 1 if n < 1 else (2 if n > 2 else n)
 
 
+def _sku_canon(s):
+    """SKU para comparar con el de la venta: MAYÚSCULAS, sin espacios en los bordes y con espacios
+    invisibles/repetidos como UN espacio. NO quita símbolos ni espacios reales (no se adivina)."""
+    return re.sub(r"\s+", " ", str(s or "")).strip().upper()
+
+
+def _sku_alnum(s):
+    """Solo para el log de diagnóstico: letras y números."""
+    return re.sub(r"[^0-9A-Z]", "", _sku_canon(s))
+
+
 def _colecta_limpia(c):
     """Colecta enviada por un cliente -> {sku(str): int>=0}; descarta lo que no sea numérico."""
     out = {}
@@ -2720,6 +2731,128 @@ def _resolver_tienda():
     return None
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ACTUALIZACION AUTOMATICA DE LA APP DE ESCRITORIO (sin zip a mano ni GitHub)
+# Las versiones viven en el volumen: /data/app_releases/Logibot_vX.Y.Z.zip + releases.json.
+# La app solo instala un zip cuya FIRMA (Ed25519, clave privada fuera del servidor) verifica.
+# ═══════════════════════════════════════════════════════════════════════════════
+APP_RELEASES_DIR = os.path.join(DATA_DIR, "app_releases")
+_APP_ZIP_RE = re.compile(r"^Logibot_v(\d+\.\d+\.\d+)\.zip$")
+_APP_VER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+# Clave PUBLICA con la que se firman las versiones (la privada nunca está en el servidor). El servidor solo
+# acepta publicar un zip firmado: aunque alguien tenga la clave de la API, no puede subir una versión.
+APP_FIRMA_PUB = os.environ.get("APP_FIRMA_PUB", "p7hWFRzQ4isq9e6zRErXeLvqO7cE5wIWDRMzbZEwemk=")
+
+
+def _app_firma_ok(version, sha256, firma_b64):
+    try:
+        import base64 as _b64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except Exception:
+        return None                      # sin la librería no se puede verificar → no se publica
+    try:
+        Ed25519PublicKey.from_public_bytes(_b64.b64decode(APP_FIRMA_PUB)).verify(
+            _b64.b64decode(firma_b64), f"Logibot|{version}|{sha256}".encode("utf-8"))
+        return True
+    except Exception:
+        return False
+
+
+def _app_ver_tuple(v):
+    return tuple(int(x) for x in str(v).split("."))
+
+
+def _app_releases_leer():
+    try:
+        with open(os.path.join(APP_RELEASES_DIR, "releases.json"), encoding="utf-8") as f:
+            d = json.load(f)
+        return [r for r in d if isinstance(r, dict) and _APP_VER_RE.match(str(r.get("version", "")))]
+    except Exception:
+        return []
+
+
+@app.route("/api/app/version")
+def api_app_version():
+    """Ultima version publicada de la app de escritorio (publico: lo consulta el actualizador)."""
+    rels = _app_releases_leer()
+    if not rels:
+        return jsonify({"ok": False, "msg": "No hay versiones publicadas"}), 404
+    r = max(rels, key=lambda x: _app_ver_tuple(x["version"]))
+    url = f"/api/app/descarga/{r['archivo']}"
+    return jsonify({"ok": True, "version": r["version"], "notas": r.get("notas", ""), "url": url,
+                    "sha256": r.get("sha256", ""), "tamano": r.get("tamano", 0), "firma": r.get("firma", ""),
+                    "fecha": r.get("fecha", "")})
+
+
+@app.route("/api/app/descarga/<archivo>")
+def api_app_descarga(archivo):
+    from flask import send_from_directory
+    if not _APP_ZIP_RE.match(archivo or "") or not os.path.isfile(os.path.join(APP_RELEASES_DIR, archivo)):
+        return jsonify({"ok": False, "msg": "No existe"}), 404
+    return send_from_directory(APP_RELEASES_DIR, archivo, mimetype="application/zip",
+                               as_attachment=True, max_age=0)
+
+
+@app.route("/api/admin/app/publicar", methods=["POST"])
+def api_app_publicar():
+    """Publica una version nueva (zip + version + notas + firma). Requiere la clave de publicacion
+    (APP_PUBLICAR_KEY si esta definida; si no, la clave maestra). Conserva las 3 ultimas."""
+    import hashlib as _hl_pub, zipfile as _zf_pub, datetime as _dt_pub
+    k = (request.headers.get("X-API-Key") or "").strip()
+    clave_pub = (os.environ.get("APP_PUBLICAR_KEY") or API_KEY or "").strip()
+    if not clave_pub or k != clave_pub:
+        return jsonify({"ok": False, "msg": "Requiere la clave de publicacion"}), 401
+    f = request.files.get("zip")
+    version = (request.form.get("version") or "").strip()
+    notas = (request.form.get("notas") or "").strip()[:2000]
+    firma = (request.form.get("firma") or "").strip()
+    if not f or not _APP_VER_RE.match(version) or not firma:
+        return jsonify({"ok": False, "msg": "Faltan zip, version (X.Y.Z) o firma"}), 400
+    rels = _app_releases_leer()
+    if rels and _app_ver_tuple(version) <= max(_app_ver_tuple(r["version"]) for r in rels):
+        return jsonify({"ok": False, "msg": "La version debe ser mayor a la ultima publicada"}), 400
+    os.makedirs(APP_RELEASES_DIR, exist_ok=True)
+    archivo = f"Logibot_v{version}.zip"
+    tmp = os.path.join(APP_RELEASES_DIR, archivo + ".tmp")
+    h, tam = _hl_pub.sha256(), 0
+    with open(tmp, "wb") as out:
+        while True:
+            chunk = f.stream.read(1 << 20)
+            if not chunk:
+                break
+            h.update(chunk); tam += len(chunk); out.write(chunk)
+            if tam > 300 * 1024 * 1024:
+                out.close(); os.remove(tmp)
+                return jsonify({"ok": False, "msg": "Archivo demasiado grande"}), 400
+    _ok_firma = _app_firma_ok(version, h.hexdigest(), firma)
+    if _ok_firma is not True:
+        os.remove(tmp)
+        if _ok_firma is None:
+            return jsonify({"ok": False, "msg": "El servidor no puede verificar firmas (falta la libreria)"}), 503
+        logger.warning(f"[APP] Publicación de {version} RECHAZADA: firma inválida (IP {request.remote_addr})")
+        return jsonify({"ok": False, "msg": "Firma invalida"}), 403
+    try:
+        with _zf_pub.ZipFile(tmp) as z:
+            if "Logibot.exe" not in z.namelist() or z.testzip() is not None:
+                raise ValueError("el zip no trae Logibot.exe o esta danado")
+    except Exception as e:
+        os.remove(tmp)
+        return jsonify({"ok": False, "msg": f"Zip invalido: {e}"}), 400
+    os.replace(tmp, os.path.join(APP_RELEASES_DIR, archivo))
+    rel = {"version": version, "archivo": archivo, "sha256": h.hexdigest(), "tamano": tam, "notas": notas,
+           "firma": firma, "fecha": _dt_pub.datetime.now().isoformat(timespec="seconds")}
+    rels = sorted(rels + [rel], key=lambda x: _app_ver_tuple(x["version"]))
+    for viejo in rels[:-3]:
+        try:
+            os.remove(os.path.join(APP_RELEASES_DIR, viejo["archivo"]))
+        except OSError:
+            pass
+    rels = rels[-3:]
+    _escribir_atomico(os.path.join(APP_RELEASES_DIR, "releases.json"), json.dumps(rels, ensure_ascii=False, indent=1))
+    logger.info(f"[APP] Version {version} publicada ({tam/1048576:.1f} MiB, sha256 {h.hexdigest()[:12]}...)")
+    return jsonify({"ok": True, **rel})
+
+
 @app.route("/api/admin/etiquetas-auditoria")
 def api_etiquetas_auditoria():
     """Revisa los PDFs guardados y lista los que no tienen contenido. Solo lectura;
@@ -4737,7 +4870,8 @@ def escanear():
     data  = request.get_json(force=True, silent=True)
     if not isinstance(data, dict) or not isinstance(data.get("sku",""), (str, int)):
         return jsonify({"ok": False, "msg": "Datos invalidos"}), 400
-    sku   = str(data.get("sku","")).strip().upper()
+    _crudo = str(data.get("sku",""))
+    sku   = _sku_canon(_crudo)
     canal = data.get("canal","default")
     clave = _tn_clave(data.get("usuario",""), data.get("cuenta_id",""), canal)
     est   = _get_estado(clave)
@@ -4747,9 +4881,19 @@ def escanear():
         if not est["cargado"]:
             return jsonify({"ok": False, "msg": f"No hay lote cargado en '{clave}'"})
         colecta  = est["colecta"]
-        sku_info = next((it for g in est["grupos"] for it in g.get("items",[]) if it["sku"] == sku), None)
+        _items = [it for g in est["grupos"] for it in g.get("items",[])]
+        sku_info = (next((it for it in _items if it["sku"] == sku), None)
+                    or next((it for it in _items if _sku_canon(it["sku"]) == sku), None))
         if not sku_info:
-            return jsonify({"ok": False, "tipo": "no_encontrado", "msg": f"'{sku}' no esta en ningun pedido"})
+            try:
+                _pista = sorted({it["sku"] for it in _items if _sku_alnum(it["sku"]) == _sku_alnum(_crudo)})
+                logger.warning(f"[SCAN?] '{clave}': la lectora envió {_crudo!r} y no está en el lote"
+                               + (f" — en la venta figura {_pista} (la lectora cambió símbolos o espacios)" if _pista else ""))
+            except Exception:
+                pass
+            _vis = f" (la lectora envió {_crudo.strip()!r})" if re.search(r"[^0-9A-Za-z]", _crudo.strip()) else ""
+            return jsonify({"ok": False, "tipo": "no_encontrado", "msg": f"'{sku}' no esta en ningun pedido{_vis}"})
+        sku = sku_info["sku"]          # el SKU exactamente como está en la venta
         req = sku_info["req"]
         col = colecta.get(sku,0)
         if col >= req:
@@ -4794,12 +4938,13 @@ def reset_sku():
     data  = request.get_json(force=True, silent=True)
     if not isinstance(data, dict) or not isinstance(data.get("sku",""), (str, int)):
         return jsonify({"ok": False, "msg": "Datos invalidos"}), 400
-    sku   = str(data.get("sku","")).strip().upper()
+    sku   = _sku_canon(data.get("sku",""))
     canal = data.get("canal","default")
     clave = _tn_clave(data.get("usuario",""), data.get("cuenta_id",""), canal)
     est   = _get_estado(clave)
     with _lock:
         col = est["colecta"]
+        sku = sku if sku in col else next((k for k in col if _sku_canon(k) == sku), sku)
         if sku in col and col[sku] > 0:
             col[sku] -= 1
             if col[sku] == 0: del col[sku]

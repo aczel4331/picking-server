@@ -829,7 +829,8 @@ function tog(h) { h.nextElementSibling.classList.toggle('col'); }
 
 // ── ESCANEO ─────────────────────────────────────────────────────────────────
 async function scan(raw) {
-  const sku = raw.trim().toUpperCase();
+  // El SKU tal cual: solo mayúsculas y espacios invisibles/repetidos como un espacio (no se quitan símbolos).
+  const sku = String(raw || '').replace(/\s+/g, ' ').trim().toUpperCase();
   if (!sku || sku.length < 2) return;
   if (last === sku) return;
   last = sku;
@@ -856,12 +857,13 @@ async function scan(raw) {
         ? `✔  ${d.nombre || sku}  —  ¡Completo! (${d.req}/${d.req})`
         : `${d.nombre || sku}  ${d.collected}/${d.req}`;
       fb('ok', txt);
+      const skuL = d.sku || sku;      // el SKU exactamente como está en la venta (lo devuelve el servidor)
 
       if (!E.colecta) E.colecta = {};
       const _est = _revEstado(d);
       if (_est === 'nuevo') E.colecta = {};
       // Respuesta de escaneo que llegó desordenada: no retroceder el contador visible.
-      E.colecta[sku] = _est === 'stale' ? Math.max(Number(E.colecta[sku] || 0), Number(d.collected) || 0) : d.collected;
+      E.colecta[skuL] = _est === 'stale' ? Math.max(Number(E.colecta[skuL] || 0), Number(d.collected) || 0) : d.collected;
       _revAplicar(d);
 
       if (d.todo_completo) {
@@ -871,9 +873,9 @@ async function scan(raw) {
       }
 
       render(true);
-      cargarImagen(sku);
+      cargarImagen(skuL);
 
-      const el = document.getElementById(`item-${sku}`);
+      const el = document.getElementById(`item-${skuL}`);
       if (el) {
         el.classList.add('recien');
         setTimeout(() => el.classList.remove('recien'), 700);
@@ -1056,7 +1058,7 @@ document.addEventListener('DOMContentLoaded', () => {
     _scanTimer = setTimeout(() => {
       const v2 = inp.value.trim();
       if (v2.length >= 2) { debug(`⏱️ Auto-scan: ${v2}`); scan(v2); inp.value=''; inp.focus(); }
-    }, 80);
+    }, 600);   // las lectoras mandan Enter al final; esto es solo respaldo (antes 80 ms cortaba el SKU en un '+' o espacio)
   });
 
   inp.addEventListener('blur', () => {
@@ -1077,13 +1079,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (e.key && e.key.length===1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const now=Date.now();
-      if (now-_gLastKey>150) _gBuf='';
+      if (now-_gLastKey>600) _gBuf='';      // una pausa corta (símbolo/espacio) NO corta el SKU
       _gLastKey=now; _gBuf+=e.key;
       clearTimeout(_gTimer);
       _gTimer=setTimeout(()=>{
         const s=_gBuf.trim(); _gBuf='';
         if (s.length>=2) { debug(`⏱️ Global: ${s}`); scan(s); inp.focus(); }
-      }, 150);
+      }, 600);
     }
   });
 
