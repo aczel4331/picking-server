@@ -1,5 +1,5 @@
 {
-  "version": "4.1.12",
-  "url_exe": "https://github.com/aczel4331/picking-server/releases/download/v4.1.12/Logibot_v4.1.12.zip",
-  "notas": "Autorizacion para saltear Fase 1: el codigo que pedia la app para pasar a Fase 2 con SKUs incompletos usaba SOLO el valor guardado en el config.json local de esa PC -- si el supervisor cambiaba el codigo desde el panel web, esa PC seguia pidiendo el codigo viejo. Ahora consulta el codigo desde Railway (la misma fuente que ya usaba la ventana de 'imprimir etiqueta con clave'), y solo cae al valor local si no hay conexion. El boton de aprobacion remota (pedirle al supervisor que apruebe con un click desde la web) no cambia."
+  "version": "4.1.32",
+  "url_exe": "https://picking-server-production.up.railway.app/api/app/descarga/Logibot_v4.1.32.zip",
+  "notas": "Desde esta version la app se actualiza sola (sin lote en curso). Lectora: SKU con simbolos o espacios se reconocen igual que en la venta."
 }
