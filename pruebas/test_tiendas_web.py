@@ -223,6 +223,36 @@ try:
     check("reactivada, entra de nuevo", r.status_code == 302, r.status_code)
     r = adm.post(B + "/api/panel/tiendas/cuenta_2/estado", json={"estado": "suspendida"})
     check("la tienda principal (Everest) no se puede suspender desde la web", r.status_code == 400, r.text)
+
+    print("eliminar tiendas")
+    elim = lambda tid, nombre: adm.post(B + f"/api/panel/tiendas/{tid}/eliminar", json={"confirmar": nombre})
+    r = elim(TID, "Tienda Fact")
+    check("una tienda activa no se elimina (primero hay que suspenderla)", r.status_code == 400
+          and "suspend" in r.json()["msg"], r.text)
+    adm.post(B + f"/api/panel/tiendas/{TID}/estado", json={"estado": "suspendida"})
+    r = elim(TID, "otro nombre")
+    check("sin escribir bien el nombre no se elimina", r.status_code == 400, r.text)
+    check("sin sesión de admin no se elimina",
+          requests.post(B + f"/api/panel/tiendas/{TID}/eliminar", json={"confirmar": "Tienda Fact"}).status_code == 403)
+    check("el supervisor de la tienda no puede eliminarla",
+          ven2.post(B + f"/api/panel/tiendas/{TID}/eliminar", json={"confirmar": "Tienda Fact"}).status_code == 403)
+    r = elim(TID, "  tienda fact ")
+    check("suspendida + nombre (sin importar mayúsculas) → eliminada con sus usuarios", r.status_code == 200
+          and sorted(r.json()["eliminada"]["usuarios"]) == ["ventas1", "ventas2"], r.text)
+    lista = adm.get(B + "/api/panel/tiendas").json()["tiendas"]
+    check("ya no aparece en la lista", all(t["id"] != TID for t in lista))
+    check("sus datos se guardaron aparte (no se destruyen)",
+          any(d.startswith(TID + "_") for d in os.listdir(os.path.join(DATA, "tiendas_borradas")))
+          and not os.path.exists(os.path.join(DATA, "tiendas", TID)))
+    _, r = sesion("ventas1", "clave123")
+    check("su usuario ya no entra", "fact-drop" not in r.text and r.status_code == 200, r.status_code)
+    r = ven2.get(B + "/facturacion", allow_redirects=False)
+    check("una sesión abierta de esa tienda queda afuera", "ya no existe" in r.text, r.status_code)
+    check("su token de la app deja de servir",
+          requests.get(B + "/api/facturas", headers=KEY).status_code in (401, 403))
+    check("la tienda principal no se puede eliminar", elim("cuenta_2", "cuenta_2").status_code == 400)
+    check("Everest sigue igual", adm.get(B + "/admin/usuarios").status_code == 200
+          and any(t.get("primary") for t in adm.get(B + "/api/panel/tiendas").json()["tiendas"]))
 finally:
     srv.terminate()
     ml_srv.shutdown()

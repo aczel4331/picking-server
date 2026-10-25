@@ -36,6 +36,8 @@ input[type="text"], input[type="password"], input[type="file"], select {
 .btn-linea { background: transparent !important; color: var(--accent) !important; box-shadow: inset 0 0 0 1.5px var(--accent); }
 .btn-linea:hover { background: var(--accent-soft) !important; }
 .btn-peligro { background: transparent !important; color: var(--danger-hover) !important; box-shadow: inset 0 0 0 1.5px var(--danger); }
+.btn-borrar { background: var(--danger) !important; color: #fff !important; }
+.btn-borrar:hover { background: var(--danger-hover) !important; }
 .aviso { margin-top: 14px; padding: 11px 14px; border-radius: 10px; font-size: 14px; display: none; }
 .aviso.ver { display: block; }
 .aviso.bien { background: var(--success-soft); color: var(--success); }
@@ -152,7 +154,8 @@ function pintar() {
           Object.keys(PLANES).map(k => '<option value="' + k + '"' + (k === plan ? ' selected' : '') + '>' + esc(PLANES[k]) + '</option>').join('') +
         '</select>' +
         (t.estado === 'suspendida'
-          ? '<button class="btn btn-chico btn-linea" type="button" data-estado="activa" data-i="' + i + '">Reactivar</button>'
+          ? '<button class="btn btn-chico btn-linea" type="button" data-estado="activa" data-i="' + i + '">Reactivar</button>' +
+            '<button class="btn btn-chico btn-borrar" type="button" data-eliminar="' + i + '">Eliminar tienda</button>'
           : '<button class="btn btn-chico btn-peligro" type="button" data-estado="suspendida" data-i="' + i + '">Suspender</button>') +
         (t.estado !== 'suspendida'
           ? '<button class="btn btn-chico btn-linea" type="button" data-enlace="' + i + '">Enlace para conectar ML</button>' : '');
@@ -214,6 +217,17 @@ document.getElementById('lista').addEventListener('click', async e => {
     if (b.dataset.estado === 'suspendida' && !confirm('¿Suspender ' + t.nombre + '? Sus usuarios no van a poder entrar.')) return;
     const d = await api('/api/panel/tiendas/' + encodeURIComponent(t.id) + '/estado', {estado: b.dataset.estado});
     if (!d.ok) alert(d.msg); cargar();
+  } else if (b.dataset.eliminar) {
+    const t = _tiendas[+b.dataset.eliminar];
+    const escrito = prompt('Vas a eliminar "' + t.nombre + '": se borran la tienda, sus usuarios y su conexión con ' +
+                           'Mercado Libre. Sus datos se guardan aparte por si hay que recuperarlos.\n\n' +
+                           'Para confirmar, escribí el nombre de la tienda:');
+    if (escrito === null) return;
+    const d = await api('/api/panel/tiendas/' + encodeURIComponent(t.id) + '/eliminar', {confirmar: escrito});
+    if (!d.ok) { alert(d.msg); return; }
+    aviso('Tienda "' + t.nombre + '" eliminada' + (d.eliminada.usuarios.length ? ' junto con sus usuarios: ' +
+          d.eliminada.usuarios.join(', ') : '') + '.', true);
+    cargar();
   } else if (b.dataset.enlace) {
     const i = +b.dataset.enlace, t = _tiendas[i];
     const d = await api('/api/panel/tiendas/' + encodeURIComponent(t.id) + '/invitacion', {});

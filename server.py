@@ -2426,6 +2426,41 @@ def _tienda_cambiar_estado(tid, nuevo) -> dict:
         return _tienda_publica(t)
 
 
+def _tienda_eliminar(tid, confirmar) -> dict:
+    """Elimina una tienda SUSPENDIDA: su registro, sus usuarios, su conexión con ML, sus pedidos y
+    lotes en memoria. Su carpeta (facturas, config, token) no se destruye: se mueve a
+    DATA_DIR/tiendas_borradas/<id>_<fecha>/ por si hay que recuperarla. Lanza ValueError."""
+    import shutil
+    with _tiendas_lock:
+        t = _tiendas.get(tid)
+        if not t or t.get("primary") or not str(tid).startswith("t_"):
+            raise ValueError("No se puede eliminar esa tienda")
+        if t.get("estado") != "suspendida":
+            raise ValueError("Primero suspendé la tienda; después se puede eliminar")
+        if str(confirmar or "").strip().lower() != str(t.get("nombre") or "").strip().lower():
+            raise ValueError("Para confirmar, escribí el nombre exacto de la tienda")
+        _tiendas.pop(tid)
+        _tiendas_guardar()
+    usuarios = [u.get("usuario") for u in _usuarios if str(u.get("cuenta_id", "")).lower() == tid]
+    _usuarios[:] = [u for u in _usuarios if str(u.get("cuenta_id", "")).lower() != tid]
+    _guardar_usuarios()
+    _cuentas.pop(tid, None)
+    _ml_sessions.pop(tid, None)
+    for oid in [o for o, p in list(_pedidos_ml.items()) if p.get("_cuenta") == tid]:
+        _pedidos_ml.pop(oid, None)
+    for clave in [c for c in list(_estados_canal) if str(c).startswith(tid + ":")]:
+        _estados_canal.pop(clave, None)
+    carpeta = os.path.join(TIENDAS_DIR, tid)
+    destino = ""
+    if os.path.isdir(carpeta):
+        destino = os.path.join(DATA_DIR, "tiendas_borradas", f"{tid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        os.makedirs(os.path.dirname(destino), exist_ok=True)
+        shutil.move(carpeta, destino)
+    _guardar_tokens()
+    logger.warning(f"[TIENDAS] Eliminada {tid} ({t.get('nombre')}): usuarios {usuarios}; datos en {destino or '-'}")
+    return {"id": tid, "nombre": t.get("nombre", ""), "usuarios": usuarios}
+
+
 def _logo_path(tienda_id: str) -> str:
     return os.path.join(TIENDAS_DIR, tienda_id, "logo.bin")
 
@@ -2673,6 +2708,16 @@ def api_panel_tiendas_plan(tid):
         pub = _tienda_para_panel(t)
     logger.info(f"[TIENDAS] {tid}: plan {plan}")
     return jsonify({"ok": True, "tienda": pub})
+
+
+@app.route("/api/panel/tiendas/<tid>/eliminar", methods=["POST"])
+@requiere_admin_panel
+def api_panel_tiendas_eliminar(tid):
+    try:
+        res = _tienda_eliminar(tid, (request.get_json(silent=True) or {}).get("confirmar"))
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 400
+    return jsonify({"ok": True, "eliminada": res})
 
 
 @app.route("/api/panel/tiendas/<tid>/invitacion", methods=["POST"])
@@ -2965,10 +3010,11 @@ def _resolver_tienda():
     else:
         s = _tn_de_sesion()
         if s is not None and request.path.startswith(("/admin", "/estadisticas", "/config", "/etiquetas", "/facturacion")):
-            if s.tid and (_tiendas.get(s.tid) or {}).get("estado") == "suspendida":
-                session.clear()             # una tienda suspendida no sigue usando el panel
-                return render_template_string(_PANEL_LOGIN_HTML,
-                                              error="La tienda está suspendida. Contactá al administrador.")
+            if s.tid and (s.tid not in _tiendas or _tiendas[s.tid].get("estado") == "suspendida"):
+                session.clear()             # una tienda suspendida o eliminada no sigue usando el panel
+                return render_template_string(_PANEL_LOGIN_HTML, error=(
+                    "La tienda está suspendida. Contactá al administrador." if s.tid in _tiendas
+                    else "Esa tienda ya no existe. Contactá al administrador."))
             g.tn = s
     tn = g.tn
     ep = request.endpoint or ""
