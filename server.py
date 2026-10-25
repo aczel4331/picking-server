@@ -31,6 +31,7 @@ logging.getLogger("requests").setLevel(logging.WARNING)
 # ── App ───────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.environ.get("APP_SECRET_KEY", "").strip() or os.urandom(24).hex()
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"   # la cookie del panel no viaja en pedidos de otros sitios
 _lock = threading.Lock()
 
 # ── Templates HTML ─────────────────────────────────────────────────────────────
@@ -2655,7 +2656,7 @@ _TENANT_READY = {
     "admin_redirect", "admin_logout", "admin_usuarios_panel", "panel_estadisticas", "panel_config",
     "panel_etiquetas",
     # facturas (registro y ventas por tienda)
-    "api_facturas_subir", "api_facturas_lista", "api_facturas_dudas", "api_facturas_responder",
+    "api_facturas_subir", "api_facturas_lista", "api_facturas_responder",
     "api_facturas_quitar", "api_facturas_modo", "api_facturas_subir_simuladas", "panel_facturacion",
 }
 
@@ -3779,7 +3780,6 @@ input,select{background:#0F172A;border:1px solid #334155;color:#F1F5F9;
   <a href="/admin/usuarios">👥 Usuarios</a>
   <a href="/estadisticas">📊 Estadísticas</a>
   <a href="/config">⚙ Config</a>
-  <a href="/etiquetas">🏷 Etiquetas</a>
   <a href="/etiquetas" class="active">🏷 Etiquetas</a>
   <a href="/facturacion">🧾 Facturación</a>
   <a href="/admin" style="margin-left:auto">🔒 Cerrar sesión</a>
@@ -5903,26 +5903,41 @@ def api_config_app_excel_get():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FACTURAS — el dueño sube PDFs de CFE (de a una o en lote) y cada una se carga en
-# la venta de ML cuyo NOMBRE y MONTO coinciden. Si hay duda, queda como notificación
-# en /config hasta que el dueño responde. "Modo prueba" hace todo menos subir a ML.
+# FACTURAS — un supervisor sube PDFs de CFE (de a una o en lote) en /facturacion y cada
+# una se carga en la venta de ML del mes elegido cuyo NOMBRE y MONTO coinciden. Si hay
+# duda, queda pendiente hasta que el supervisor responde. "Modo prueba" hace todo menos
+# subir a ML.
 # ══════════════════════════════════════════════════════════════════════════════
 import facturas_cfe as _fcfe
 
 _FACT_MAX_REG     = 2000
-_fact_lock        = threading.Lock()
-_fact_ventas_mem  = {}     # (cuenta_id, mes) -> (ts, packs) — 10 min, para no rebajar todo en cada PDF del lote
+_FACT_MAX_BILLING = 5000
+_FACT_MAX_PEDIDO  = 60 * 1024 * 1024   # un lote en una sola llamada (la página manda de a uno)
+_fact_locks       = {}                 # tienda -> Lock: un lote de una tienda no frena a las otras
+_fact_locks_mx    = threading.Lock()
+_fact_ventas_mem  = {}                 # (cuenta_id, mes) -> (ts, packs) — 10 min, para no rebajar todo en cada PDF
 _FACT_MESES       = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
                      "setiembre", "octubre", "noviembre", "diciembre"]
 
 
+def _fact_lock():
+    with _fact_locks_mx:
+        return _fact_locks.setdefault(_tn().tid, threading.Lock())
+
+
+def _fact_ahora(fmt="%Y-%m-%d %H:%M:%S"):
+    return _hora_uruguay().strftime(fmt)
+
+
 def _fact_mes(valor=None):
-    """Mes en el que se buscan las ventas: '2026-05'. Vacío → mes actual (hora de Uruguay). Inválido → None."""
-    v = str(valor or "").strip()
-    if not v:
-        return (datetime.now(timezone.utc) - timedelta(hours=3)).strftime("%Y-%m")
+    """Mes en el que se buscan las ventas: '2026-05'. Vacío → mes actual (hora de Uruguay).
+    Inválido, anterior a 2020 o futuro → None."""
+    actual = _fact_ahora("%Y-%m")
+    v = str(valor or "").strip() or actual
     m = re.fullmatch(r"(\d{4})-(\d{2})", v)
-    return v if m and 1 <= int(m.group(2)) <= 12 else None
+    if not m or not 1 <= int(m.group(2)) <= 12 or not "2020-01" <= v <= actual:
+        return None
+    return v
 
 
 def _fact_mes_texto(mes):
@@ -5935,6 +5950,13 @@ def _fact_rango_mes(mes):
     y, m = map(int, mes.split("-"))
     ultimo = (datetime(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)).day
     return f"{mes}-01T00:00:00.000-03:00", f"{mes}-{ultimo:02d}T23:59:59.999-03:00"
+
+
+def _fact_nombre_archivo(nombre):
+    """Nombre seguro para mostrar y para mandar a ML: sin carpetas ni caracteres raros, termina en .pdf."""
+    base = os.path.basename(str(nombre or "").replace("\\", "/"))
+    base = re.sub(r"[^\w.-]+", "_", base)[:80].strip("._") or "factura"
+    return base if base.lower().endswith(".pdf") else base + ".pdf"
 
 
 def _fact_ruta(nombre):
@@ -5956,20 +5978,27 @@ def _fact_registro() -> dict:
 
 def _fact_guardar(reg: dict):
     fs = reg["facturas"]
-    if len(fs) > _FACT_MAX_REG:
-        for k in sorted(fs, key=lambda k: fs[k].get("ts", ""))[:len(fs) - _FACT_MAX_REG]:
+    sobran = len(fs) - _FACT_MAX_REG
+    if sobran > 0:      # nunca se recortan dudas pendientes ni subidas (son las que frenan repeticiones)
+        viejas = sorted((k for k, e in fs.items() if e.get("estado") not in ("duda", "subida")),
+                        key=lambda k: fs[k].get("ts", ""))
+        for k in viejas[:sobran]:
             _fact_borrar_pdf(fs.pop(k))
-    ruta = _fact_ruta("facturas_registro.json")
-    tmp = ruta + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(reg, f, ensure_ascii=False)
-    os.replace(tmp, ruta)
+    _escribir_atomico(_fact_ruta("facturas_registro.json"), json.dumps(reg))
 
 
 def _fact_pdf_path(sha):
     d = _fact_ruta("facturas_pdf")
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, re.sub(r"[^0-9a-f]", "", sha) + ".pdf")
+
+
+def _fact_leer_pdf(entrada):
+    try:
+        with open(_fact_pdf_path(entrada.get("sha256", "")), "rb") as fh:
+            return fh.read()
+    except FileNotFoundError:
+        return None
 
 
 def _fact_borrar_pdf(entrada):
@@ -5983,39 +6012,47 @@ def _fact_modo_prueba() -> bool:
     return bool(_cargar_config_app().get("facturas_modo_prueba", True))
 
 
-def _ml_post_archivo_cuenta(ruta, cuenta_id, nombre, contenido, tipo="application/pdf"):
-    # POST no se reintenta solo (Retry de urllib3 no reintenta POST): nunca sube dos veces
+def _ml_req_cuenta(metodo, ruta, cuenta_id, timeout=15, **kw):
+    """POST/DELETE a ML con el token de la cuenta, con el mismo manejo de sesión que _ml_get_cuenta.
+    Un POST no se reintenta solo (Retry de urllib3 no reintenta POST): nunca sube dos veces."""
     at = _cuentas.get(cuenta_id, {}).get("access_token", "")
-    return _get_session(cuenta_id).post(ML_API_URL + ruta, headers={"Authorization": f"Bearer {at}"},
-                                        files={"fiscal_document": (nombre, contenido, tipo)}, timeout=30)
+    try:
+        return _get_session(cuenta_id).request(metodo, ML_API_URL + ruta, timeout=timeout,
+                                               headers={"Authorization": f"Bearer {at}"}, **kw)
+    except Exception as e:
+        if "Cannot assign" in str(e) or "Connection" in str(e):
+            _ml_sessions.pop(cuenta_id, None)
+        raise
 
 
-def _ml_delete_cuenta(ruta, cuenta_id):
-    at = _cuentas.get(cuenta_id, {}).get("access_token", "")
-    return _get_session(cuenta_id).delete(ML_API_URL + ruta, headers={"Authorization": f"Bearer {at}"},
-                                          timeout=15)
-
-
-def _fact_ventas(cuenta_id, mes) -> list:
-    """Ventas pagadas del mes elegido ('2026-05') agrupadas por pack (no toca la caché del picking)."""
-    ts, packs = _fact_ventas_mem.get((cuenta_id, mes), (0, None))
-    if packs is not None and time.time() - ts < 600:
-        return packs
+def _fact_ventas(cuenta_id, mes):
+    """Ventas pagadas del mes elegido ('2026-05') agrupadas por pack (no toca la caché del picking).
+    None si Mercado Libre no respondió: un resultado incompleto no se guarda ni se usa."""
+    ahora = time.time()
+    for k in [k for k, (ts, _) in list(_fact_ventas_mem.items()) if ahora - ts >= 600]:
+        _fact_ventas_mem.pop(k, None)
+    if (cuenta_id, mes) in _fact_ventas_mem:
+        return _fact_ventas_mem[(cuenta_id, mes)][1]
     uid = _cuentas.get(cuenta_id, {}).get("user_id")
     if not uid or not _token_valido_cuenta(cuenta_id):
-        return []
+        return None
     desde, hasta = _fact_rango_mes(mes)
     ordenes, offset = [], 0
-    while offset < 10000:
-        r = _ml_get_cuenta("/orders/search", cuenta_id, params={
-            "seller": uid, "order.status": "paid",
-            "order.date_created.from": desde, "order.date_created.to": hasta,
-            "offset": offset, "limit": 50, "sort": "date_desc"})
+    while True:
+        if offset >= 10000:
+            logger.warning(f"[FACTURAS] {cuenta_id}: más de 10000 órdenes en {mes}, se usan las primeras")
+            break
+        try:
+            r = _ml_get_cuenta("/orders/search", cuenta_id, params={
+                "seller": uid, "order.status": "paid",
+                "order.date_created.from": desde, "order.date_created.to": hasta,
+                "offset": offset, "limit": 50, "sort": "date_desc"})
+        except Exception as e:
+            logger.warning(f"[FACTURAS] /orders/search {cuenta_id}: {e}")
+            return None
         if r.status_code != 200:
             logger.warning(f"[FACTURAS] /orders/search {cuenta_id} → {r.status_code}")
-            if offset == 0:
-                return packs or []
-            break
+            return None
         data = r.json()
         res = data.get("results", [])
         ordenes += res
@@ -6025,6 +6062,21 @@ def _fact_ventas(cuenta_id, mes) -> list:
     packs = _fcfe.agrupar_packs(ordenes, cuenta_id)
     _fact_ventas_mem[(cuenta_id, mes)] = (time.time(), packs)
     logger.info(f"[FACTURAS] {cuenta_id}: {len(ordenes)} órdenes / {len(packs)} ventas en {mes}")
+    return packs
+
+
+def _fact_cuentas_conectadas() -> list:
+    return [c for c in _tn_cuentas() if _cuentas.get(c, {}).get("access_token")]
+
+
+def _fact_todas_las_ventas(mes):
+    """Ventas del mes de todas las cuentas de la tienda; None si alguna no se pudo consultar."""
+    packs = []
+    for cid in _fact_cuentas_conectadas():
+        v = _fact_ventas(cid, mes)
+        if v is None:
+            return None
+        packs += v
     return packs
 
 
@@ -6067,9 +6119,10 @@ def _fact_nombres_billing(cuenta_id, order_id) -> list:
         logger.warning(f"[FACTURAS] billing_info {oid}: {e}")
         return noms
     cache[oid] = noms
+    for k in list(cache)[:max(0, len(cache) - _FACT_MAX_BILLING)]:     # se van las más viejas
+        cache.pop(k, None)
     try:
-        with open(ruta, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False)
+        _escribir_atomico(ruta, json.dumps(cache))
     except Exception:
         pass
     return noms
@@ -6086,14 +6139,6 @@ def _fact_pack_tiene_factura(cuenta_id, pack_id):
     if r.status_code == 200:
         return bool((r.json() or {}).get("fiscal_documents"))
     return None
-
-
-def _fact_todas_las_ventas(mes) -> list:
-    packs = []
-    for cid in _tn_cuentas():
-        if _cuentas.get(cid, {}).get("access_token"):
-            packs += _fact_ventas(cid, mes)
-    return packs
 
 
 def _fact_completar_nombres(factura, packs):
@@ -6118,6 +6163,9 @@ def _fact_subir(entrada, pack, pdf, modo_prueba) -> str:
     if not _tn_cuenta_ok(cid):
         entrada.update(estado="error", motivo="Venta de otra tienda")
         return "error"
+    if not _token_valido_cuenta(cid):
+        entrada.update(estado="error", motivo="La cuenta de Mercado Libre de esa venta no está conectada")
+        return "error"
     if _fact_pack_tiene_factura(cid, pid) is True:
         return "ocupado"
     venta = _fcfe.resumen_pack(pack)
@@ -6125,15 +6173,26 @@ def _fact_subir(entrada, pack, pdf, modo_prueba) -> str:
         entrada.update(estado="simulada", pack_id=pid, cuenta=cid, venta=venta,
                        motivo=f"Modo prueba: se subiría a la venta {pid}")
         return "ok"
-    r = _ml_post_archivo_cuenta(f"/packs/{pid}/fiscal_documents", cid,
-                                entrada.get("archivo") or "factura.pdf", pdf)
+    try:
+        r = _ml_req_cuenta("POST", f"/packs/{pid}/fiscal_documents", cid, timeout=30,
+                           files={"fiscal_document": (_fact_nombre_archivo(entrada.get("archivo")),
+                                                      pdf, "application/pdf")})
+    except requests.RequestException as e:
+        # No se sabe si ML la guardó: queda anotada la venta. Al volver a subirla, si esa venta ya
+        # tiene factura en ML pasa a duda (nunca se carga sola en otra venta del mismo comprador).
+        logger.warning(f"[FACTURAS] POST fiscal_documents {pid}: {e}")
+        entrada.update(estado="error", pack_id=pid, cuenta=cid, venta=venta,
+                       motivo=f"Mercado Libre no respondió al cargarla en la venta {pid}: "
+                              f"revisá esa venta antes de volver a subirla")
+        return "error"
     if r.status_code in (200, 201):
         try:
             ids = r.json().get("ids") or []
         except Exception:
             ids = []
         entrada.update(estado="subida", pack_id=pid, cuenta=cid, venta=venta, fiscal_document_ids=ids,
-                       subida_ts=datetime.now().strftime("%Y-%m-%d %H:%M"))
+                       subida_ts=_fact_ahora("%Y-%m-%d %H:%M"))
+        _fact_borrar_pdf(entrada)
         logger.info(f"[FACTURAS] {entrada['clave']} subida a pack {pid} ({cid})")
         return "ok"
     if r.status_code == 409:
@@ -6148,17 +6207,22 @@ def _fact_subir(entrada, pack, pdf, modo_prueba) -> str:
     return "error"
 
 
+def _fact_motivo_ocupada(pid):
+    return f"La venta que coincide (#{pid}) ya tiene una factura cargada en Mercado Libre"
+
+
 def _fact_procesar(archivo, pdf, mes) -> dict:
     """Lee una factura, busca su venta entre las del mes elegido y la sube sola si nombre y monto
     coinciden; si no, deja una duda."""
-    ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    archivo = _fact_nombre_archivo(archivo)
+    ahora = _fact_ahora()
     if len(pdf) > _fcfe.TAMANO_MAX_PDF:
         return {"archivo": archivo, "estado": "error", "ts": ahora,
                 "motivo": "El PDF pesa más de 1 MB (Mercado Libre no lo acepta)"}
-    if not pdf.startswith(b"%PDF"):
+    if b"%PDF" not in pdf[:1024]:
         return {"archivo": archivo, "estado": "error", "ts": ahora, "motivo": "El archivo no es un PDF"}
     f = _fcfe.leer_cfe(pdf)
-    with _fact_lock:
+    with _fact_lock():
         reg = _fact_registro()
         modo = _fact_modo_prueba()
         prev = reg["facturas"].get(f["clave"])
@@ -6173,137 +6237,153 @@ def _fact_procesar(archivo, pdf, mes) -> dict:
                    "mes": mes, "candidatas": [], "pack_id": "", "cuenta": ""}
         if f.get("error"):
             entrada.update(estado="error", motivo=f["error"])
+        elif not _fact_cuentas_conectadas():
+            entrada.update(estado="error", motivo="No hay cuenta de Mercado Libre conectada")
         else:
-            with open(_fact_pdf_path(f["sha256"]), "wb") as fh:
-                fh.write(pdf)
-            if not any(_cuentas.get(c, {}).get("access_token") for c in _tn_cuentas()):
-                entrada.update(estado="error", motivo="No hay cuenta de Mercado Libre conectada")
+            packs = _fact_todas_las_ventas(mes)
+            if packs is None:
+                entrada.update(estado="error", motivo=f"No se pudieron consultar las ventas de "
+                               f"{_fact_mes_texto(mes)} en Mercado Libre. Probá de nuevo en unos minutos.")
             else:
-                packs = _fact_todas_las_ventas(mes)
                 _fact_completar_nombres(f, packs)
                 ocupados = _fact_ocupados(reg, modo)
                 if prev:                                   # re-proceso de una simulada: su venta no cuenta
                     ocupados.discard(prev.get("pack_id"))
-                ya_en_ml = []
-                for _ in range(5):
-                    pack, motivo, cands = _fcfe.elegir_pack(f, packs, ocupados)
-                    entrada.update(motivo=motivo, candidatas=cands)
-                    if not pack:
-                        entrada["estado"] = "duda"
-                        break
-                    if _fact_subir(entrada, pack, pdf, modo) != "ocupado":
-                        break
-                    ya_en_ml.append(str(pack["pack_id"]))  # ya tenía factura en ML: probar la siguiente
-                    ocupados.add(str(pack["pack_id"]))
-                else:
-                    entrada["estado"] = "duda"
-                if entrada["estado"] == "duda" and ya_en_ml:
-                    entrada["motivo"] = ("La venta que coincide (#" + ", #".join(ya_en_ml) +
-                                         ") ya tiene una factura cargada en Mercado Libre")
-                elif entrada["estado"] == "duda" and not entrada["candidatas"]:
+                pack, motivo, cands = _fcfe.elegir_pack(f, packs, ocupados)
+                entrada.update(estado="duda", motivo=motivo, candidatas=cands)
+                if pack and _fact_subir(entrada, pack, pdf, modo) == "ocupado":
+                    # ya tiene factura en ML (cargada a mano o una subida sin respuesta): se pregunta
+                    entrada.update(estado="duda", motivo=_fact_motivo_ocupada(pack["pack_id"]),
+                                   candidatas=[c for c in cands if c["pack_id"] != str(pack["pack_id"])])
+                elif not pack and not cands:
                     entrada["motivo"] += f" en las ventas de {_fact_mes_texto(mes)}"
-        if entrada["estado"] == "subida":
-            _fact_borrar_pdf(entrada)
+        if prev and prev.get("sha256") != entrada["sha256"]:
+            _fact_borrar_pdf(prev)
+        if entrada["estado"] in ("duda", "simulada"):      # el PDF hace falta para responder o cargarla después
+            with open(_fact_pdf_path(f["sha256"]), "wb") as fh:
+                fh.write(pdf)
         reg["facturas"][f["clave"]] = entrada
         _fact_guardar(reg)
         return entrada
 
 
-def _fact_buscar_venta(pack_id, mes):
-    """Venta (pack) de esta tienda, del mes dado, por número de pack o de orden."""
-    x = re.sub(r"\D", "", str(pack_id or ""))
-    if not x:
-        return None
-    for p in _fact_todas_las_ventas(mes):
-        if p["pack_id"] == x or x in p["order_ids"]:
-            return p
-    return None
+def _fact_es_supervisor() -> bool:
+    """Supervisor o admin de la tienda de la llamada, por la sesión del panel o el token firmado.
+    Con sesión, el rol y la tienda se vuelven a leer del registro de usuarios: un supervisor dado de
+    baja o pasado a operario queda afuera aunque conserve la cookie."""
+    idn = _identidad_gestion()
+    if not idn or idn["rol"] not in ("admin", "supervisor"):
+        return False
+    if _tn().via != "token":
+        u = _usuario_reg(session.get("admin_panel_login"))
+        if (not u or u.get("rol") not in ("admin", "supervisor")
+                or str(u.get("cuenta_id", "todas")).lower() != str(idn["cuenta"] or "todas").lower()):
+            return False
+    return idn["plataforma"] or idn["tid"] == _tn().tid
+
+
+def requiere_supervisor(f):
+    """Solo supervisores y admin de esta tienda. La clave de la app (la tienen todas las PCs) no alcanza."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _fact_es_supervisor():
+            return jsonify({"ok": False, "msg": "Solo los supervisores pueden usar Facturación"}), 403
+        return f(*args, **kwargs)
+    return decorated
 
 
 @app.route("/api/facturas/subir", methods=["POST"])
 @requiere_api_key
+@requiere_supervisor
 def api_facturas_subir():
-    archivos = request.files.getlist("factura") or request.files.getlist("fiscal_document")
+    if (request.content_length or 0) > _FACT_MAX_PEDIDO:
+        return jsonify({"ok": False, "msg": "Demasiados archivos juntos: subilos en tandas más chicas"}), 413
+    archivos = request.files.getlist("factura")
     if not archivos:
         return jsonify({"ok": False, "msg": "Falta el PDF de la factura"}), 400
     mes = _fact_mes(request.form.get("mes"))
     if not mes:
-        return jsonify({"ok": False, "msg": "Mes inválido (formato AAAA-MM)"}), 400
+        return jsonify({"ok": False, "msg": "Mes inválido: elegí un mes entre 2020 y el actual"}), 400
     resultados = []
     for a in archivos:
         try:
-            resultados.append(_fact_procesar(a.filename or "factura.pdf", a.read(), mes))
+            resultados.append(_fact_procesar(a.filename, a.read(_fcfe.TAMANO_MAX_PDF + 1), mes))
         except Exception as e:
             logger.exception(f"[FACTURAS] Error procesando {a.filename}")
-            resultados.append({"archivo": a.filename, "estado": "error", "motivo": f"Error interno: {e}"})
+            resultados.append({"archivo": _fact_nombre_archivo(a.filename), "estado": "error",
+                               "motivo": f"Error interno: {e}"})
     return jsonify({"ok": True, "resultados": resultados, "modo_prueba": _fact_modo_prueba()})
 
 
 @app.route("/api/facturas", methods=["GET"])
 @requiere_api_key
+@requiere_supervisor
 def api_facturas_lista():
+    """Todas las dudas pendientes (las más viejas primero) y las últimas 150 facturas del resto."""
     fs = sorted(_fact_registro()["facturas"].values(), key=lambda e: e.get("ts", ""), reverse=True)
-    return jsonify({"ok": True, "facturas": fs[:300], "modo_prueba": _fact_modo_prueba(),
-                    "dudas": sum(1 for e in fs if e.get("estado") == "duda"),
+    dudas = [e for e in reversed(fs) if e.get("estado") == "duda"]
+    return jsonify({"ok": True, "modo_prueba": _fact_modo_prueba(),
+                    "facturas": [e for e in fs if e.get("estado") != "duda"][:150],
+                    "dudas_lista": dudas, "dudas": len(dudas),
                     "simuladas": sum(1 for e in fs if e.get("estado") == "simulada")})
-
-
-@app.route("/api/facturas/dudas", methods=["GET"])
-@requiere_api_key
-def api_facturas_dudas():
-    fs = [e for e in _fact_registro()["facturas"].values() if e.get("estado") == "duda"]
-    return jsonify({"ok": True, "dudas": sorted(fs, key=lambda e: e.get("ts", ""))})
 
 
 @app.route("/api/facturas/responder", methods=["POST"])
 @requiere_api_key
+@requiere_supervisor
 def api_facturas_responder():
-    """Respuesta del dueño a una duda: si (la propuesta) | otra (pack_id elegido o escrito) | no."""
+    """Respuesta del supervisor a una duda: si (la propuesta) | otra (pack_id elegido o escrito) | no."""
     d = request.get_json(silent=True) or {}
     clave, accion = str(d.get("clave") or ""), str(d.get("accion") or "")
-    with _fact_lock:
+    with _fact_lock():
         reg = _fact_registro()
         e = reg["facturas"].get(clave)
         if not e or e.get("estado") not in ("duda", "error"):
             return jsonify({"ok": False, "msg": "Esa factura ya no está pendiente"}), 404
         if accion == "no":
-            e.update(estado="descartada", motivo="Descartada por el dueño")
+            e.update(estado="descartada", motivo="Descartada por el supervisor")
             _fact_borrar_pdf(e)
             _fact_guardar(reg)
             return jsonify({"ok": True, "factura": e})
         if accion not in ("si", "otra"):
             return jsonify({"ok": False, "msg": "Acción inválida"}), 400
-        pid = str((e.get("candidatas") or [{}])[0].get("pack_id") or "") if accion == "si" \
-            else str(d.get("pack_id") or "")
+        if accion == "si":
+            pid = str((e.get("candidatas") or [{}])[0].get("pack_id") or "")
+            if not pid:
+                return jsonify({"ok": False, "msg": "Esa factura no tiene una venta propuesta: elegí otra"}), 400
+        else:
+            pid = re.sub(r"\D", "", str(d.get("pack_id") or ""))
         mes = e.get("mes") or _fact_mes()
-        pack = _fact_buscar_venta(pid, mes)
+        ventas = _fact_todas_las_ventas(mes)
+        if ventas is None:
+            return jsonify({"ok": False, "msg": "No se pudieron consultar las ventas en Mercado Libre. "
+                                                "Probá de nuevo en unos minutos."}), 502
+        pack = next((p for p in ventas if pid and (p["pack_id"] == pid or pid in p["order_ids"])), None)
         if not pack:
-            return jsonify({"ok": False, "msg": f"No encontré la venta {pid} en las ventas de {_fact_mes_texto(mes)}"}), 404
+            return jsonify({"ok": False, "msg": f"No encontré la venta {pid} en las ventas de "
+                                                f"{_fact_mes_texto(mes)}"}), 404
         modo = _fact_modo_prueba()
         if pack["pack_id"] in _fact_ocupados(reg, modo):
             return jsonify({"ok": False, "msg": "Esa venta ya tiene una factura cargada"}), 409
-        try:
-            with open(_fact_pdf_path(e.get("sha256", "")), "rb") as fh:
-                pdf = fh.read()
-        except FileNotFoundError:
+        pdf = _fact_leer_pdf(e)
+        if pdf is None:
             return jsonify({"ok": False, "msg": "No está el PDF guardado: volvé a subir la factura"}), 410
         res = _fact_subir(e, pack, pdf, modo)
         if res == "ocupado":
             return jsonify({"ok": False, "msg": "Esa venta ya tiene una factura en Mercado Libre"}), 409
         if res == "ok":
-            e["motivo"] = "Confirmada por el dueño" + (" (modo prueba)" if modo else "")
-            if e["estado"] == "subida":
-                _fact_borrar_pdf(e)
+            e["motivo"] = "Confirmada por el supervisor" + (" (modo prueba)" if modo else "")
         _fact_guardar(reg)
         return jsonify({"ok": res == "ok", "factura": e, "msg": e.get("motivo", "")})
 
 
 @app.route("/api/facturas/quitar", methods=["POST"])
 @requiere_api_key
+@requiere_supervisor
 def api_facturas_quitar():
     """Saca la factura de la venta en ML (si se subió a la equivocada)."""
     clave = str((request.get_json(silent=True) or {}).get("clave") or "")
-    with _fact_lock:
+    with _fact_lock():
         reg = _fact_registro()
         e = reg["facturas"].get(clave)
         if not e or e.get("estado") not in ("subida", "simulada"):
@@ -6311,7 +6391,10 @@ def api_facturas_quitar():
         if e["estado"] == "subida":
             if not _tn_cuenta_ok(e.get("cuenta")) or not _token_valido_cuenta(e.get("cuenta")):
                 return jsonify({"ok": False, "msg": "La cuenta de esa venta no está conectada"}), 409
-            r = _ml_delete_cuenta(f"/packs/{e['pack_id']}/fiscal_documents", e["cuenta"])
+            try:
+                r = _ml_req_cuenta("DELETE", f"/packs/{e['pack_id']}/fiscal_documents", e["cuenta"])
+            except requests.RequestException:
+                return jsonify({"ok": False, "msg": "Mercado Libre no respondió: probá de nuevo"}), 502
             if r.status_code not in (200, 204, 404):
                 return jsonify({"ok": False, "msg": f"Mercado Libre no la quitó ({r.status_code})"}), 502
         e.update(estado="quitada", motivo=f"Quitada de la venta {e.get('pack_id')}")
@@ -6322,6 +6405,7 @@ def api_facturas_quitar():
 
 @app.route("/api/facturas/modo", methods=["POST"])
 @requiere_api_key
+@requiere_supervisor
 def api_facturas_modo():
     prueba = bool((request.get_json(silent=True) or {}).get("prueba", True))
     cfg = _cargar_config_app()
@@ -6333,21 +6417,38 @@ def api_facturas_modo():
 
 @app.route("/api/facturas/subir-simuladas", methods=["POST"])
 @requiere_api_key
+@requiere_supervisor
 def api_facturas_subir_simuladas():
-    """Con el modo prueba apagado: vuelve a procesar de verdad las facturas que quedaron simuladas."""
+    """Con el modo prueba apagado: carga de verdad cada factura simulada en la MISMA venta que se
+    decidió en modo prueba (automática o elegida por el supervisor)."""
     if _fact_modo_prueba():
         return jsonify({"ok": False, "msg": "Primero apagá el modo prueba"}), 409
-    simuladas = [e for e in _fact_registro()["facturas"].values() if e.get("estado") == "simulada"]
-    resultados = []
-    for e in sorted(simuladas, key=lambda e: e.get("ts", "")):
-        try:
-            with open(_fact_pdf_path(e.get("sha256", "")), "rb") as fh:
-                pdf = fh.read()
-        except FileNotFoundError:
-            resultados.append({**e, "estado": "error", "motivo": "No está el PDF guardado"})
-            continue
-        resultados.append(_fact_procesar(e.get("archivo") or "factura.pdf", pdf, e.get("mes") or _fact_mes()))
-    return jsonify({"ok": True, "resultados": resultados})
+    with _fact_lock():
+        reg = _fact_registro()
+        simuladas = sorted((e for e in reg["facturas"].values() if e.get("estado") == "simulada"),
+                           key=lambda e: e.get("ts", ""))
+        ventas_mes = {}
+        for e in simuladas:
+            pdf = _fact_leer_pdf(e)
+            if pdf is None:
+                e.update(estado="error", motivo="No está el PDF guardado: volvé a subir la factura")
+                continue
+            mes = e.get("mes") or _fact_mes()
+            if mes not in ventas_mes:
+                ventas_mes[mes] = _fact_todas_las_ventas(mes)
+            if ventas_mes[mes] is None:
+                e.update(estado="error", motivo="No se pudieron consultar las ventas en Mercado Libre. "
+                                                "Probá de nuevo en unos minutos.")
+                continue
+            pack = next((p for p in ventas_mes[mes] if p["pack_id"] == e.get("pack_id")), None)
+            if not pack:
+                e.update(estado="duda", candidatas=[],
+                         motivo=f"La venta {e.get('pack_id')} ya no está entre las ventas pagadas de "
+                                f"{_fact_mes_texto(mes)}")
+            elif pack["pack_id"] in _fact_ocupados(reg, False) or _fact_subir(e, pack, pdf, False) == "ocupado":
+                e.update(estado="duda", motivo=_fact_motivo_ocupada(pack["pack_id"]), candidatas=[])
+        _fact_guardar(reg)
+        return jsonify({"ok": True, "resultados": simuladas})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8356,315 +8457,14 @@ async function cambiarCodigo() {
 
 @app.route("/facturacion")
 def panel_facturacion():
-    """Panel web de facturación: facturas CFE (PDF) → la venta de ML con el mismo nombre y monto."""
-    if not session.get("admin_panel_usuario"):
+    """Panel web de facturación (solo supervisores): facturas CFE (PDF) → la venta de ML con el mismo
+    nombre y monto. La página vive en templates/facturacion.html."""
+    if not session.get("admin_panel_usuario") or not _fact_es_supervisor():
         return redirect("/admin/usuarios")
-    key = _clave_para_panel(_tn_de_sesion())
-    return render_template_string("""<!DOCTYPE html>
-<html lang="es"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Logibot — Facturación</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:20px 16px}
-.topbar{display:flex;justify-content:space-between;align-items:center;
-  margin-bottom:24px;flex-wrap:wrap;gap:10px}
-h1{color:#3B82F6;font-size:22px;font-weight:900}
-.sub{color:#64748B;font-size:12px;margin-top:2px}
-.nav{display:flex;gap:8px}
-.nav a{background:#1E293B;color:#94A3B8;text-decoration:none;
-  padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600}
-.nav a.active{background:#3B82F6;color:white}
-.nav a:hover{background:#334155;color:#F1F5F9}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
-@media(max-width:700px){.grid{grid-template-columns:1fr}}
-.card{background:#1E293B;border-radius:12px;padding:20px}
-.card h2{font-size:14px;font-weight:700;color:#94A3B8;text-transform:uppercase;
-  letter-spacing:.05em;margin-bottom:16px}
-label{display:block;color:#94A3B8;font-size:12px;font-weight:600;
-  text-transform:uppercase;margin-bottom:5px;margin-top:12px}
-input,select,textarea{width:100%;padding:9px 12px;background:#0F172A;
-  border:1px solid #334155;color:#F1F5F9;border-radius:8px;
-  font-size:13px;outline:none;font-family:inherit}
-input:focus,select:focus,textarea:focus{border-color:#3B82F6}
-.btn{padding:10px 20px;border:none;border-radius:8px;font-size:13px;
-  font-weight:700;cursor:pointer;transition:background .2s}
-.btn-blue{background:#3B82F6;color:white}.btn-blue:hover{background:#2563EB}
-.btn-green{background:#10B981;color:white}.btn-green:hover{background:#059669}
-.btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
-.ok-msg{background:rgba(16,185,129,.15);color:#34D399;border:1px solid #059669}
-.err-msg{background:rgba(239,68,68,.15);color:#FCA5A5;border:1px solid #EF4444}
-.info{background:#1E3A5F;border-radius:8px;padding:10px 14px;
-  font-size:12px;color:#93C5FD;margin-bottom:12px}
-.campana{float:right;cursor:pointer;background:#334155;color:#F1F5F9;border-radius:999px;
-  padding:3px 10px;font-size:12px;text-transform:none;letter-spacing:0}
-.campana.hay{background:#F59E0B;color:#111827}
-.drop{border:2px dashed #334155;border-radius:10px;padding:18px;text-align:center;
-  color:#94A3B8;font-size:13px;margin-top:12px}
-.drop.sobre{border-color:#3B82F6;background:#1E3A5F}
-#msg-facturas,#prog-facturas{margin-top:10px;font-size:13px;padding:6px 10px;border-radius:6px;display:none}
-#prog-facturas{background:#1E3A5F;color:#93C5FD}
-.duda{background:#422006;border:1px solid #F59E0B;border-radius:10px;padding:12px 14px;margin-top:10px;font-size:13px}
-.duda .q{margin:6px 0;color:#FDE68A}
-.duda select,.duda input{width:auto;min-width:200px;margin:4px 6px 4px 0;display:inline-block}
-.btn-sm{padding:6px 12px;font-size:12px}
-.btn-gris{background:#334155;color:#F1F5F9}.btn-gris:hover{background:#475569}
-.btn-rojo{background:#7F1D1D;color:#FECACA}.btn-rojo:hover{background:#991B1B}
-.tabla{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
-.tabla th{color:#64748B;text-align:left;padding:6px;border-bottom:1px solid #334155;font-weight:600}
-.tabla td{padding:6px;border-bottom:1px solid #1F2A3D;vertical-align:top}
-.est{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
-.est-subida{background:#064E3B;color:#6EE7B7}.est-simulada{background:#1E3A5F;color:#93C5FD}
-.est-duda{background:#78350F;color:#FDE68A}.est-error{background:#7F1D1D;color:#FECACA}
-.est-descartada,.est-quitada{background:#334155;color:#94A3B8}
-</style></head><body>
-
-<div class="topbar">
-  <div>
-    <h1>🧾 Facturación</h1>
-    <div class="sub">Facturas cargadas en las ventas de Mercado Libre</div>
-  </div>
-  <div class="nav">
-    <a href="/admin/usuarios">👥 Usuarios</a>
-    <a href="/estadisticas">📊 Stats</a>
-    <a href="/config">⚙ Config</a>
-    <a href="/facturacion" class="active">🧾 Facturación</a>
-    <a href="/admin/logout">🔒 Salir</a>
-  </div>
-</div>
-
-<!-- ── FACTURAS A MERCADO LIBRE ───────────────────────────────────────────── -->
-<div class="card" style="margin-bottom:20px">
-  <h2>🧾 Facturas a Mercado Libre
-    <span class="campana" id="fact-campana" onclick="irADudas()" title="Facturas con duda">🔔 <b id="fact-ndudas">0</b></span></h2>
-  <div class="info">
-    Subí el PDF de la factura, de a una o varias juntas. Se carga sola en la venta cuyo
-    <b>nombre</b> y <b>monto</b> coinciden. Si hay duda, te preguntamos acá antes de subir nada.
-  </div>
-  <label style="text-transform:none;display:flex;gap:8px;align-items:center;cursor:pointer">
-    <input type="checkbox" id="fact-prueba" style="width:auto" onchange="cambiarModo(this.checked)">
-    Modo prueba: no sube nada a Mercado Libre, solo muestra a qué venta iría cada factura
-  </label>
-  <div class="info" id="fact-simuladas" style="display:none;margin-top:10px"></div>
-  <label for="fact-mes">Mes de las ventas a buscar</label>
-  <input type="month" id="fact-mes" style="max-width:220px">
-  <div style="font-size:11px;color:#94A3B8;margin-top:4px">
-    Se busca al comprador solo entre las ventas de ese mes y, si compró varias veces, la del mismo monto.
-  </div>
-  <div class="drop" id="fact-drop">
-    Arrastrá acá los PDF de las facturas<br>
-    <button class="btn btn-green" style="margin-top:10px" onclick="elegirFacturas()">⬆ Elegir una o varias facturas</button>
-  </div>
-  <input type="file" id="fact-file" accept=".pdf,application/pdf" multiple style="display:none"
-         onchange="subirFacturas(this.files); this.value=''">
-  <div id="prog-facturas"></div>
-  <div id="msg-facturas"></div>
-  <div id="fact-dudas"></div>
-  <div style="overflow-x:auto">
-    <table class="tabla">
-      <thead><tr><th>Cargada</th><th>Factura</th><th>Estado</th><th>Venta</th><th></th></tr></thead>
-      <tbody id="fact-tabla"><tr><td colspan="5" style="color:#64748B">Cargando…</td></tr></tbody>
-    </table>
-  </div>
-</div>
-<script>
-const KEY  = '""" + key + """';
-const BASE = window.location.origin;
-
-function mostrar(id, msg, ok) {
-  const el = document.getElementById(id);
-  el.textContent = msg; el.style.display = 'block';
-  el.className = ok ? 'ok-msg' : 'err-msg';
-  setTimeout(() => el.style.display = 'none', 4000);
-}
-
-// ── Facturas ────────────────────────────────────────────────────────────────
-let _dudasAntes = -1;
-let _dudas = [];
-let _filas = [];
-const ESTADOS = {subida:'✓ Subida', simulada:'Prueba: iría a', duda:'Duda', error:'Error',
-                 descartada:'Descartada', quitada:'Quitada'};
-const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
-               'setiembre','octubre','noviembre','diciembre'];
-function mesTexto(m) {
-  if (!m || m.length !== 7) return '';
-  return MESES[parseInt(m.slice(5), 10) - 1] + ' ' + m.slice(0, 4);
-}
-
-function esc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g,
-    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-function plata(n, mon) {
-  if (n == null || n === '') return '—';
-  return (mon === 'USD' ? 'U$S ' : '$ ') + Number(n).toLocaleString('es-UY', {minimumFractionDigits: 0, maximumFractionDigits: 2});
-}
-function textoFactura(f) {
-  f = f || {};
-  const num = (f.serie && f.numero) ? (f.serie + '-' + f.numero) : '';
-  return '<b>' + esc(f.nombre || '(sin nombre)') + '</b> · ' + plata(f.total, f.moneda) +
-         (num ? '<br><span style="color:#64748B">' + esc(num) + (f.fecha ? ' · ' + esc(f.fecha) : '') + '</span>' : '');
-}
-function textoVenta(v) {
-  if (!v || !v.pack_id) return '—';
-  return '#' + esc(v.pack_id) + '<br><span style="color:#64748B">' + esc(v.comprador || v.nickname || '') +
-         ' · ' + plata(v.total, v.moneda) + ' · ' + esc(v.fecha || '') + '</span>';
-}
-async function apiFact(path, opts) {
-  opts = opts || {};
-  opts.headers = Object.assign({'X-API-Key': KEY}, opts.headers || {});
-  const r = await fetch(BASE + path, opts);
-  return r.json();
-}
-function elegirFacturas() {
-  try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch(e) {}
-  document.getElementById('fact-file').click();
-}
-function progreso(txt) {
-  const el = document.getElementById('prog-facturas');
-  el.textContent = txt || ''; el.style.display = txt ? 'block' : 'none';
-}
-async function subirFacturas(files) {
-  const lista = Array.from(files || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.type === 'application/pdf');
-  if (!lista.length) { mostrar('msg-facturas', 'Elegí archivos PDF', false); return; }
-  const mes = document.getElementById('fact-mes').value;
-  if (!mes) { mostrar('msg-facturas', 'Elegí el mes de las ventas', false); return; }
-  let ok = 0, dud = 0, err = 0, i = 0;
-  for (const f of lista) {
-    i++;
-    progreso('Procesando ' + i + ' de ' + lista.length + ' (ventas de ' + mesTexto(mes) + '): ' + f.name + '…');
-    const fd = new FormData(); fd.append('factura', f, f.name); fd.append('mes', mes);
-    try {
-      const d = await apiFact('/api/facturas/subir', {method: 'POST', body: fd});
-      (d.resultados || []).forEach(r => {
-        if (r.estado === 'subida' || r.estado === 'simulada') ok++;
-        else if (r.estado === 'duda') dud++; else err++;
-      });
-      if (!d.ok) err++;
-    } catch(e) { err++; }
-  }
-  progreso('');
-  const partes = [];
-  if (ok) partes.push(ok + (document.getElementById('fact-prueba').checked ? ' asignada(s) (modo prueba)' : ' subida(s)'));
-  if (dud) partes.push(dud + ' con duda: respondé abajo');
-  if (err) partes.push(err + ' con error');
-  mostrar('msg-facturas', partes.join(' · ') || 'Listo', !err);
-  cargarFacturas();
-}
-async function cambiarModo(prueba) {
-  const d = await apiFact('/api/facturas/modo', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                                body: JSON.stringify({prueba: prueba})});
-  mostrar('msg-facturas', d.ok ? (prueba ? 'Modo prueba encendido' : 'Modo prueba apagado: las facturas se suben de verdad') : '❌ ' + d.msg, d.ok);
-  cargarFacturas();
-}
-async function subirSimuladas() {
-  if (!confirm('¿Subir de verdad a Mercado Libre las facturas que quedaron en modo prueba?')) return;
-  progreso('Subiendo las facturas de prueba…');
-  const d = await apiFact('/api/facturas/subir-simuladas', {method: 'POST'});
-  progreso('');
-  mostrar('msg-facturas', d.ok ? 'Listo: ' + (d.resultados || []).length + ' procesada(s)' : '❌ ' + d.msg, d.ok);
-  cargarFacturas();
-}
-async function responder(clave, accion, pid) {
-  const body = {clave: clave, accion: accion};
-  if (pid) body.pack_id = pid;
-  const d = await apiFact('/api/facturas/responder', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                                      body: JSON.stringify(body)});
-  mostrar('msg-facturas', d.ok ? '✅ ' + (accion === 'no' ? 'Factura descartada' : (d.msg || 'Factura subida')) : '❌ ' + d.msg, d.ok);
-  cargarFacturas();
-}
-function responderOtra(idx) {
-  const sel = document.getElementById('duda-sel-' + idx);
-  const man = document.getElementById('duda-man-' + idx).value.trim();
-  const pid = man || (sel ? sel.value : '');
-  if (!pid) { mostrar('msg-facturas', 'Elegí una venta o escribí su número', false); return; }
-  responder(_dudas[idx].clave, 'otra', pid);
-}
-async function quitar(clave) {
-  if (!confirm('¿Quitar esta factura de la venta en Mercado Libre?')) return;
-  const d = await apiFact('/api/facturas/quitar', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                                   body: JSON.stringify({clave: clave})});
-  mostrar('msg-facturas', d.ok ? 'Factura quitada' : '❌ ' + d.msg, d.ok);
-  cargarFacturas();
-}
-function irADudas() {
-  const el = document.getElementById('fact-dudas');
-  if (el) el.scrollIntoView({behavior: 'smooth'});
-}
-function pintarDudas() {
-  const cont = document.getElementById('fact-dudas');
-  cont.innerHTML = _dudas.map((e, idx) => {
-    const c = e.candidatas || [];
-    const prop = c[0];
-    const opciones = c.map(v => '<option value="' + esc(v.pack_id) + '">#' + esc(v.pack_id) + ' · ' +
-      esc(v.comprador || v.nickname || '') + ' · ' + plata(v.total, v.moneda) + ' · ' + esc(v.fecha || '') +
-      (v.motivo ? ' (' + esc(v.motivo) + ')' : '') + '</option>').join('');
-    return '<div class="duda"><b>🔔 Factura con duda</b> · ' + esc(e.archivo || '') +
-      (e.mes ? ' · buscada en las ventas de <b>' + esc(mesTexto(e.mes)) + '</b>' : '') + '<br>' +
-      textoFactura(e.factura) + '<div class="q">' + esc(e.motivo || '') + '</div>' +
-      (prop ? '<div class="q">¿Es la venta <b>#' + esc(prop.pack_id) + '</b> del ' + esc(prop.fecha || '') +
-              ' (' + esc(prop.comprador || prop.nickname || '') + ', ' + plata(prop.total, prop.moneda) + ')?</div>' +
-              '<button class="btn btn-green btn-sm" onclick="responder(_dudas[' + idx + '].clave, \\'si\\')">Sí, subir</button> '
-            : '<div class="q">No encontramos una venta parecida. Escribí el número de venta si la conocés.</div>') +
-      '<button class="btn btn-rojo btn-sm" onclick="responder(_dudas[' + idx + '].clave, \\'no\\')">No subir</button>' +
-      '<div style="margin-top:6px">Otra venta: ' +
-      (opciones ? '<select id="duda-sel-' + idx + '">' + opciones + '</select>' : '') +
-      '<input id="duda-man-' + idx + '" placeholder="o número de venta / pack">' +
-      '<button class="btn btn-gris btn-sm" onclick="responderOtra(' + idx + ')">Subir a esta</button></div></div>';
-  }).join('');
-}
-function pintarTabla(fs) {
-  const tb = document.getElementById('fact-tabla');
-  const filas = fs.filter(e => e.estado !== 'duda').slice(0, 100);
-  if (!filas.length) { tb.innerHTML = '<tr><td colspan="5" style="color:#64748B">Todavía no se cargaron facturas.</td></tr>'; return; }
-  _filas = filas;
-  tb.innerHTML = filas.map((e, i) =>
-    '<tr><td>' + esc((e.ts || '').slice(0, 16)) + '<br><span style="color:#64748B">' + esc(e.archivo || '') +
-    (e.mes ? '<br>ventas de ' + esc(mesTexto(e.mes)) : '') + '</span></td>' +
-    '<td>' + textoFactura(e.factura) + '</td>' +
-    '<td><span class="est est-' + esc(e.estado) + '">' + esc(ESTADOS[e.estado] || e.estado) + '</span>' +
-    (e.estado === 'error' || e.estado === 'subida' ? '<br><span style="color:#64748B">' + esc(e.motivo || '') + '</span>' : '') + '</td>' +
-    '<td>' + textoVenta(e.venta) + '</td>' +
-    '<td>' + ((e.estado === 'subida' || e.estado === 'simulada')
-              ? '<button class="btn btn-gris btn-sm" onclick="quitar(_filas[' + i + '].clave)">Quitar</button>' : '') +
-    '</td></tr>').join('');
-}
-async function cargarFacturas() {
-  let d;
-  try { d = await apiFact('/api/facturas'); } catch(e) { return; }
-  if (!d || !d.ok) return;
-  document.getElementById('fact-prueba').checked = !!d.modo_prueba;
-  const sim = document.getElementById('fact-simuladas');
-  if (!d.modo_prueba && d.simuladas) {
-    sim.style.display = 'block';
-    sim.innerHTML = 'Hay ' + d.simuladas + ' factura(s) que quedaron en modo prueba. ' +
-      '<button class="btn btn-blue btn-sm" onclick="subirSimuladas()">Subirlas ahora</button>';
-  } else sim.style.display = 'none';
-  _dudas = (d.facturas || []).filter(e => e.estado === 'duda').reverse();
-  document.getElementById('fact-ndudas').textContent = d.dudas || 0;
-  document.getElementById('fact-campana').className = 'campana' + (d.dudas ? ' hay' : '');
-  document.title = (d.dudas ? '(' + d.dudas + ') ' : '') + 'Logibot — Facturación';
-  if (_dudasAntes >= 0 && d.dudas > _dudasAntes) {
-    try {
-      if (window.Notification && Notification.permission === 'granted')
-        new Notification('Facturas con duda', {body: 'Hay ' + d.dudas + ' factura(s) esperando tu respuesta antes de subirse.'});
-    } catch(e) {}
-  }
-  _dudasAntes = d.dudas || 0;
-  pintarDudas();
-  pintarTabla(d.facturas || []);
-}
-(function() {
-  const z = document.getElementById('fact-drop');
-  ['dragenter', 'dragover'].forEach(ev => z.addEventListener(ev, e => { e.preventDefault(); z.classList.add('sobre'); }));
-  ['dragleave', 'drop'].forEach(ev => z.addEventListener(ev, e => { e.preventDefault(); z.classList.remove('sobre'); }));
-  z.addEventListener('drop', e => subirFacturas(e.dataTransfer.files));
-  const hoy = new Date();
-  document.getElementById('fact-mes').value = hoy.getFullYear() + '-' + String(hoy.getMonth() + 1).padStart(2, '0');
-  cargarFacturas();
-  setInterval(cargarFacturas, 30000);
-})();
-</script></body></html>""")
+    html = _leer_template("facturacion.html")
+    if isinstance(html, tuple):                 # plantilla faltante: el error que arma _leer_template
+        return html
+    return html.replace("__CLAVE_PANEL__", json.dumps(_clave_para_panel(_tn_de_sesion())))
 
 
 

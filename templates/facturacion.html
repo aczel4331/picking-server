@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logibot — Facturación</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* Papel sobre la mesa: cada factura es un talón de dos mitades (factura | venta de ML)
+   unidas por una costura troquelada. La costura dice el estado. */
+:root {
+  --mesa: #DCE2DE;
+  --mesa-hondo: #CBD3CE;
+  --papel: #FBFCF8;
+  --tinta: #1F2A44;
+  --copia: #5B6B8C;
+  --raya: #C9D0D8;
+  --verde: #2E7D5B;
+  --ambar: #B8740C;
+  --rojo: #B3261E;
+  --azul: #2F4F9E;
+  --costura: var(--copia);
+  --letra: "Schibsted Grotesk", "Segoe UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--mesa);
+  color: var(--tinta);
+  font-family: var(--letra);
+  font-size: 15px;
+  line-height: 1.45;
+  min-height: 100vh;
+}
+a { color: inherit; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--azul); outline-offset: 2px; border-radius: 4px; }
+
+/* ── barra ─────────────────────────────────────────────── */
+.barra {
+  display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap;
+  padding: 18px clamp(16px, 4vw, 48px) 0;
+}
+.marca { font-weight: 800; font-size: 17px; letter-spacing: -0.01em; text-decoration: none; }
+.barra nav { display: flex; gap: 18px; flex-wrap: wrap; font-size: 14px; }
+.barra nav a { text-decoration: none; color: var(--copia); padding-bottom: 3px; border-bottom: 2px solid transparent; }
+.barra nav a:hover { color: var(--tinta); }
+.barra nav a[aria-current="page"] { color: var(--tinta); border-bottom-color: var(--tinta); font-weight: 600; }
+.barra nav .salir { margin-left: 8px; }
+
+/* ── el mes: es el filtro de todo, así que es el título ────────────────── */
+.mes {
+  padding: clamp(28px, 6vw, 56px) clamp(16px, 4vw, 48px) 24px;
+  max-width: 1180px;
+}
+.mes-fila { display: flex; align-items: center; gap: 10px; }
+.mes h1 {
+  font-size: clamp(34px, 6.4vw, 68px);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.flecha {
+  width: 44px; height: 44px; flex: none;
+  border: 2px solid var(--tinta); border-radius: 50%;
+  background: transparent; cursor: pointer;
+  font-size: 22px; font-weight: 700; line-height: 1;
+}
+.flecha:hover { background: var(--tinta); color: var(--papel); }
+.flecha:disabled { opacity: .3; cursor: default; background: transparent; color: var(--tinta); }
+.mes p { margin-top: 12px; color: var(--copia); max-width: 60ch; }
+
+/* ── columnas ─────────────────────────────────────────────── */
+.cols {
+  display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: clamp(20px, 3vw, 40px);
+  padding: 0 clamp(16px, 4vw, 48px) 64px; max-width: 1180px; align-items: start;
+}
+@media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+
+/* bandeja de entrada de papeles */
+.bandeja {
+  background: var(--mesa-hondo);
+  border-radius: 14px;
+  padding: 28px 22px;
+  box-shadow: inset 0 2px 0 rgba(31, 42, 68, .12), inset 0 -1px 0 rgba(255, 255, 255, .6);
+  text-align: center;
+  transition: background .15s;
+}
+.bandeja.sobre { background: #BFD0C6; }
+.bandeja p { color: var(--copia); }
+.bandeja .grande { color: var(--tinta); font-weight: 700; font-size: 18px; margin-bottom: 14px; }
+.btn {
+  border: 0; border-radius: 999px; padding: 11px 22px; cursor: pointer; font-weight: 700;
+}
+.btn-tinta { background: var(--tinta); color: var(--papel); }
+.btn-tinta:hover { background: #2C3B5E; }
+.btn-verde { background: var(--verde); color: #fff; }
+.btn-verde:hover { background: #256A4C; }
+.btn-linea { background: transparent; box-shadow: inset 0 0 0 2px var(--tinta); }
+.btn-linea:hover { background: var(--tinta); color: var(--papel); }
+.btn-texto {
+  background: none; border: 0; padding: 0; cursor: pointer; color: var(--copia);
+  text-decoration: underline; text-underline-offset: 3px; font-size: 14px;
+}
+.btn-texto:hover { color: var(--rojo); }
+.chico { font-size: 13px; margin-top: 12px; }
+
+.interruptor {
+  display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: center;
+  margin-top: 22px; cursor: pointer;
+}
+.interruptor input { appearance: none; width: 42px; height: 24px; border-radius: 999px; background: var(--raya);
+  position: relative; cursor: pointer; transition: background .15s; }
+.interruptor input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+  border-radius: 50%; background: var(--papel); transition: transform .15s; }
+.interruptor input:checked { background: var(--ambar); }
+.interruptor input:checked::after { transform: translateX(18px); }
+.interruptor b { font-weight: 700; }
+.interruptor small { grid-column: 2; color: var(--copia); font-size: 13px; }
+
+.aviso { margin-top: 18px; padding: 12px 14px; border-radius: 10px; font-size: 14px; display: none; }
+.aviso.ver { display: block; }
+.aviso.bien { background: #D3E7DC; color: #1E5A40; }
+.aviso.mal { background: #F2D6D3; color: #8A1F18; }
+.aviso.info { background: var(--papel); color: var(--tinta); }
+.aviso .btn { margin-top: 10px; padding: 8px 16px; }
+
+/* ── talones ─────────────────────────────────────────────── */
+.talones h2 {
+  font-size: 20px; font-weight: 800; letter-spacing: -0.01em;
+  display: flex; align-items: center; gap: 10px; margin: 6px 0 14px;
+}
+.cuenta {
+  min-width: 28px; height: 28px; padding: 0 9px; border-radius: 999px; display: inline-grid; place-items: center;
+  background: var(--raya); font-size: 14px; font-variant-numeric: tabular-nums;
+}
+.cuenta.hay { background: var(--ambar); color: #fff; }
+.vacio { color: var(--copia); padding: 4px 0 26px; }
+.lista { display: grid; gap: 12px; margin-bottom: 34px; }
+
+.talon {
+  display: grid; grid-template-columns: minmax(0, 1fr) 26px minmax(0, 1.15fr);
+  background: var(--papel);
+  border-radius: 10px;
+  box-shadow: 0 1px 0 rgba(31, 42, 68, .14);
+}
+.mitad { padding: 16px 18px; min-width: 0; }
+.quien { font-weight: 700; overflow-wrap: anywhere; }
+.monto { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.15; margin-top: 2px; }
+.ref { color: var(--copia); font-size: 13px; margin-top: 4px; }
+.estado { font-size: 13px; font-weight: 700; color: var(--costura); margin-bottom: 4px; }
+.venta .quien { font-weight: 600; }
+.acciones { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-top: 12px; }
+
+/* la costura: muescas arriba y abajo + troquelado del color del estado */
+.costura { position: relative; }
+.costura::before, .costura::after {
+  content: ""; position: absolute; left: 50%; width: 18px; height: 18px; margin-left: -9px;
+  border-radius: 50%; background: var(--mesa);
+}
+.costura::before { top: -9px; }
+.costura::after { bottom: -9px; }
+.costura i {
+  position: absolute; left: 50%; top: 14px; bottom: 14px; width: 4px; margin-left: -2px;
+  background: radial-gradient(circle, var(--costura) 1.6px, transparent 2.2px) 0 0 / 4px 9px repeat-y;
+}
+.talon.subida    { --costura: var(--verde); }
+.talon.simulada  { --costura: var(--azul); }
+.talon.duda      { --costura: var(--ambar); }
+.talon.error     { --costura: var(--rojo); }
+.talon.descartada, .talon.quitada { --costura: var(--raya); }
+.talon.descartada .mitad, .talon.quitada .mitad { opacity: .6; }
+/* duda: la costura está abierta (raya de corte en lugar de puntos) */
+.talon.duda .costura i {
+  background: repeating-linear-gradient(to bottom, var(--ambar) 0 6px, transparent 6px 12px);
+  width: 2px; margin-left: -1px;
+}
+.talon.duda { box-shadow: 0 0 0 2px var(--ambar); }
+.talon.duda .venta { background: #FFF6E6; border-radius: 0 10px 10px 0; }
+.pregunta { font-weight: 700; margin-bottom: 4px; }
+.otra { margin-top: 10px; }
+.otra summary { cursor: pointer; color: var(--copia); font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
+.otra-campos { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.otra select, .otra input {
+  border: 1px solid var(--raya); border-radius: 8px; padding: 8px 10px; background: #fff; min-width: 0; flex: 1 1 200px;
+}
+
+/* el único momento animado: la costura de un talón recién cargado se cose de arriba abajo */
+.talon.nuevo .costura i { animation: coser .7s ease-out both; }
+@keyframes coser { from { clip-path: inset(0 0 100% 0); } to { clip-path: inset(0 0 0 0); } }
+@media (prefers-reduced-motion: reduce) { .talon.nuevo .costura i { animation: none; } }
+
+@media (max-width: 560px) {
+  .talon { grid-template-columns: 1fr; grid-template-rows: auto 26px auto; }
+  .costura::before, .costura::after { top: 50%; left: auto; margin: -9px 0 0; }
+  .costura::before { left: -9px; }
+  .costura::after { right: -9px; bottom: auto; }
+  .costura i { top: 50%; bottom: auto; left: 14px; right: 14px; width: auto; height: 4px; margin: -2px 0 0;
+    background: radial-gradient(circle, var(--costura) 1.6px, transparent 2.2px) 0 0 / 9px 4px repeat-x; }
+  .talon.duda .costura i { background: repeating-linear-gradient(to right, var(--ambar) 0 6px, transparent 6px 12px);
+    height: 2px; margin-top: -1px; }
+  .talon.duda .venta { border-radius: 0 0 10px 10px; }
+  @keyframes coser { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+}
+.oculto { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <a class="marca" href="/admin/usuarios">Logibot</a>
+  <nav aria-label="Secciones">
+    <a href="/admin/usuarios">Usuarios</a>
+    <a href="/estadisticas">Estadísticas</a>
+    <a href="/config">Configuración</a>
+    <a href="/facturacion" aria-current="page">Facturación</a>
+    <a href="/admin/logout" class="salir">Salir</a>
+  </nav>
+</header>
+
+<section class="mes" aria-labelledby="mes-titulo">
+  <div class="mes-fila">
+    <button class="flecha" id="mes-ant" type="button" aria-label="Mes anterior">‹</button>
+    <h1 id="mes-titulo">Ventas de <span id="mes-txt">este mes</span></h1>
+    <button class="flecha" id="mes-sig" type="button" aria-label="Mes siguiente">›</button>
+  </div>
+  <p>Cada factura se busca entre las ventas de este mes: el mismo comprador y el mismo monto.
+     Si el comprador compró varias veces, va a la compra que tiene ese monto.</p>
+</section>
+
+<div class="cols">
+  <aside>
+    <div class="bandeja" id="fact-drop">
+      <p class="grande">Soltá acá los PDF de las facturas</p>
+      <button class="btn btn-tinta" type="button" id="elegir">Elegir facturas</button>
+      <p class="chico">Una o varias juntas. Hasta 1 MB cada una.</p>
+    </div>
+    <input type="file" id="fact-file" class="oculto" accept=".pdf,application/pdf" multiple aria-label="Facturas en PDF">
+    <div class="aviso info" id="prog" role="status"></div>
+    <div class="aviso" id="msg" role="status"></div>
+
+    <label class="interruptor">
+      <input type="checkbox" id="fact-prueba">
+      <b>Modo prueba</b>
+      <small>No carga nada en Mercado Libre: solo muestra a qué venta iría cada factura.</small>
+    </label>
+    <div class="aviso info" id="fact-simuladas"></div>
+  </aside>
+
+  <section class="talones" aria-live="polite">
+    <h2>Para decidir <span class="cuenta" id="fact-ndudas">0</span></h2>
+    <div class="lista" id="fact-dudas"></div>
+    <h2>Facturas</h2>
+    <div class="lista" id="fact-tabla"><p class="vacio">Cargando…</p></div>
+  </section>
+</div>
+
+<script>
+const KEY  = __CLAVE_PANEL__;
+const BASE = window.location.origin;
+const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
+               'setiembre','octubre','noviembre','diciembre'];
+const ESTADOS = {subida: 'Cargada en Mercado Libre', simulada: 'Modo prueba: iría a esta venta',
+                 error: 'No se pudo cargar', descartada: 'No se carga', quitada: 'Quitada de la venta'};
+let _mes = '';
+let _dudas = [];
+let _filas = [];
+let _dudasAntes = -1;
+let _vistas = null;          // claves ya pintadas: las nuevas se "cosen"
+let _firmaDudas = null;      // las dudas solo se repintan si cambiaron (no borrar lo que se está escribiendo)
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+function mesTexto(m) {
+  if (!m || m.length !== 7) return '';
+  return MESES[parseInt(m.slice(5), 10) - 1] + ' ' + m.slice(0, 4);
+}
+function mesActual() {
+  const h = new Date();
+  return h.getFullYear() + '-' + String(h.getMonth() + 1).padStart(2, '0');
+}
+function moverMes(delta) {
+  let y = parseInt(_mes.slice(0, 4), 10), m = parseInt(_mes.slice(5), 10) + delta;
+  if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; }
+  const nuevo = y + '-' + String(m).padStart(2, '0');
+  if (nuevo > mesActual()) return;
+  ponerMes(nuevo);
+}
+function ponerMes(m) {
+  _mes = m;
+  document.getElementById('mes-txt').textContent = mesTexto(m);
+  document.getElementById('mes-sig').disabled = (m >= mesActual());
+  try { sessionStorage.setItem('fact_mes', m); } catch (e) {}
+}
+function plata(n, mon) {
+  if (n == null || n === '') return '—';
+  return (mon === 'USD' ? 'U$S ' : '$ ') +
+    Number(n).toLocaleString('es-UY', {minimumFractionDigits: 0, maximumFractionDigits: 2});
+}
+function fechaCorta(f) {
+  if (!f || f.length < 10) return '';
+  const m = parseInt(f.slice(5, 7), 10);
+  return parseInt(f.slice(8, 10), 10) + ' ' + (MESES[m - 1] || '').slice(0, 3);
+}
+function aviso(msg, ok) {
+  const el = document.getElementById('msg');
+  el.textContent = msg;
+  el.className = 'aviso ver ' + (ok ? 'bien' : 'mal');
+  clearTimeout(aviso._t);
+  aviso._t = setTimeout(() => el.className = 'aviso', 6000);
+}
+function progreso(txt) {
+  const el = document.getElementById('prog');
+  el.textContent = txt || '';
+  el.className = 'aviso info' + (txt ? ' ver' : '');
+}
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({'X-API-Key': KEY}, opts.headers || {});
+  const r = await fetch(BASE + path, opts);
+  return r.json();
+}
+function postJSON(path, body) {
+  return api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+}
+
+// ── mitades del talón ──
+function mitadFactura(e) {
+  const f = e.factura || {};
+  const ref = [];
+  if (f.serie && f.numero) ref.push((f.tipo === 'e-factura' ? 'e-Factura ' : f.tipo === 'e-ticket' ? 'e-Ticket ' : '') + f.serie + '-' + f.numero);
+  if (f.fecha) ref.push(fechaCorta(f.fecha));
+  return '<div class="mitad factura">' +
+    '<p class="quien">' + esc(f.nombre || 'Sin nombre legible') + '</p>' +
+    '<p class="monto">' + plata(f.total, f.moneda) + '</p>' +
+    '<p class="ref">' + esc(ref.join(', ') || e.archivo || '') + '</p></div>';
+}
+function textoVenta(v) {
+  return esc(v.comprador || v.nickname || 'Comprador sin nombre') + ', ' + plata(v.total, v.moneda) +
+         (v.fecha ? ', ' + esc(fechaCorta(v.fecha)) : '');
+}
+const COSTURA = '<div class="costura" aria-hidden="true"><i></i></div>';
+
+function talonDuda(e, idx) {
+  const c = e.candidatas || [];
+  const prop = c[0];
+  const opciones = c.map(v => '<option value="' + esc(v.pack_id) + '">Venta ' + esc(v.pack_id) + ': ' +
+    textoVenta(v) + (v.motivo ? ' (' + esc(v.motivo) + ')' : '') + '</option>').join('');
+  return '<article class="talon duda">' + mitadFactura(e) + COSTURA +
+    '<div class="mitad venta">' +
+      '<p class="estado">' + esc(e.motivo || 'Para decidir') + '</p>' +
+      (prop
+        ? '<p class="pregunta">¿Es la venta ' + esc(prop.pack_id) + '?</p><p class="ref">' + textoVenta(prop) + '</p>' +
+          '<div class="acciones"><button class="btn btn-verde" type="button" data-accion="si" data-i="' + idx + '">Sí, cargarla ahí</button>' +
+          '<button class="btn-texto" type="button" data-accion="no" data-i="' + idx + '">No cargar esta factura</button></div>'
+        : '<p class="ref">Si sabés a qué venta de ' + esc(mesTexto(e.mes)) + ' corresponde, escribí su número.</p>' +
+          '<div class="acciones"><button class="btn-texto" type="button" data-accion="no" data-i="' + idx + '">No cargar esta factura</button></div>') +
+      '<details class="otra"' + (prop ? '' : ' open') + '><summary>Cargarla en otra venta</summary><div class="otra-campos">' +
+        (opciones ? '<select id="duda-sel-' + idx + '" aria-label="Ventas posibles">' + opciones + '</select>' : '') +
+        '<input id="duda-man-' + idx + '" inputmode="numeric" placeholder="Número de venta" aria-label="Número de venta">' +
+        '<button class="btn btn-linea" type="button" data-accion="otra" data-i="' + idx + '">Cargar</button>' +
+      '</div></details>' +
+    '</div></article>';
+}
+function talonFila(e, i, nuevo) {
+  const v = e.venta || {};
+  let derecha;
+  if (v.pack_id) {
+    derecha = '<p class="quien">Venta ' + esc(v.pack_id) + '</p><p class="ref">' + textoVenta(v) + '</p>';
+  } else {
+    derecha = '<p class="ref">' + esc(e.motivo || '') + '</p>';
+  }
+  const quitar = (e.estado === 'subida' || e.estado === 'simulada')
+    ? '<div class="acciones"><button class="btn-texto" type="button" data-quitar="' + i + '">Quitar de esta venta</button></div>' : '';
+  return '<article class="talon ' + esc(e.estado) + (nuevo ? ' nuevo' : '') + '">' + mitadFactura(e) + COSTURA +
+    '<div class="mitad venta"><p class="estado">' + esc(ESTADOS[e.estado] || e.estado) + '</p>' + derecha +
+    (e.estado === 'error' && v.pack_id ? '<p class="ref">' + esc(e.motivo || '') + '</p>' : '') + quitar + '</div></article>';
+}
+
+function pintar(d) {
+  _dudas = d.dudas_lista || [];
+  _filas = d.facturas || [];
+  const nd = d.dudas || 0;
+  const cuenta = document.getElementById('fact-ndudas');
+  cuenta.textContent = nd;
+  cuenta.className = 'cuenta' + (nd ? ' hay' : '');
+  document.title = (nd ? '(' + nd + ') ' : '') + 'Logibot — Facturación';
+
+  const firma = JSON.stringify(_dudas.map(e => [e.clave, e.motivo, (e.candidatas || []).map(c => c.pack_id)]));
+  if (firma !== _firmaDudas) {
+    _firmaDudas = firma;
+    document.getElementById('fact-dudas').innerHTML = _dudas.length
+      ? _dudas.map(talonDuda).join('')
+      : '<p class="vacio">Nada para decidir. Las facturas que no coincidan del todo van a aparecer acá antes de cargarse.</p>';
+  }
+
+  const primera = _vistas === null;
+  _vistas = _vistas || new Set();
+  document.getElementById('fact-tabla').innerHTML = _filas.length
+    ? _filas.map((e, i) => talonFila(e, i, !primera && !_vistas.has(e.clave + e.estado))).join('')
+    : '<p class="vacio">Todavía no hay facturas. Elegí el mes y soltá los PDF en la bandeja.</p>';
+  _filas.forEach(e => _vistas.add(e.clave + e.estado));
+
+  document.getElementById('fact-prueba').checked = !!d.modo_prueba;
+  const sim = document.getElementById('fact-simuladas');
+  if (!d.modo_prueba && d.simuladas) {
+    sim.className = 'aviso info ver';
+    sim.innerHTML = 'Quedaron ' + d.simuladas + ' factura(s) del modo prueba sin cargar.' +
+      '<br><button class="btn btn-tinta" type="button" id="subir-sim">Cargarlas ahora en Mercado Libre</button>';
+    document.getElementById('subir-sim').onclick = subirSimuladas;
+  } else sim.className = 'aviso info';
+
+  if (_dudasAntes >= 0 && nd > _dudasAntes) {
+    try {
+      if (window.Notification && Notification.permission === 'granted')
+        new Notification('Facturas para decidir', {body: 'Hay ' + nd + ' factura(s) esperando tu respuesta antes de cargarse.'});
+    } catch (e) {}
+  }
+  _dudasAntes = nd;
+}
+async function cargar() {
+  let d;
+  try { d = await api('/api/facturas'); } catch (e) { return; }
+  if (d && d.ok) pintar(d);
+  else if (d && d.msg) aviso(d.msg, false);
+}
+
+// ── acciones ──
+async function subirFacturas(files) {
+  const lista = Array.from(files || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.type === 'application/pdf');
+  if (!lista.length) { aviso('Elegí archivos PDF.', false); return; }
+  let ok = 0, dud = 0, err = 0, i = 0;
+  for (const f of lista) {
+    i++;
+    progreso('Leyendo ' + i + ' de ' + lista.length + ': ' + f.name);
+    const fd = new FormData(); fd.append('factura', f, f.name); fd.append('mes', _mes);
+    try {
+      const d = await api('/api/facturas/subir', {method: 'POST', body: fd});
+      if (!d.ok) { err++; if (d.msg) aviso(d.msg, false); }
+      (d.resultados || []).forEach(r => {
+        if (r.estado === 'subida' || r.estado === 'simulada') ok++;
+        else if (r.estado === 'duda') dud++; else err++;
+      });
+    } catch (e) { err++; }
+  }
+  progreso('');
+  const partes = [];
+  if (ok) partes.push(ok + (document.getElementById('fact-prueba').checked ? ' con venta encontrada (modo prueba)' : ' cargada(s)'));
+  if (dud) partes.push(dud + ' para decidir');
+  if (err) partes.push(err + ' con error');
+  aviso(partes.join(', ') || 'Listo.', !err);
+  cargar();
+}
+async function cambiarModo(prueba) {
+  const d = await postJSON('/api/facturas/modo', {prueba: prueba});
+  aviso(d.ok ? (prueba ? 'Modo prueba encendido: no se carga nada en Mercado Libre.'
+                       : 'Modo prueba apagado: las facturas se cargan en Mercado Libre.') : d.msg, d.ok);
+  cargar();
+}
+async function subirSimuladas() {
+  if (!confirm('¿Cargar en Mercado Libre las facturas que quedaron del modo prueba?')) return;
+  progreso('Cargando las facturas del modo prueba…');
+  const d = await api('/api/facturas/subir-simuladas', {method: 'POST'});
+  progreso('');
+  aviso(d.ok ? 'Listo: ' + (d.resultados || []).length + ' procesada(s).' : d.msg, d.ok);
+  cargar();
+}
+async function responder(i, accion) {
+  const e = _dudas[i];
+  if (!e) return;
+  const body = {clave: e.clave, accion: accion};
+  if (accion === 'otra') {
+    const man = document.getElementById('duda-man-' + i).value.trim();
+    const sel = document.getElementById('duda-sel-' + i);
+    body.pack_id = man || (sel ? sel.value : '');
+    if (!body.pack_id) { aviso('Elegí una venta o escribí su número.', false); return; }
+  }
+  const d = await postJSON('/api/facturas/responder', body);
+  aviso(d.ok ? (accion === 'no' ? 'Esa factura no se carga.' : (d.msg || 'Factura cargada.')) : d.msg, d.ok);
+  cargar();
+}
+async function quitar(i) {
+  const e = _filas[i];
+  if (!e || !confirm('¿Quitar esta factura de la venta ' + ((e.venta || {}).pack_id || '') + ' en Mercado Libre?')) return;
+  const d = await postJSON('/api/facturas/quitar', {clave: e.clave});
+  aviso(d.ok ? 'Factura quitada de la venta.' : d.msg, d.ok);
+  cargar();
+}
+
+// ── arranque ──
+(function () {
+  let m = mesActual();
+  try { const g = sessionStorage.getItem('fact_mes'); if (g && /^\d{4}-\d{2}$/.test(g) && g <= m) m = g; } catch (e) {}
+  ponerMes(m);
+  document.getElementById('mes-ant').onclick = () => moverMes(-1);
+  document.getElementById('mes-sig').onclick = () => moverMes(1);
+
+  const inp = document.getElementById('fact-file');
+  document.getElementById('elegir').onclick = () => {
+    try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
+    inp.click();
+  };
+  inp.onchange = () => { subirFacturas(inp.files); inp.value = ''; };
+  const z = document.getElementById('fact-drop');
+  ['dragenter', 'dragover'].forEach(ev => z.addEventListener(ev, e => { e.preventDefault(); z.classList.add('sobre'); }));
+  ['dragleave', 'drop'].forEach(ev => z.addEventListener(ev, e => { e.preventDefault(); z.classList.remove('sobre'); }));
+  z.addEventListener('drop', e => subirFacturas(e.dataTransfer.files));
+  document.getElementById('fact-prueba').onchange = e => cambiarModo(e.target.checked);
+
+  document.getElementById('fact-dudas').addEventListener('click', e => {
+    const b = e.target.closest('[data-accion]');
+    if (b) responder(parseInt(b.dataset.i, 10), b.dataset.accion);
+  });
+  document.getElementById('fact-tabla').addEventListener('click', e => {
+    const b = e.target.closest('[data-quitar]');
+    if (b) quitar(parseInt(b.dataset.quitar, 10));
+  });
+  cargar();
+  setInterval(cargar, 30000);
+})();
+</script>
+</body>
+</html>

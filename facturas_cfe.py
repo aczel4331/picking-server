@@ -38,10 +38,6 @@ def tokens_nombre(txt):
     return {w for w in t.split() if len(w) >= 2 and w not in _VACIAS and not w.isdigit()}
 
 
-def normalizar_nombre(txt):
-    return " ".join(sorted(tokens_nombre(txt)))
-
-
 def parse_monto(txt):
     """'1.590,00' / '1,590.00' / '$ 1590' / '15,9' → float (None si no es un número)."""
     s = re.sub(r"[^0-9,.\-]", "", str(txt or ""))
@@ -73,8 +69,12 @@ def parse_monto(txt):
 
 _NUM = r"-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|-?\d+(?:[.,]\d{1,2})?"
 _RE_FECHA = re.compile(r"\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})\b|\b(\d{4})-(\d{2})-(\d{2})\b")
+# Rótulo de total con el valor en la línea de abajo (el valor en la misma línea lo resuelve _RE_TOTAL_LINEA)
 _ROT_TOTAL = [r"total\s+a\s+pagar", r"monto\s+total", r"importe\s+total", r"total\s+general",
-              r"total\s+\(?uyu\)?", r"total\s+\$", r"total"]
+              r"total\s+\(?uyu\)?", r"total"]
+# Líneas con "total" que no son el total de la factura
+_RE_NO_ES_TOTAL = re.compile(r"sub\s*-?\s*total|total\s+iva|iva\s+total|total\s+neto|no\s+gravado|"
+                             r"cantidad|items?\b|art[ií]culos", re.I)
 _ROT_NOMBRE = [r"raz[oó]n\s+social(?:\s+receptor)?", r"nombre\s+(?:del\s+)?(?:receptor|cliente|comprador)",
                r"receptor", r"cliente", r"comprador", r"se[nñ]or(?:es|\(es\))?", r"sr\.?\s*/?\s*sra\.?",
                r"nombre"]
@@ -91,13 +91,13 @@ _RE_TOTAL_LINEA = [re.compile(r"total\s+a\s+pagar\s*:?\s*(?:\$|UYU|U\$S|USD)?\s*
                               r"(?:\$|UYU|U\$S|USD)?\s*(" + _NUM + r")", re.I)]
 
 
+MAX_PAGINAS = 5      # un CFE ocupa una o dos páginas: no se lee entero un PDF enorme
+
+
 def texto_pdf(pdf_bytes):
-    try:
-        from pypdf import PdfReader
-    except ImportError:                                     # pragma: no cover
-        from PyPDF2 import PdfReader
+    from pypdf import PdfReader
     r = PdfReader(io.BytesIO(pdf_bytes))
-    return "\n".join((p.extract_text() or "") for p in r.pages)
+    return "\n".join((p.extract_text() or "") for p in list(r.pages)[:MAX_PAGINAS])
 
 
 def _lineas(texto):
@@ -144,18 +144,16 @@ def _total_en_linea(lineas):
 
 
 def _total_de_linea(txt):
-    if re.search(r"sub\s*-?\s*total|total\s+iva|iva\s+total|total\s+neto|no\s+gravado|"
-                 r"cantidad|items?\b|art[ií]culos", _sin_tildes(txt), re.I):
+    if _RE_NO_ES_TOTAL.search(_sin_tildes(txt)):
         return None
     nums = [parse_monto(n) for n in re.findall(_NUM, txt)]
     nums = [n for n in nums if n is not None and n > 0]
     return nums[-1] if nums else None
 
 
-def _fecha(texto):
+def _fecha(lineas):
     """Fecha del documento: la de la línea 'Fecha…' (o la de abajo si es un encabezado de tabla),
     nunca la del vencimiento del CAE."""
-    lineas = _lineas(texto)
     venc = re.compile(r"venc", re.I)
     candidatas = []
     for i, ln in enumerate(lineas):
@@ -199,13 +197,10 @@ def leer_cfe_texto(texto):
         if m:
             serie, numero = m.group(1).upper(), m.group(2).lstrip("0") or "0"
 
+    # sin rótulo de total no se adivina (el mayor importe podía ser una CI): queda None → duda
     total = _total_en_linea(lineas)
     if total is None:
         total = _valor_tras_rotulo(lineas, _ROT_TOTAL, _total_de_linea)
-    if total is None:                       # sin rótulo: el total suele ser el mayor importe
-        nums = [parse_monto(n) for n in re.findall(_NUM, texto or "")]
-        nums = [n for n in nums if n and 0 < n < 10_000_000]
-        total = max(nums) if nums else None
 
     moneda = "USD" if re.search(r"U\$S|US\$|\bUSD\b|d[oó]lares", plano, re.I) else "UYU"
 
@@ -217,7 +212,7 @@ def leer_cfe_texto(texto):
         "nombre": nombre,
         "total": total,
         "moneda": moneda,
-        "fecha": _fecha(texto),
+        "fecha": _fecha(lineas),
         # el texto completo solo se usa si no hay rótulo de receptor: así el nombre del emisor
         # (que también está en el PDF) nunca hace coincidir a un comprador
         "texto_tokens": [] if nombre else sorted(tokens_nombre(texto)),
@@ -225,7 +220,8 @@ def leer_cfe_texto(texto):
 
 
 def leer_cfe(pdf_bytes):
-    """Lee un PDF de CFE. Agrega 'clave' (serie-número o hash) y 'sha256' para no subirla dos veces."""
+    """Lee un PDF de CFE. Agrega 'clave' (tipo + serie-número, o hash) y 'sha256' para no subirla dos
+    veces. El tipo va en la clave: un e-Ticket A-100 y una e-Factura A-100 son documentos distintos."""
     sha = hashlib.sha256(pdf_bytes).hexdigest()
     try:
         texto = texto_pdf(pdf_bytes)
@@ -233,7 +229,8 @@ def leer_cfe(pdf_bytes):
         return {"error": f"No se pudo leer el PDF: {e}", "sha256": sha, "clave": "h:" + sha[:16]}
     f = leer_cfe_texto(texto)
     f["sha256"] = sha
-    f["clave"] = (f"{f['serie']}-{f['numero']}" if f["serie"] and f["numero"] else "h:" + sha[:16])
+    f["clave"] = (f"{f['tipo'] or 'cfe'}:{f['serie']}-{f['numero']}" if f["serie"] and f["numero"]
+                  else "h:" + sha[:16])
     if not texto.strip():
         f["error"] = "El PDF no tiene texto (¿es una imagen escaneada?)"
     return f
@@ -245,11 +242,13 @@ def leer_cfe(pdf_bytes):
 
 def agrupar_packs(ordenes, cuenta_id=""):
     """Órdenes de /orders/search → packs. Un pack = una venta (pack_id, o el order_id si no tiene)."""
-    packs = {}
+    packs, vistas = {}, set()
     for o in ordenes or []:
         oid = str(o.get("id") or "")
-        if not oid or str(o.get("status") or "paid") in ("cancelled", "invalid"):
+        # la paginación de ML puede repetir una orden: contarla dos veces cambiaría el monto
+        if not oid or oid in vistas or str(o.get("status") or "paid") in ("cancelled", "invalid"):
             continue
+        vistas.add(oid)
         pid = str(o.get("pack_id") or "") or oid
         b = o.get("buyer") or {}
         p = packs.setdefault(pid, {

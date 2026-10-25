@@ -55,7 +55,7 @@ f = F.leer_cfe(factura("José Pérez", "1.600,00"))
 ok(f.get("total") == 1600.0, f"total leído = {f.get('total')}")
 ok(F.tokens_nombre(f.get("nombre")) == {"jose", "perez"}, f"nombre leído = {f.get('nombre')!r}")
 ok(f.get("fecha") == "2026-10-15", f"fecha leída = {f.get('fecha')}")
-ok(f.get("clave") == "A-1234", f"clave = {f.get('clave')}")
+ok(f.get("clave") == "e-ticket:A-1234", f"clave = {f.get('clave')}")
 ok(f.get("tipo") == "e-ticket", f"tipo = {f.get('tipo')}")
 ok(F.leer_cfe(pdf_cfe(["NOTA DE CREDITO e-Ticket", "TOTAL 100,00"]))["tipo"] == "nota_credito", "nota de crédito detectada")
 
