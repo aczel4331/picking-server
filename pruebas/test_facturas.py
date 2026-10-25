@@ -254,9 +254,21 @@ try:
                       files=[("factura", ("x.pdf", factura("José Pérez", "990,00", "50"), "application/pdf"))]).json()
     check("tienda nueva sin ML conectado no usa las ventas de Everest",
           r["resultados"][0]["estado"] == "error" and "conectada" in r["resultados"][0]["motivo"], r)
-    html = ses.get(B + "/config").text
-    check("/config muestra la sección de facturas", "Facturas a Mercado Libre" in html and "fact-campana" in html)
-    check("/config no dice Railway", "railway" not in html.lower())
+    html = ses.get(B + "/facturacion").text
+    check("/facturacion muestra la sección de facturas", "Facturas a Mercado Libre" in html and "fact-campana" in html
+          and "fact-mes" in html)
+    check("/facturacion no dice Railway", "railway" not in html.lower())
+    cfg_html = ses.get(B + "/config").text
+    check("/config ya no tiene las facturas, solo la pestaña", "fact-campana" not in cfg_html
+          and 'href="/facturacion"' in cfg_html)
+    check("pestaña Facturación en usuarios y estadísticas",
+          all('href="/facturacion"' in ses.get(B + u).text for u in ("/admin/usuarios", "/estadisticas")))
+    check("sin sesión /facturacion lleva al login",
+          requests.get(B + "/facturacion", allow_redirects=False).status_code in (301, 302))
+    ses_t = requests.Session(); ses_t.post(B + "/admin/usuarios", data={"usuario": "fop", "clave": "fpw2"})
+    ht = ses_t.get(B + "/facturacion")
+    check("una tienda nueva también puede abrir /facturacion", ht.status_code == 200 and "fact-campana" in ht.text,
+          ht.status_code)
 finally:
     srv.terminate()
     ml_srv.shutdown()

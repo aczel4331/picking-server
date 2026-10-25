@@ -2656,7 +2656,7 @@ _TENANT_READY = {
     "panel_etiquetas",
     # facturas (registro y ventas por tienda)
     "api_facturas_subir", "api_facturas_lista", "api_facturas_dudas", "api_facturas_responder",
-    "api_facturas_quitar", "api_facturas_modo", "api_facturas_subir_simuladas",
+    "api_facturas_quitar", "api_facturas_modo", "api_facturas_subir_simuladas", "panel_facturacion",
 }
 
 
@@ -2723,7 +2723,7 @@ def _resolver_tienda():
         g.tn = _Tn(tid, "token", str(d.get("u") or ""), str(u.get("rol") or ""))
     else:
         s = _tn_de_sesion()
-        if s is not None and request.path.startswith(("/admin", "/estadisticas", "/config", "/etiquetas")):
+        if s is not None and request.path.startswith(("/admin", "/estadisticas", "/config", "/etiquetas", "/facturacion")):
             g.tn = s
     tn = g.tn
     if tn.tid and (request.endpoint or "") not in _TENANT_READY:
@@ -3781,6 +3781,7 @@ input,select{background:#0F172A;border:1px solid #334155;color:#F1F5F9;
   <a href="/config">⚙ Config</a>
   <a href="/etiquetas">🏷 Etiquetas</a>
   <a href="/etiquetas" class="active">🏷 Etiquetas</a>
+  <a href="/facturacion">🧾 Facturación</a>
   <a href="/admin" style="margin-left:auto">🔒 Cerrar sesión</a>
 </div>
 
@@ -5587,6 +5588,9 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
     <a href="/config" style="background:#1E3A5F;color:#A78BFA;
        text-decoration:none;padding:6px 14px;border-radius:8px;
        font-size:12px;font-weight:600">⚙ Config</a>
+    <a href="/facturacion" style="background:#1E3A5F;color:#6EE7B7;
+       text-decoration:none;padding:6px 14px;border-radius:8px;
+       font-size:12px;font-weight:600">🧾 Facturación</a>
   <a href="/etiquetas" style="background:#1E293B;color:#94A3B8;padding:8px 16px;
      border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">
      🏷 Etiquetas</a>
@@ -6370,7 +6374,7 @@ def _nombre_tienda_html() -> str:
     """Nombre de la tienda ya saneado para incrustarlo en HTML/JS. Cacheado por
     fecha de modificación de config_app.json (se consulta en cada página)."""
     _tid = _tn().tid
-    if not _tid and has_request_context() and request.path.startswith(("/admin", "/estadisticas", "/config", "/etiquetas")):
+    if not _tid and has_request_context() and request.path.startswith(("/admin", "/estadisticas", "/config", "/etiquetas", "/facturacion")):
         _s = _tn_de_sesion()    # panel: la sesión puede haberse creado en ESTA misma llamada (login)
         _tid = _s.tid if _s else ""
     if _tid:    # páginas de una tienda nueva: su propio nombre
@@ -7365,6 +7369,7 @@ tr:hover td{background:rgba(255,255,255,.03)}
   <div class="nav">
     <a href="/admin/usuarios">👥 Usuarios</a>
     <a href="/estadisticas" class="active">📊 Estadísticas</a>
+    <a href="/facturacion">🧾 Facturación</a>
     <a href="/admin/logout">🔒 Salir</a>
   </div>
 </div>
@@ -8132,27 +8137,6 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
 .preview-box{background:#0F172A;border:1px solid #334155;border-radius:8px;
   padding:16px;margin-top:12px;min-height:80px;position:relative;
   font-size:11px;color:#64748B}
-.campana{float:right;cursor:pointer;background:#334155;color:#F1F5F9;border-radius:999px;
-  padding:3px 10px;font-size:12px;text-transform:none;letter-spacing:0}
-.campana.hay{background:#F59E0B;color:#111827}
-.drop{border:2px dashed #334155;border-radius:10px;padding:18px;text-align:center;
-  color:#94A3B8;font-size:13px;margin-top:12px}
-.drop.sobre{border-color:#3B82F6;background:#1E3A5F}
-#msg-facturas,#prog-facturas{margin-top:10px;font-size:13px;padding:6px 10px;border-radius:6px;display:none}
-#prog-facturas{background:#1E3A5F;color:#93C5FD}
-.duda{background:#422006;border:1px solid #F59E0B;border-radius:10px;padding:12px 14px;margin-top:10px;font-size:13px}
-.duda .q{margin:6px 0;color:#FDE68A}
-.duda select,.duda input{width:auto;min-width:200px;margin:4px 6px 4px 0;display:inline-block}
-.btn-sm{padding:6px 12px;font-size:12px}
-.btn-gris{background:#334155;color:#F1F5F9}.btn-gris:hover{background:#475569}
-.btn-rojo{background:#7F1D1D;color:#FECACA}.btn-rojo:hover{background:#991B1B}
-.tabla{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
-.tabla th{color:#64748B;text-align:left;padding:6px;border-bottom:1px solid #334155;font-weight:600}
-.tabla td{padding:6px;border-bottom:1px solid #1F2A3D;vertical-align:top}
-.est{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
-.est-subida{background:#064E3B;color:#6EE7B7}.est-simulada{background:#1E3A5F;color:#93C5FD}
-.est-duda{background:#78350F;color:#FDE68A}.est-error{background:#7F1D1D;color:#FECACA}
-.est-descartada,.est-quitada{background:#334155;color:#94A3B8}
 </style></head><body>
 
 <div class="topbar">
@@ -8164,6 +8148,7 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
     <a href="/admin/usuarios">👥 Usuarios</a>
     <a href="/estadisticas">📊 Stats</a>
     <a href="/config" class="active">⚙ Config</a>
+    <a href="/facturacion">🧾 Facturación</a>
     <a href="/admin/logout">🔒 Salir</a>
   </div>
 </div>
@@ -8201,41 +8186,6 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
   <div id="msg-supervisor"></div>
 </div>
 
-</div>
-
-<!-- ── FACTURAS A MERCADO LIBRE ───────────────────────────────────────────── -->
-<div class="card" style="margin-bottom:20px">
-  <h2>🧾 Facturas a Mercado Libre
-    <span class="campana" id="fact-campana" onclick="irADudas()" title="Facturas con duda">🔔 <b id="fact-ndudas">0</b></span></h2>
-  <div class="info">
-    Subí el PDF de la factura, de a una o varias juntas. Se carga sola en la venta cuyo
-    <b>nombre</b> y <b>monto</b> coinciden. Si hay duda, te preguntamos acá antes de subir nada.
-  </div>
-  <label style="text-transform:none;display:flex;gap:8px;align-items:center;cursor:pointer">
-    <input type="checkbox" id="fact-prueba" style="width:auto" onchange="cambiarModo(this.checked)">
-    Modo prueba: no sube nada a Mercado Libre, solo muestra a qué venta iría cada factura
-  </label>
-  <div class="info" id="fact-simuladas" style="display:none;margin-top:10px"></div>
-  <label for="fact-mes">Mes de las ventas a buscar</label>
-  <input type="month" id="fact-mes" style="max-width:220px">
-  <div style="font-size:11px;color:#94A3B8;margin-top:4px">
-    Se busca al comprador solo entre las ventas de ese mes y, si compró varias veces, la del mismo monto.
-  </div>
-  <div class="drop" id="fact-drop">
-    Arrastrá acá los PDF de las facturas<br>
-    <button class="btn btn-green" style="margin-top:10px" onclick="elegirFacturas()">⬆ Elegir una o varias facturas</button>
-  </div>
-  <input type="file" id="fact-file" accept=".pdf,application/pdf" multiple style="display:none"
-         onchange="subirFacturas(this.files); this.value=''">
-  <div id="prog-facturas"></div>
-  <div id="msg-facturas"></div>
-  <div id="fact-dudas"></div>
-  <div style="overflow-x:auto">
-    <table class="tabla">
-      <thead><tr><th>Cargada</th><th>Factura</th><th>Estado</th><th>Venta</th><th></th></tr></thead>
-      <tbody id="fact-tabla"><tr><td colspan="5" style="color:#64748B">Cargando…</td></tr></tbody>
-    </table>
-  </div>
 </div>
 
 <!-- ── PERSONALIZACIÓN DE ETIQUETAS ──────────────────────────────────────── -->
@@ -8399,6 +8349,133 @@ async function cambiarCodigo() {
       document.getElementById('cod-confirmar').value='';
     } else mostrar('msg-supervisor','❌ '+d2.msg, false);
   } catch(e) { mostrar('msg-supervisor','Error: '+e, false); }
+}
+</script></body></html>""",
+        cfg=cfg, excel_info=excel_info)
+
+
+@app.route("/facturacion")
+def panel_facturacion():
+    """Panel web de facturación: facturas CFE (PDF) → la venta de ML con el mismo nombre y monto."""
+    if not session.get("admin_panel_usuario"):
+        return redirect("/admin/usuarios")
+    key = _clave_para_panel(_tn_de_sesion())
+    return render_template_string("""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logibot — Facturación</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:20px 16px}
+.topbar{display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:24px;flex-wrap:wrap;gap:10px}
+h1{color:#3B82F6;font-size:22px;font-weight:900}
+.sub{color:#64748B;font-size:12px;margin-top:2px}
+.nav{display:flex;gap:8px}
+.nav a{background:#1E293B;color:#94A3B8;text-decoration:none;
+  padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600}
+.nav a.active{background:#3B82F6;color:white}
+.nav a:hover{background:#334155;color:#F1F5F9}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+.card{background:#1E293B;border-radius:12px;padding:20px}
+.card h2{font-size:14px;font-weight:700;color:#94A3B8;text-transform:uppercase;
+  letter-spacing:.05em;margin-bottom:16px}
+label{display:block;color:#94A3B8;font-size:12px;font-weight:600;
+  text-transform:uppercase;margin-bottom:5px;margin-top:12px}
+input,select,textarea{width:100%;padding:9px 12px;background:#0F172A;
+  border:1px solid #334155;color:#F1F5F9;border-radius:8px;
+  font-size:13px;outline:none;font-family:inherit}
+input:focus,select:focus,textarea:focus{border-color:#3B82F6}
+.btn{padding:10px 20px;border:none;border-radius:8px;font-size:13px;
+  font-weight:700;cursor:pointer;transition:background .2s}
+.btn-blue{background:#3B82F6;color:white}.btn-blue:hover{background:#2563EB}
+.btn-green{background:#10B981;color:white}.btn-green:hover{background:#059669}
+.btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.ok-msg{background:rgba(16,185,129,.15);color:#34D399;border:1px solid #059669}
+.err-msg{background:rgba(239,68,68,.15);color:#FCA5A5;border:1px solid #EF4444}
+.info{background:#1E3A5F;border-radius:8px;padding:10px 14px;
+  font-size:12px;color:#93C5FD;margin-bottom:12px}
+.campana{float:right;cursor:pointer;background:#334155;color:#F1F5F9;border-radius:999px;
+  padding:3px 10px;font-size:12px;text-transform:none;letter-spacing:0}
+.campana.hay{background:#F59E0B;color:#111827}
+.drop{border:2px dashed #334155;border-radius:10px;padding:18px;text-align:center;
+  color:#94A3B8;font-size:13px;margin-top:12px}
+.drop.sobre{border-color:#3B82F6;background:#1E3A5F}
+#msg-facturas,#prog-facturas{margin-top:10px;font-size:13px;padding:6px 10px;border-radius:6px;display:none}
+#prog-facturas{background:#1E3A5F;color:#93C5FD}
+.duda{background:#422006;border:1px solid #F59E0B;border-radius:10px;padding:12px 14px;margin-top:10px;font-size:13px}
+.duda .q{margin:6px 0;color:#FDE68A}
+.duda select,.duda input{width:auto;min-width:200px;margin:4px 6px 4px 0;display:inline-block}
+.btn-sm{padding:6px 12px;font-size:12px}
+.btn-gris{background:#334155;color:#F1F5F9}.btn-gris:hover{background:#475569}
+.btn-rojo{background:#7F1D1D;color:#FECACA}.btn-rojo:hover{background:#991B1B}
+.tabla{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.tabla th{color:#64748B;text-align:left;padding:6px;border-bottom:1px solid #334155;font-weight:600}
+.tabla td{padding:6px;border-bottom:1px solid #1F2A3D;vertical-align:top}
+.est{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
+.est-subida{background:#064E3B;color:#6EE7B7}.est-simulada{background:#1E3A5F;color:#93C5FD}
+.est-duda{background:#78350F;color:#FDE68A}.est-error{background:#7F1D1D;color:#FECACA}
+.est-descartada,.est-quitada{background:#334155;color:#94A3B8}
+</style></head><body>
+
+<div class="topbar">
+  <div>
+    <h1>🧾 Facturación</h1>
+    <div class="sub">Facturas cargadas en las ventas de Mercado Libre</div>
+  </div>
+  <div class="nav">
+    <a href="/admin/usuarios">👥 Usuarios</a>
+    <a href="/estadisticas">📊 Stats</a>
+    <a href="/config">⚙ Config</a>
+    <a href="/facturacion" class="active">🧾 Facturación</a>
+    <a href="/admin/logout">🔒 Salir</a>
+  </div>
+</div>
+
+<!-- ── FACTURAS A MERCADO LIBRE ───────────────────────────────────────────── -->
+<div class="card" style="margin-bottom:20px">
+  <h2>🧾 Facturas a Mercado Libre
+    <span class="campana" id="fact-campana" onclick="irADudas()" title="Facturas con duda">🔔 <b id="fact-ndudas">0</b></span></h2>
+  <div class="info">
+    Subí el PDF de la factura, de a una o varias juntas. Se carga sola en la venta cuyo
+    <b>nombre</b> y <b>monto</b> coinciden. Si hay duda, te preguntamos acá antes de subir nada.
+  </div>
+  <label style="text-transform:none;display:flex;gap:8px;align-items:center;cursor:pointer">
+    <input type="checkbox" id="fact-prueba" style="width:auto" onchange="cambiarModo(this.checked)">
+    Modo prueba: no sube nada a Mercado Libre, solo muestra a qué venta iría cada factura
+  </label>
+  <div class="info" id="fact-simuladas" style="display:none;margin-top:10px"></div>
+  <label for="fact-mes">Mes de las ventas a buscar</label>
+  <input type="month" id="fact-mes" style="max-width:220px">
+  <div style="font-size:11px;color:#94A3B8;margin-top:4px">
+    Se busca al comprador solo entre las ventas de ese mes y, si compró varias veces, la del mismo monto.
+  </div>
+  <div class="drop" id="fact-drop">
+    Arrastrá acá los PDF de las facturas<br>
+    <button class="btn btn-green" style="margin-top:10px" onclick="elegirFacturas()">⬆ Elegir una o varias facturas</button>
+  </div>
+  <input type="file" id="fact-file" accept=".pdf,application/pdf" multiple style="display:none"
+         onchange="subirFacturas(this.files); this.value=''">
+  <div id="prog-facturas"></div>
+  <div id="msg-facturas"></div>
+  <div id="fact-dudas"></div>
+  <div style="overflow-x:auto">
+    <table class="tabla">
+      <thead><tr><th>Cargada</th><th>Factura</th><th>Estado</th><th>Venta</th><th></th></tr></thead>
+      <tbody id="fact-tabla"><tr><td colspan="5" style="color:#64748B">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<script>
+const KEY  = '""" + key + """';
+const BASE = window.location.origin;
+
+function mostrar(id, msg, ok) {
+  const el = document.getElementById(id);
+  el.textContent = msg; el.style.display = 'block';
+  el.className = ok ? 'ok-msg' : 'err-msg';
+  setTimeout(() => el.style.display = 'none', 4000);
 }
 
 // ── Facturas ────────────────────────────────────────────────────────────────
@@ -8566,7 +8643,7 @@ async function cargarFacturas() {
   _dudas = (d.facturas || []).filter(e => e.estado === 'duda').reverse();
   document.getElementById('fact-ndudas').textContent = d.dudas || 0;
   document.getElementById('fact-campana').className = 'campana' + (d.dudas ? ' hay' : '');
-  document.title = (d.dudas ? '(' + d.dudas + ') ' : '') + 'Logibot — Configuración';
+  document.title = (d.dudas ? '(' + d.dudas + ') ' : '') + 'Logibot — Facturación';
   if (_dudasAntes >= 0 && d.dudas > _dudasAntes) {
     try {
       if (window.Notification && Notification.permission === 'granted')
@@ -8587,8 +8664,7 @@ async function cargarFacturas() {
   cargarFacturas();
   setInterval(cargarFacturas, 30000);
 })();
-</script></body></html>""",
-        cfg=cfg, excel_info=excel_info)
+</script></body></html>""")
 
 
 
