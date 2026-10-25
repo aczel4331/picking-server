@@ -59,20 +59,34 @@ def _leer_template(nombre):
 _HEAD_PANEL = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
                '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
                '<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800'
-               '&display=swap" rel="stylesheet"><link rel="stylesheet" href="/panel.css?v=1">')
+               '&display=swap" rel="stylesheet"><link rel="stylesheet" href="/panel.css?v=2">')
 _SECCIONES_PANEL = [("usuarios", "/admin/usuarios", "Usuarios"), ("estadisticas", "/estadisticas", "Estadísticas"),
                     ("etiquetas", "/etiquetas", "Etiquetas"), ("config", "/config", "Configuración"),
                     ("facturacion", "/facturacion", "Facturación")]
 
 
 def _barra_panel(activa):
-    """La misma barra de navegación en todos los paneles."""
+    """La misma barra de navegación en todos los paneles: las secciones del plan de la tienda,
+    "Tiendas" para el admin de la plataforma y, si la tienda no tiene Mercado Libre conectado, el aviso
+    con el botón para conectarlo."""
+    tid = _tn().tid
+    secciones = list(_SECCIONES_PANEL)
+    if tid and _plan_de(tid) == "facturacion":
+        secciones = [s for s in secciones if s[0] in ("facturacion", "usuarios")]
+    if _admin_plataforma_sesion():
+        secciones.append(("tiendas", "/admin/tiendas", "Tiendas"))
     actual = ' aria-current="page"'
     links = "".join(f'<a href="{url}"{actual if clave == activa else ""}>{texto}</a>'
-                    for clave, url, texto in _SECCIONES_PANEL)
-    return (f'<header class="lb-barra"><a class="lb-marca" href="/admin/usuarios">Logibot</a>'
+                    for clave, url, texto in secciones)
+    inicio = "/facturacion" if tid and _plan_de(tid) == "facturacion" else "/admin/usuarios"
+    aviso = ""
+    if tid and tid not in _cuentas:
+        aviso = ('<div class="lb-aviso-ml" role="status"><span>Tu tienda todavía no está conectada a '
+                 'Mercado Libre. Conectala para cargar facturas en tus ventas.</span>'
+                 '<a class="lb-btn-ml" href="/facturacion/conectar-ml">Conectar Mercado Libre</a></div>')
+    return (f'<header class="lb-barra"><a class="lb-marca" href="{inicio}">Logibot</a>'
             f'<nav class="lb-nav" aria-label="Secciones">{links}</nav>'
-            f'<a class="lb-salir" href="/admin/logout">Salir</a></header>')
+            f'<a class="lb-salir" href="/admin/logout">Salir</a></header>{aviso}')
 
 # ── Config ML ─────────────────────────────────────────────────────────────────
 ML_APP_ID     = os.environ.get("ML_APP_ID", "")
@@ -1798,6 +1812,9 @@ def api_auth_login():
             t = _tiendas.get(tid)
             if not t or t.get("estado") == "suspendida":
                 return jsonify({"ok": False, "msg": "La tienda está suspendida. Contactá al administrador."}), 403
+            if _plan_de(tid) == "facturacion":
+                return jsonify({"ok": False, "msg": "Tu plan es Facturación: se usa desde el navegador, en "
+                                                    "la página del panel (/admin/usuarios)."}), 403
         logger.info(f"[AUTH] Login OK: {usuario} (rol={resultado['rol']}, tienda={tid or 'primaria'})")
         marca = dict(_marca_de(tid or None))
         marca["tienda_id"] = tid
@@ -1891,9 +1908,12 @@ def api_usuarios_crear():
         if cuenta.lower().startswith("t_") and cuenta.lower() not in _tiendas:
             return jsonify({"ok": False, "msg": "Esa tienda no existe"}), 400
     elif idn["rol"] == "supervisor":
-        if rol_nuevo != "operario":
+        # en el plan "solo facturación" no hay operarios: el supervisor suma otros supervisores
+        permitido = "supervisor" if _plan_de(idn["tid"]) == "facturacion" else "operario"
+        if rol_nuevo != permitido:
             return jsonify({"ok": False,
-                "msg": "El supervisor solo puede crear operarios"}), 403
+                "msg": "El supervisor solo puede crear " + ("supervisores de su tienda"
+                       if permitido == "supervisor" else "operarios")}), 403
         cuenta = idn["cuenta"]          # no puede elegir otra tienda
     else:   # admin de una tienda
         if rol_nuevo not in ("operario", "supervisor"):
@@ -2091,14 +2111,38 @@ def auth_login():
         return _html_error("Cuenta inválida", "Esa tienda solo se conecta con su enlace de invitación.")
     if not re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", cuenta_id):
         return _html_error("Cuenta inválida", "El identificador de cuenta no es válido.")
+    return _redirigir_a_ml(cuenta_id, tienda_id)
+
+
+def _redirigir_a_ml(cuenta_id, tienda_id="", volver=""):
+    """Manda a autorizar en Mercado Libre (PKCE). 'volver': página del panel a la que regresar al
+    terminar (si no, se muestra la página de "Conectado")."""
+    import secrets
     state               = secrets.token_urlsafe(16)
     verifier, challenge = _generar_pkce()
-    _pkce_guardar(state, {"verifier": verifier, "cuenta_id": cuenta_id, "tienda_id": tienda_id})
+    _pkce_guardar(state, {"verifier": verifier, "cuenta_id": cuenta_id, "tienda_id": tienda_id,
+                          "volver": volver})
     url = (f"{ML_AUTH_URL}/authorization?response_type=code"
            f"&client_id={ML_APP_ID}&redirect_uri={ML_REDIRECT}"
            f"&scope=read%20write%20offline_access&state={state}"
            f"&code_challenge={challenge}&code_challenge_method=S256")
     return redirect(url)
+
+
+@app.route("/facturacion/conectar-ml")
+def facturacion_conectar_ml():
+    """Botón "Conectar Mercado Libre" del panel: el supervisor de una tienda nueva autoriza SU cuenta.
+    Es lo mismo que el enlace de invitación, pero sin tener que pedirlo al administrador."""
+    tn = _tn()
+    if not session.get("admin_panel_usuario") or not tn.tid or tn.via != "sesion" or not _fact_es_supervisor():
+        return redirect("/admin/usuarios")
+    t = _tiendas.get(tn.tid)
+    if not t or t.get("estado") == "suspendida":
+        return _html_error("La tienda está suspendida", "Contactá al administrador.")
+    if not _multi_tienda_activo():
+        return _html_error("Todavía no está habilitado",
+                           "La conexión de tiendas nuevas aún no está activada en este servidor.")
+    return _redirigir_a_ml(tn.tid, tn.tid, volver="/facturacion")
 
 
 @app.route("/auth/callback")
@@ -2192,6 +2236,8 @@ def auth_callback():
         _guardar_tokens()
         logger.info(f"[TOKEN] Conectado: {tok.get('nickname','?')} -> {cuenta_id}")
         threading.Thread(target=_refresh_pedidos_worker_cuenta, args=(cuenta_id,), daemon=True).start()
+        if entry.get("volver") in ("/facturacion",):       # conectada desde el botón del panel
+            return redirect(entry["volver"] + "?ml=conectado")
         return _html_ok(f"Conectado como <b>{_html.escape(str(tok['nickname']))}</b>",
                         f"Cuenta registrada como <b>{_html.escape(cuenta_id)}</b>.")
     except Exception as e:
@@ -2305,7 +2351,79 @@ def _tienda_publica(t: dict) -> dict:
     return {"id": t["id"], "primary": bool(t.get("primary")), "estado": t.get("estado", ""),
             "nombre": marca["nombre"] or t.get("nombre", ""), "subtitulo": marca["subtitulo"],
             "tiene_logo": marca["tiene_logo"], "nickname": (_cuentas.get(t["id"]) or {}).get("nickname", t.get("nickname", "")),
-            "ml_conectado": t["id"] in _cuentas, "invitacion_vigente": vigente}
+            "ml_conectado": t["id"] in _cuentas, "invitacion_vigente": vigente,
+            "plan": t.get("plan") or "completo"}
+
+
+# Plan de cada tienda: "completo" (picking + todo, lo de siempre) o "facturacion" (solo el panel de
+# Facturación y sus usuarios, sin app de escritorio). Sin campo = completo.
+PLANES_TIENDA = {"completo": "Completo", "facturacion": "Solo facturación"}
+
+
+def _plan_de(tid) -> str:
+    return ((_tiendas.get(tid) or {}).get("plan") or "completo") if tid else "completo"
+
+
+def _tienda_crear(nombre, subtitulo="", logo_raw=None, plan="completo") -> str:
+    """Crea una tienda nueva en estado pendiente_ml y devuelve su id. Lanza ValueError con el motivo.
+    La usan la app de escritorio (/api/admin/tiendas) y la pestaña Tiendas del panel."""
+    import secrets
+    nombre = (nombre or "").strip()[:40]
+    if not nombre:
+        raise ValueError("Falta el nombre de la tienda")
+    if plan not in PLANES_TIENDA:
+        raise ValueError("Plan inválido")
+    if logo_raw is None and plan == "completo":
+        raise ValueError("Para crear la tienda hay que elegir su logo")      # se ve al iniciar sesión en la app
+    if logo_raw is not None and (len(logo_raw) > 1_500_000 or not _sniff_imagen(logo_raw)):
+        raise ValueError("El logo debe ser PNG, JPG o WEBP de hasta 1.5 MB")
+    with _tiendas_lock:
+        tid = "t_" + secrets.token_hex(3)
+        while tid in _tiendas or tid in _cuentas:
+            tid = "t_" + secrets.token_hex(3)
+        _tiendas[tid] = {"id": tid, "primary": False, "estado": "pendiente_ml", "nombre": nombre,
+                         "subtitulo": (subtitulo or "").strip()[:60], "cuentas": [tid],
+                         "creada": datetime.now().isoformat(timespec="seconds"), "plan": plan}
+        if logo_raw is not None:
+            os.makedirs(os.path.dirname(_logo_path(tid)), exist_ok=True)
+            with open(_logo_path(tid), "wb") as f:
+                f.write(logo_raw)
+            _tiendas[tid]["logo_ts"] = str(int(time.time()))
+        _tiendas_guardar()
+    logger.info(f"[TIENDAS] Creada {tid} ({nombre}, plan {plan})")
+    return tid
+
+
+def _tienda_invitacion(tid) -> str:
+    """Enlace de un solo uso (48 h) para que el dueño de la tienda autorice su cuenta de ML.
+    Lanza ValueError si la tienda no puede recibirlo."""
+    import secrets, hashlib
+    with _tiendas_lock:
+        t = _tiendas.get(tid)
+        if not t:
+            raise ValueError("Tienda no encontrada")
+        if t.get("primary"):
+            raise ValueError("La tienda principal ya está conectada")
+        if t.get("estado") == "suspendida":
+            raise ValueError("La tienda está suspendida")
+        token = secrets.token_urlsafe(24)
+        t["invitacion"] = {"hash": hashlib.sha256(token.encode()).hexdigest(),
+                           "expira": time.time() + 48 * 3600}
+        _tiendas_guardar()
+    base = ML_REDIRECT.rsplit("/auth/callback", 1)[0] if ML_REDIRECT else request.host_url.rstrip("/")
+    return f"{base}/auth/login?invite={token}"
+
+
+def _tienda_cambiar_estado(tid, nuevo) -> dict:
+    with _tiendas_lock:
+        t = _tiendas.get(tid)
+        if not t or t.get("primary"):
+            raise ValueError("No se puede cambiar esa tienda")
+        if nuevo not in ("suspendida", "activa", "pendiente_ml"):
+            raise ValueError("Estado inválido")
+        t["estado"] = nuevo
+        _tiendas_guardar()
+        return _tienda_publica(t)
 
 
 def _logo_path(tienda_id: str) -> str:
@@ -2363,34 +2481,22 @@ def api_tiendas_listar():
 @app.route("/api/admin/tiendas", methods=["POST"])
 @requiere_admin_plataforma
 def api_tiendas_crear():
-    import secrets, base64
+    import base64
     d = request.get_json(silent=True) or {}
-    nombre = (d.get("nombre") or "").strip()[:40]
-    if not nombre:
+    if not (d.get("nombre") or "").strip():
         return jsonify({"ok": False, "msg": "Falta el nombre de la tienda"}), 400
-    # El logo es obligatorio para crear una tienda (se ve al iniciar sesión).
-    if not d.get("logo_b64"):
-        return jsonify({"ok": False, "msg": "Para crear la tienda hay que elegir su logo"}), 400
-    try:
-        logo_raw = base64.b64decode(d["logo_b64"])
-    except Exception:
-        return jsonify({"ok": False, "msg": "Logo inválido"}), 400
-    if len(logo_raw) > 1_500_000 or not _sniff_imagen(logo_raw):
-        return jsonify({"ok": False, "msg": "El logo debe ser PNG, JPG o WEBP de hasta 1.5 MB"}), 400
+    logo_raw = None
+    if d.get("logo_b64"):
+        try:
+            logo_raw = base64.b64decode(d["logo_b64"])
+        except Exception:
+            return jsonify({"ok": False, "msg": "Logo inválido"}), 400
+    try:     # la app de escritorio no manda plan: completo, con logo obligatorio (como siempre)
+        tid = _tienda_crear(d.get("nombre"), d.get("subtitulo"), logo_raw, d.get("plan") or "completo")
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 400
     with _tiendas_lock:
-        tid = "t_" + secrets.token_hex(3)
-        while tid in _tiendas or tid in _cuentas:
-            tid = "t_" + secrets.token_hex(3)
-        _tiendas[tid] = {"id": tid, "primary": False, "estado": "pendiente_ml", "nombre": nombre,
-                         "subtitulo": (d.get("subtitulo") or "").strip()[:60], "cuentas": [tid],
-                         "creada": datetime.now().isoformat(timespec="seconds"),
-                         "logo_ts": str(int(time.time()))}
-        os.makedirs(os.path.dirname(_logo_path(tid)), exist_ok=True)
-        with open(_logo_path(tid), "wb") as f:
-            f.write(logo_raw)
-        _tiendas_guardar()
         pub = _tienda_publica(_tiendas[tid])
-    logger.info(f"[TIENDAS] Creada {tid} ({nombre})")
     return jsonify({"ok": True, "tienda": pub})
 
 
@@ -2442,21 +2548,11 @@ def api_tiendas_editar(tid):
 @requiere_admin_plataforma
 def api_tiendas_invitacion(tid):
     """Link de un solo uso (48 h) para que el dueño de la tienda autorice su cuenta de ML."""
-    import secrets, hashlib
-    with _tiendas_lock:
-        t = _tiendas.get(tid)
-        if not t:
-            return jsonify({"ok": False, "msg": "Tienda no encontrada"}), 404
-        if t.get("primary"):
-            return jsonify({"ok": False, "msg": "La tienda principal ya está conectada"}), 400
-        if t.get("estado") == "suspendida":
-            return jsonify({"ok": False, "msg": "La tienda está suspendida"}), 400
-        token = secrets.token_urlsafe(24)
-        t["invitacion"] = {"hash": hashlib.sha256(token.encode()).hexdigest(),
-                           "expira": time.time() + 48 * 3600}
-        _tiendas_guardar()
-    base = ML_REDIRECT.rsplit("/auth/callback", 1)[0] if ML_REDIRECT else request.host_url.rstrip("/")
-    return jsonify({"ok": True, "link": f"{base}/auth/login?invite={token}", "expira_horas": 48,
+    try:
+        link = _tienda_invitacion(tid)
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), (404 if "no encontrada" in str(e) else 400)
+    return jsonify({"ok": True, "link": link, "expira_horas": 48,
                     "multi_tienda_activo": _multi_tienda_activo()})
 
 
@@ -2464,17 +2560,129 @@ def api_tiendas_invitacion(tid):
 @requiere_admin_plataforma
 def api_tiendas_estado(tid):
     d = request.get_json(silent=True) or {}
-    nuevo = d.get("estado")
+    try:
+        pub = _tienda_cambiar_estado(tid, d.get("estado"))
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 400
+    return jsonify({"ok": True, "tienda": pub})
+
+
+# ── Pestaña "Tiendas" del panel web (solo el admin de la plataforma, por sesión) ─────────────────
+def _admin_plataforma_sesion() -> bool:
+    """Admin de la plataforma (rol admin, cuenta 'todas') logueado en el panel, verificado contra el
+    registro de usuarios (no alcanza con lo que diga la cookie)."""
+    u = _usuario_reg(session.get("admin_panel_login")) if session.get("admin_panel_usuario") else None
+    return bool(u and u.get("rol") == "admin" and str(u.get("cuenta_id", "")).lower() == "todas")
+
+
+def requiere_admin_panel(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _admin_plataforma_sesion():
+            return jsonify({"ok": False, "msg": "Solo el administrador general puede hacer esto."}), 403
+        _asegurar_primaria()
+        return f(*args, **kwargs)
+    return decorated
+
+
+def _tienda_para_panel(t: dict) -> dict:
+    pub = _tienda_publica(t)
+    pub["supervisores"] = [u.get("usuario") for u in _usuarios
+                           if str(u.get("cuenta_id", "")).lower() == t["id"].lower()
+                           and u.get("rol") in ("admin", "supervisor")]
+    pub["creada"] = t.get("creada", "")
+    return pub
+
+
+@app.route("/admin/tiendas")
+def panel_tiendas():
+    if not _admin_plataforma_sesion():
+        return redirect("/admin/usuarios")
+    html = _leer_template("tiendas.html")
+    if isinstance(html, tuple):
+        return html
+    return html.replace("__BARRA_PANEL__", _barra_panel("tiendas"))
+
+
+@app.route("/api/panel/tiendas", methods=["GET"])
+@requiere_admin_panel
+def api_panel_tiendas():
+    with _tiendas_lock:
+        lista = [_tienda_para_panel(t) for t in _tiendas.values()]
+    lista.sort(key=lambda t: (not t["primary"], t.get("creada", "")), reverse=False)
+    return jsonify({"ok": True, "tiendas": lista, "multi_tienda": _multi_tienda_activo(),
+                    "planes": PLANES_TIENDA})
+
+
+@app.route("/api/panel/tiendas", methods=["POST"])
+@requiere_admin_panel
+def api_panel_tiendas_crear():
+    """Crea la tienda y su primer supervisor en un paso. El supervisor entra al panel con su usuario y
+    clave y conecta su Mercado Libre con el botón del panel."""
+    import base64
+    d = request.get_json(silent=True) or {}
+    usuario = str(d.get("usuario") or "").strip().lower()
+    clave = str(d.get("clave") or "").strip()
+    if not re.fullmatch(r"[a-z0-9._-]{3,30}", usuario):
+        return jsonify({"ok": False, "msg": "El usuario debe tener de 3 a 30 letras, números, punto o guion"}), 400
+    if len(clave) < 6:
+        return jsonify({"ok": False, "msg": "La clave debe tener al menos 6 caracteres"}), 400
+    if _usuario_reg(usuario):
+        return jsonify({"ok": False, "msg": f"El usuario '{usuario}' ya existe"}), 409
+    logo_raw = None
+    if d.get("logo_b64"):
+        try:
+            logo_raw = base64.b64decode(d["logo_b64"])
+        except Exception:
+            return jsonify({"ok": False, "msg": "Logo inválido"}), 400
+    try:
+        tid = _tienda_crear(d.get("nombre"), d.get("subtitulo"), logo_raw, d.get("plan") or "facturacion")
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 400
+    _usuarios.append({"usuario": usuario, "clave": clave, "nombre": str(d.get("nombre_usuario") or usuario).strip()[:60],
+                      "cuenta_id": tid, "rol": "supervisor"})
+    _guardar_usuarios()
+    logger.info(f"[TIENDAS] {tid}: supervisor '{usuario}' creado desde el panel")
+    with _tiendas_lock:
+        pub = _tienda_para_panel(_tiendas[tid])
+    return jsonify({"ok": True, "tienda": pub})
+
+
+@app.route("/api/panel/tiendas/<tid>/estado", methods=["POST"])
+@requiere_admin_panel
+def api_panel_tiendas_estado(tid):
+    try:
+        pub = _tienda_cambiar_estado(tid, (request.get_json(silent=True) or {}).get("estado"))
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 400
+    return jsonify({"ok": True, "tienda": pub})
+
+
+@app.route("/api/panel/tiendas/<tid>/plan", methods=["POST"])
+@requiere_admin_panel
+def api_panel_tiendas_plan(tid):
+    plan = (request.get_json(silent=True) or {}).get("plan")
     with _tiendas_lock:
         t = _tiendas.get(tid)
         if not t or t.get("primary"):
             return jsonify({"ok": False, "msg": "No se puede cambiar esa tienda"}), 400
-        if nuevo not in ("suspendida", "activa", "pendiente_ml"):
-            return jsonify({"ok": False, "msg": "Estado inválido"}), 400
-        t["estado"] = nuevo
+        if plan not in PLANES_TIENDA:
+            return jsonify({"ok": False, "msg": "Plan inválido"}), 400
+        t["plan"] = plan
         _tiendas_guardar()
-        pub = _tienda_publica(t)
+        pub = _tienda_para_panel(t)
+    logger.info(f"[TIENDAS] {tid}: plan {plan}")
     return jsonify({"ok": True, "tienda": pub})
+
+
+@app.route("/api/panel/tiendas/<tid>/invitacion", methods=["POST"])
+@requiere_admin_panel
+def api_panel_tiendas_invitacion(tid):
+    try:
+        link = _tienda_invitacion(tid)
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 400
+    return jsonify({"ok": True, "link": link, "expira_horas": 48})
 
 
 
@@ -2678,6 +2886,18 @@ _TENANT_READY = {
     # facturas (registro y ventas por tienda)
     "api_facturas_subir", "api_facturas_lista", "api_facturas_responder",
     "api_facturas_quitar", "api_facturas_modo", "api_facturas_subir_simuladas", "panel_facturacion", "panel_css",
+    "facturacion_conectar_ml",
+}
+
+# Lo único que puede usar una tienda con plan "solo facturación" (además de la marca y el login).
+_PLAN_FACTURACION_OK = {
+    "api_branding", "brand_logo", "api_ping", "static", "manifest", "panel_css", "auth_status", "api_cuentas",
+    "admin_redirect", "admin_logout", "admin_usuarios_panel",
+    "api_usuarios_lista", "api_usuarios_crear", "api_usuarios_editar", "api_usuarios_cambiar_clave",
+    "api_usuarios_eliminar",
+    "panel_facturacion", "facturacion_conectar_ml",
+    "api_facturas_subir", "api_facturas_lista", "api_facturas_responder", "api_facturas_quitar",
+    "api_facturas_modo", "api_facturas_subir_simuladas",
 }
 
 
@@ -2745,13 +2965,22 @@ def _resolver_tienda():
     else:
         s = _tn_de_sesion()
         if s is not None and request.path.startswith(("/admin", "/estadisticas", "/config", "/etiquetas", "/facturacion")):
+            if s.tid and (_tiendas.get(s.tid) or {}).get("estado") == "suspendida":
+                session.clear()             # una tienda suspendida no sigue usando el panel
+                return render_template_string(_PANEL_LOGIN_HTML,
+                                              error="La tienda está suspendida. Contactá al administrador.")
             g.tn = s
     tn = g.tn
-    if tn.tid and (request.endpoint or "") not in _TENANT_READY:
+    ep = request.endpoint or ""
+    if tn.tid and ep not in _TENANT_READY:
         try:
             _tn_denegar("Esta función no está disponible para tu tienda")
         except _TnDenegado as e:
             return jsonify({"ok": False, "msg": e.msg}), e.codigo
+    if tn.tid and _plan_de(tn.tid) == "facturacion" and ep not in _PLAN_FACTURACION_OK:
+        if tn.via == "sesion" and request.method == "GET" and not request.path.startswith("/api/"):
+            return redirect("/facturacion")
+        return jsonify({"ok": False, "msg": "Tu plan es solo Facturación."}), 403
     return None
 
 
@@ -5476,6 +5705,10 @@ def admin_usuarios_panel():
             u = request.form.get("usuario","").strip().lower()
             c = request.form.get("clave","").strip()
             resultado = _verificar_credenciales(u, c)
+            _tid_login = _tienda_de_cuenta((resultado or {}).get("cuenta_id"))
+            if resultado and _tid_login and (_tiendas.get(_tid_login) or {}).get("estado") == "suspendida":
+                return render_template_string(_PANEL_LOGIN_HTML,
+                    error="La tienda está suspendida. Contactá al administrador.")
             # Panel accesible para admin y supervisor
             if resultado and resultado.get("rol") in ("supervisor", "admin"):
                 session["admin_panel_usuario"]  = resultado.get("nombre", u)
@@ -5485,6 +5718,8 @@ def admin_usuarios_panel():
                 logger.info(f"[ADMIN-PANEL] Login OK: {u} "
                             f"(rol={resultado.get('rol')} "
                             f"cuenta={resultado.get('cuenta_id')})")
+                if _tid_login and _plan_de(_tid_login) == "facturacion":
+                    return redirect("/facturacion")         # plan solo facturación: su pantalla
             else:
                 logger.warning(f"[ADMIN-PANEL] Login fallido: {u}")
                 return render_template_string(_PANEL_LOGIN_HTML,
@@ -5636,8 +5871,12 @@ input:focus,select:focus{outline:none;border-color:var(--accent)}
   {% endif %}
   <label>Rol</label>
   <select id="f-rol">
+    {% if plan_fact %}
+    <option value="supervisor">🏢 Supervisor — usa Facturación</option>
+    {% else %}
     <option value="operario">👤 Operario — solo Pedidos ML y Picking</option>
-    {% if es_admin %}
+    {% endif %}
+    {% if es_admin and not plan_fact %}
     <option value="supervisor">🏢 Supervisor de tienda — ve Inicio + Config</option>
     <option value="admin">👑 Admin — acceso total</option>
     {% endif %}
@@ -5776,7 +6015,8 @@ async function editar(usuario, nombre_actual) {
 </script>
 </script></body></html>""", nombre_admin=nombre_admin,
                               es_admin=es_admin,
-                              cuenta_sesion=cuenta_sesion)
+                              cuenta_sesion=cuenta_sesion,
+                              plan_fact=_plan_de(_tienda_de_cuenta(cuenta_sesion)) == "facturacion")
 
 
 

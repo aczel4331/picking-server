@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logibot — Tiendas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/panel.css?v=2">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { padding: 22px clamp(16px, 4vw, 48px) 64px; font-size: 15px; line-height: 1.45; }
+.envoltura { max-width: 1180px; }
+.lb-titulo { margin-bottom: 8px; }
+.intro { color: var(--text-2); max-width: 70ch; margin-bottom: 26px; }
+.cols { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 28px; align-items: start; }
+@media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+.card { padding: 22px; }
+.card h2 { margin-bottom: 4px; }
+.card .ayuda { color: var(--text-2); font-size: 14px; margin-bottom: 8px; }
+label { display: block; font-weight: 600; margin: 14px 0 6px; }
+input[type="text"], input[type="password"], input[type="file"], select {
+  width: 100%; padding: 10px 12px; border-radius: 10px; font-size: 15px; font-family: inherit;
+}
+.planes { display: grid; gap: 8px; }
+.plan { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; align-items: start; padding: 12px;
+  border: 1px solid var(--border); border-radius: 12px; cursor: pointer; }
+.plan:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.plan input { margin-top: 3px; }
+.plan b { font-weight: 700; }
+.plan small { grid-column: 2; color: var(--text-2); font-size: 13px; }
+.separa { border: 0; border-top: 1px solid var(--border); margin: 18px 0 4px; }
+.btn { border: 0; padding: 11px 20px; font-weight: 700; font-size: 15px; cursor: pointer; margin-top: 18px; width: 100%; }
+.btn-chico { width: auto; margin: 0; padding: 7px 14px; font-size: 13px; }
+.btn-linea { background: transparent !important; color: var(--accent) !important; box-shadow: inset 0 0 0 1.5px var(--accent); }
+.btn-linea:hover { background: var(--accent-soft) !important; }
+.btn-peligro { background: transparent !important; color: var(--danger-hover) !important; box-shadow: inset 0 0 0 1.5px var(--danger); }
+.aviso { margin-top: 14px; padding: 11px 14px; border-radius: 10px; font-size: 14px; display: none; }
+.aviso.ver { display: block; }
+.aviso.bien { background: var(--success-soft); color: var(--success); }
+.aviso.mal { background: var(--danger-soft); color: var(--danger-hover); }
+.alerta { background: var(--warning-soft); color: var(--warning); padding: 12px 16px; border-radius: 12px; margin-bottom: 20px; display: none; }
+.lista { display: grid; gap: 12px; }
+.tienda { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px;
+  display: grid; grid-template-columns: 1fr auto; gap: 10px 18px; }
+.tienda .nombre { font-weight: 800; font-size: 18px; letter-spacing: -0.01em; }
+.tienda .datos { color: var(--text-2); font-size: 14px; margin-top: 2px; }
+.etiquetas { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.chip { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); }
+.chip.activa { background: var(--success-soft); color: var(--success); }
+.chip.pendiente_ml { background: var(--warning-soft); color: var(--warning); }
+.chip.suspendida { background: var(--danger-soft); color: var(--danger-hover); }
+.chip.plan-facturacion { background: var(--accent-soft); color: var(--accent); }
+.acciones { display: flex; flex-direction: column; gap: 8px; align-items: stretch; min-width: 190px; }
+.acciones select { padding: 7px 10px; font-size: 13px; }
+.enlace { grid-column: 1 / -1; display: none; gap: 8px; }
+.enlace.ver { display: flex; }
+.enlace input { font-size: 13px; }
+.vacio { color: var(--text-2); }
+@media (max-width: 560px) { .tienda { grid-template-columns: 1fr; } .acciones { min-width: 0; } }
+</style>
+</head>
+<body>
+<div class="envoltura">
+  __BARRA_PANEL__
+  <h1 class="lb-titulo">Tiendas</h1>
+  <p class="intro">Creá una tienda con su usuario y clave. La tienda entra al panel con esos datos y conecta su
+    Mercado Libre con el botón "Conectar Mercado Libre". Las tiendas que ya conectaste desde la app de escritorio
+    aparecen acá también.</p>
+  <div class="alerta" id="alerta-multi">La conexión de tiendas nuevas está apagada en el servidor: podés crearlas,
+    pero no van a poder conectar Mercado Libre hasta que se active.</div>
+
+  <div class="cols">
+    <section class="card" aria-labelledby="t-nueva">
+      <h2 id="t-nueva">Nueva tienda</h2>
+      <p class="ayuda">Se crea pendiente de Mercado Libre.</p>
+      <label for="n-nombre">Nombre de la tienda</label>
+      <input type="text" id="n-nombre" maxlength="40" autocomplete="off">
+
+      <label>Plan</label>
+      <div class="planes" role="radiogroup">
+        <label class="plan"><input type="radio" name="plan" value="facturacion" checked>
+          <b>Solo facturación</b><small>Entra por el navegador: Facturación y sus usuarios. Sin app de escritorio.</small></label>
+        <label class="plan"><input type="radio" name="plan" value="completo">
+          <b>Completo</b><small>Picking con la app de escritorio y el celular, etiquetas, estadísticas y facturación.</small></label>
+      </div>
+
+      <label for="n-logo">Logo <span id="logo-opcional" style="font-weight:400;color:var(--text-2)">(opcional en Solo facturación)</span></label>
+      <input type="file" id="n-logo" accept="image/png,image/jpeg,image/webp">
+
+      <hr class="separa">
+      <label for="n-usuario">Usuario del supervisor</label>
+      <input type="text" id="n-usuario" maxlength="30" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <label for="n-clave">Clave del supervisor</label>
+      <input type="password" id="n-clave" autocomplete="new-password">
+      <label for="n-nusuario">Nombre del supervisor (se ve en el panel)</label>
+      <input type="text" id="n-nusuario" maxlength="60" autocomplete="off">
+
+      <button class="btn" type="button" id="crear">Crear tienda</button>
+      <div class="aviso" id="msg" role="status"></div>
+    </section>
+
+    <section aria-labelledby="t-lista">
+      <h2 id="t-lista" style="font-size:20px;color:var(--text);margin-bottom:12px">Tiendas</h2>
+      <div class="lista" id="lista"><p class="vacio">Cargando…</p></div>
+    </section>
+  </div>
+</div>
+
+<script>
+const ESTADOS = {activa: 'Activa', pendiente_ml: 'Falta conectar Mercado Libre', suspendida: 'Suspendida'};
+let PLANES = {completo: 'Completo', facturacion: 'Solo facturación'};
+let _tiendas = [];
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+function aviso(msg, ok) {
+  const el = document.getElementById('msg');
+  el.textContent = msg; el.className = 'aviso ver ' + (ok ? 'bien' : 'mal');
+}
+async function api(path, body) {
+  const opts = body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)};
+  const r = await fetch(path, opts);
+  let d = {};
+  try { d = await r.json(); } catch (e) { d = {ok: false, msg: 'Respuesta inesperada del servidor (' + r.status + ')'}; }
+  return d;
+}
+function leerArchivo(file) {
+  return new Promise((ok, mal) => {
+    const fr = new FileReader();
+    fr.onload = () => ok(String(fr.result).split(',')[1]);
+    fr.onerror = mal;
+    fr.readAsDataURL(file);
+  });
+}
+
+function pintar() {
+  const cont = document.getElementById('lista');
+  if (!_tiendas.length) { cont.innerHTML = '<p class="vacio">Todavía no hay tiendas.</p>'; return; }
+  cont.innerHTML = _tiendas.map((t, i) => {
+    const plan = t.plan || 'completo';
+    const datos = [];
+    datos.push(t.ml_conectado ? 'Mercado Libre: ' + esc(t.nickname || 'conectado') : 'Mercado Libre sin conectar');
+    if (t.supervisores && t.supervisores.length) datos.push('Supervisores: ' + t.supervisores.map(esc).join(', '));
+    let acciones = '';
+    if (!t.primary) {
+      acciones =
+        '<select data-plan="' + i + '" aria-label="Plan de ' + esc(t.nombre) + '">' +
+          Object.keys(PLANES).map(k => '<option value="' + k + '"' + (k === plan ? ' selected' : '') + '>' + esc(PLANES[k]) + '</option>').join('') +
+        '</select>' +
+        (t.estado === 'suspendida'
+          ? '<button class="btn btn-chico btn-linea" type="button" data-estado="activa" data-i="' + i + '">Reactivar</button>'
+          : '<button class="btn btn-chico btn-peligro" type="button" data-estado="suspendida" data-i="' + i + '">Suspender</button>') +
+        (t.estado !== 'suspendida'
+          ? '<button class="btn btn-chico btn-linea" type="button" data-enlace="' + i + '">Enlace para conectar ML</button>' : '');
+    }
+    return '<article class="tienda">' +
+      '<div><div class="nombre">' + esc(t.nombre || t.id) + (t.primary ? ' <span class="chip">Principal</span>' : '') + '</div>' +
+      '<div class="datos">' + datos.join(' · ') + '</div>' +
+      '<div class="etiquetas"><span class="chip ' + esc(t.estado) + '">' + esc(ESTADOS[t.estado] || t.estado) + '</span>' +
+      '<span class="chip plan-' + esc(plan) + '">' + esc(PLANES[plan] || plan) + '</span></div></div>' +
+      '<div class="acciones">' + acciones + '</div>' +
+      '<div class="enlace" id="enlace-' + i + '"><input type="text" readonly aria-label="Enlace de conexión">' +
+      '<button class="btn btn-chico" type="button" data-copiar="' + i + '">Copiar</button></div>' +
+      '</article>';
+  }).join('');
+}
+async function cargar() {
+  const d = await api('/api/panel/tiendas');
+  if (!d.ok) { document.getElementById('lista').innerHTML = '<p class="vacio">' + esc(d.msg || 'No se pudo cargar') + '</p>'; return; }
+  if (d.planes) PLANES = d.planes;
+  document.getElementById('alerta-multi').style.display = d.multi_tienda ? 'none' : 'block';
+  _tiendas = d.tiendas || [];
+  pintar();
+}
+
+async function crear() {
+  const plan = document.querySelector('input[name="plan"]:checked').value;
+  const body = {
+    nombre: document.getElementById('n-nombre').value.trim(),
+    plan: plan,
+    usuario: document.getElementById('n-usuario').value.trim().toLowerCase(),
+    clave: document.getElementById('n-clave').value,
+    nombre_usuario: document.getElementById('n-nusuario').value.trim()
+  };
+  if (!body.nombre) { aviso('Escribí el nombre de la tienda.', false); return; }
+  const f = document.getElementById('n-logo').files[0];
+  if (f) body.logo_b64 = await leerArchivo(f);
+  else if (plan === 'completo') { aviso('El plan Completo necesita el logo (se ve en la app de escritorio).', false); return; }
+  const btn = document.getElementById('crear');
+  btn.disabled = true;
+  const d = await api('/api/panel/tiendas', body);
+  btn.disabled = false;
+  if (!d.ok) { aviso(d.msg || 'No se pudo crear la tienda', false); return; }
+  aviso('Tienda creada. Pasale al supervisor su usuario y clave: entra en ' + location.origin +
+        '/admin/usuarios y conecta Mercado Libre desde el panel.', true);
+  ['n-nombre', 'n-usuario', 'n-clave', 'n-nusuario', 'n-logo'].forEach(id => document.getElementById(id).value = '');
+  cargar();
+}
+
+document.getElementById('crear').onclick = crear;
+document.querySelectorAll('input[name="plan"]').forEach(r => r.onchange = () => {
+  document.getElementById('logo-opcional').textContent =
+    document.querySelector('input[name="plan"]:checked').value === 'completo' ? '(obligatorio en Completo)' : '(opcional en Solo facturación)';
+});
+document.getElementById('lista').addEventListener('click', async e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.estado) {
+    const t = _tiendas[+b.dataset.i];
+    if (b.dataset.estado === 'suspendida' && !confirm('¿Suspender ' + t.nombre + '? Sus usuarios no van a poder entrar.')) return;
+    const d = await api('/api/panel/tiendas/' + encodeURIComponent(t.id) + '/estado', {estado: b.dataset.estado});
+    if (!d.ok) alert(d.msg); cargar();
+  } else if (b.dataset.enlace) {
+    const i = +b.dataset.enlace, t = _tiendas[i];
+    const d = await api('/api/panel/tiendas/' + encodeURIComponent(t.id) + '/invitacion', {});
+    if (!d.ok) { alert(d.msg); return; }
+    const box = document.getElementById('enlace-' + i);
+    box.querySelector('input').value = d.link;
+    box.classList.add('ver');
+  } else if (b.dataset.copiar) {
+    const inp = document.querySelector('#enlace-' + b.dataset.copiar + ' input');
+    try { await navigator.clipboard.writeText(inp.value); b.textContent = 'Copiado'; }
+    catch (err) { inp.select(); document.execCommand('copy'); b.textContent = 'Copiado'; }
+  }
+});
+document.getElementById('lista').addEventListener('change', async e => {
+  const s = e.target.closest('select[data-plan]');
+  if (!s) return;
+  const t = _tiendas[+s.dataset.plan];
+  const d = await api('/api/panel/tiendas/' + encodeURIComponent(t.id) + '/plan', {plan: s.value});
+  if (!d.ok) alert(d.msg);
+  cargar();
+});
+cargar();
+</script>
+</body>
+</html>

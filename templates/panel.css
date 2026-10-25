@@ -53,6 +53,18 @@ body {
 .lb-nav a[aria-current="page"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
 .lb-salir { margin-left: auto; font-size: 14px; }
 
+/* aviso de tienda sin Mercado Libre conectado (con el botón para conectarlo) */
+.lb-aviso-ml {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  margin: -14px 0 26px; padding: 14px 18px; border-radius: 14px;
+  background: #FFF4D6; color: #6B4A00; font-size: 15px;
+}
+.lb-btn-ml {
+  background: #FFE600; color: #2D3277; font-weight: 800; text-decoration: none;
+  padding: 11px 20px; border-radius: 999px; white-space: nowrap; box-shadow: inset 0 0 0 1px rgba(45, 50, 119, .15);
+}
+.lb-btn-ml:hover { background: #F5DC00; }
+
 /* ── títulos: grandes, pesados, sin adornos ─────────────────────────────── */
 h1 {
   color: var(--accent) !important;
