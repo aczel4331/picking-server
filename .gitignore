@@ -73,3 +73,6 @@ pruebas/*.log
 pruebas/__pycache__/
 marca_cache_*.json
 logo_cache_*.png
+
+# facturas reales de muestra (datos personales)
+pruebas/facturas_muestra/
