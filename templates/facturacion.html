@@ -39,13 +39,12 @@ button, input, select { font: inherit; color: inherit; }
 :focus-visible { outline: 3px solid var(--azul); outline-offset: 2px; border-radius: 4px; }
 
 /* ── barra ─────────────────────────────────────────────── */
-.barra { padding: 22px clamp(16px, 4vw, 48px) 0; max-width: 1180px; }   /* la barra común viene de /panel.css */
+.barra { padding: 22px clamp(16px, 4vw, 48px) 0; }   /* la barra común viene de /panel.css */
 .barra .lb-barra { margin-bottom: 0; }
 
 /* ── el mes: es el filtro de todo, así que es el título ────────────────── */
 .mes {
   padding: clamp(28px, 6vw, 56px) clamp(16px, 4vw, 48px) 24px;
-  max-width: 1180px;
 }
 .mes-fila { display: flex; align-items: center; gap: 10px; }
 .mes h1 {
@@ -68,7 +67,7 @@ button, input, select { font: inherit; color: inherit; }
 /* ── columnas ─────────────────────────────────────────────── */
 .cols {
   display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: clamp(20px, 3vw, 40px);
-  padding: 0 clamp(16px, 4vw, 48px) 64px; max-width: 1180px; align-items: start;
+  padding: 0 clamp(16px, 4vw, 48px) 64px; align-items: start;
 }
 @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
 
