@@ -80,6 +80,15 @@ _ROT_NOMBRE = [r"raz[oó]n\s+social(?:\s+receptor)?", r"nombre\s+(?:del\s+)?(?:r
                r"nombre"]
 _NO_ES_NOMBRE = re.compile(r"\b(rut|r\.u\.t|ci|c\.i|documento|direcci[oó]n|domicilio|tel[eé]fono|"
                            r"fecha|moneda|consumidor\s+final|emisor)\b", re.I)
+# Palabras de encabezado de tabla: si el "valor" son solo estas, el dato está en la fila de abajo
+_ENCABEZADOS = {"nombre", "razon", "social", "comprador", "receptor", "cliente", "domicilio", "ciudad",
+                "departamento", "direccion", "pais", "rut", "documento", "tipo", "serie", "numero",
+                "forma", "pago", "fecha", "moneda"}
+# "Total: $ 20.920,00" en la misma línea (no "Subtotal" ni "Total IVA")
+_RE_TOTAL_LINEA = [re.compile(r"total\s+a\s+pagar\s*:?\s*(?:\$|UYU|U\$S|USD)?\s*(" + _NUM + r")", re.I),
+                   re.compile(r"(?:monto|importe)\s+total\s*:?\s*(?:\$|UYU|U\$S|USD)?\s*(" + _NUM + r")", re.I),
+                   re.compile(r"(?<![a-z])total(?!\s*(?:iva|neto|no\s+gravado))\s*:?\s*"
+                              r"(?:\$|UYU|U\$S|USD)?\s*(" + _NUM + r")", re.I)]
 
 
 def texto_pdf(pdf_bytes):
@@ -113,13 +122,25 @@ def _valor_tras_rotulo(lineas, rotulos, validar):
 
 
 def _nombre_valido(txt):
-    txt = re.split(r"\s{2,}|\t|\b(?:RUT|R\.U\.T|C\.?I\.?|Documento)\b", str(txt or ""), maxsplit=1)[0]
+    txt = re.sub(r"^\s*[\d.\-/ ]{6,}\s*", "", str(txt or ""))      # "218185660016 POCITOS COLOR SRL"
+    txt = re.split(r"\s{2,}|\t|\b(?:RUT|R\.U\.T|C\.?I\.?|Documento)\b", txt, maxsplit=1)[0]
     txt = txt.strip(" :-|")
-    if not txt or _NO_ES_NOMBRE.search(_sin_tildes(txt)) or len(tokens_nombre(txt)) < 1:
+    toks = tokens_nombre(txt)
+    if not txt or _NO_ES_NOMBRE.search(_sin_tildes(txt)) or not toks or toks <= _ENCABEZADOS:
         return None
     if sum(c.isdigit() for c in txt) > 3:
         return None
     return txt[:120]
+
+
+def _total_en_linea(lineas):
+    """'Subtotal: $ 20.920,00 Total IVA: $ 0,00 Total: $ 20.920,00' → 20920 (el último 'Total' de verdad)."""
+    for pat in _RE_TOTAL_LINEA:
+        hallados = [parse_monto(m.group(1)) for ln in lineas for m in pat.finditer(_sin_tildes(ln))]
+        hallados = [n for n in hallados if n is not None and n > 0]
+        if hallados:
+            return hallados[-1]
+    return None
 
 
 def _total_de_linea(txt):
@@ -132,8 +153,15 @@ def _total_de_linea(txt):
 
 
 def _fecha(texto):
+    """Fecha del documento: la de la línea 'Fecha…' (o la de abajo si es un encabezado de tabla),
+    nunca la del vencimiento del CAE."""
     lineas = _lineas(texto)
-    candidatas = [ln for ln in lineas if re.search(r"fecha", _sin_tildes(ln), re.I)] + lineas
+    venc = re.compile(r"venc", re.I)
+    candidatas = []
+    for i, ln in enumerate(lineas):
+        if re.search(r"fecha", _sin_tildes(ln), re.I) and not venc.search(ln):
+            candidatas += [ln] + lineas[i + 1:i + 2]
+    candidatas += [ln for ln in lineas if not venc.search(ln)]
     for ln in candidatas:
         for m in _RE_FECHA.finditer(ln):
             try:
@@ -161,6 +189,9 @@ def leer_cfe_texto(texto):
     serie = numero = ""
     m = re.search(r"\bserie\b\s*:?\s*([A-Z]{1,2})\b[\s\S]{0,40}?\b(?:n[º°o.]*|nro\.?|numero)\s*:?\s*(\d{1,10})",
                   plano, re.I)
+    if not m:
+        # encabezado de tabla "SERIE NUMERO ..." con los valores en la fila de abajo: "A 2012 CONTADO"
+        m = re.search(r"\bserie\b[^\n]*\n\s*([A-Z]{1,2})\s+(\d{1,10})\b", plano, re.I)
     if m:
         serie, numero = m.group(1).upper(), m.group(2).lstrip("0") or "0"
     else:
@@ -168,7 +199,9 @@ def leer_cfe_texto(texto):
         if m:
             serie, numero = m.group(1).upper(), m.group(2).lstrip("0") or "0"
 
-    total = _valor_tras_rotulo(lineas, _ROT_TOTAL, _total_de_linea)
+    total = _total_en_linea(lineas)
+    if total is None:
+        total = _valor_tras_rotulo(lineas, _ROT_TOTAL, _total_de_linea)
     if total is None:                       # sin rótulo: el total suele ser el mayor importe
         nums = [parse_monto(n) for n in re.findall(_NUM, texto or "")]
         nums = [n for n in nums if n and 0 < n < 10_000_000]
@@ -176,15 +209,18 @@ def leer_cfe_texto(texto):
 
     moneda = "USD" if re.search(r"U\$S|US\$|\bUSD\b|d[oó]lares", plano, re.I) else "UYU"
 
+    nombre = _valor_tras_rotulo(lineas, _ROT_NOMBRE, _nombre_valido) or ""
     return {
         "tipo": tipo,
         "serie": serie,
         "numero": numero,
-        "nombre": _valor_tras_rotulo(lineas, _ROT_NOMBRE, _nombre_valido) or "",
+        "nombre": nombre,
         "total": total,
         "moneda": moneda,
         "fecha": _fecha(texto),
-        "texto_tokens": sorted(tokens_nombre(texto)),
+        # el texto completo solo se usa si no hay rótulo de receptor: así el nombre del emisor
+        # (que también está en el PDF) nunca hace coincidir a un comprador
+        "texto_tokens": [] if nombre else sorted(tokens_nombre(texto)),
     }
 
 

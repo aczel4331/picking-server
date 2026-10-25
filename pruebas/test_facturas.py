@@ -29,29 +29,36 @@ from werkzeug.serving import make_server
 SELLER = "502960739"     # user_id de cuenta_2 en run_srv_pedidos.py
 
 
-def _dia(n):
-    return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%dT10:00:00.000-03:00")
+def _dia(d, mes="2026-05"):
+    return f"{mes}-{d:02d}T10:00:00.000-03:00"
 
 
-def _orden(oid, total, dias, buyer, pack=None, nombre=None, pagado=None):
+def _orden(oid, total, dia, buyer, pack=None, nombre=None, pagado=None, mes="2026-05"):
     b = {"id": buyer, "nickname": f"NICK{buyer}", "billing_info": {"id": f"BI{oid}"}}
     if nombre:
         b["first_name"], b["last_name"] = nombre
     return {"id": oid, "pack_id": pack, "status": "paid", "total_amount": total,
             "paid_amount": pagado if pagado is not None else total, "currency_id": "UYU",
-            "date_created": _dia(dias), "buyer": b}
+            "date_created": _dia(dia, mes), "buyer": b}
 
 
-ORDENES = [
-    _orden(1001, 1600, 5, 1, nombre=("Jose", "Perez")),
-    _orden(1002, 990, 10, 1, nombre=("Jose", "Perez")),
-    _orden(1003, 1500, 3, 1, pack=2000003, nombre=("Jose", "Perez")),
-    _orden(1004, 1000, 3, 1, pack=2000003, nombre=("Jose", "Perez")),
-    _orden(1005, 1600, 4, 2),                                  # Ana: el nombre solo viene en billing-info
-    _orden(1006, 500, 8, 3, nombre=("Luis", "Rodriguez")),
-    _orden(1007, 500, 2, 3, nombre=("Luis", "Rodriguez")),
-    _orden(1008, 800, 6, 4, nombre=("Marta", "Silva")),        # ya tiene factura en ML
-    _orden(1009, 1200, 1, 5, nombre=("Carlos", "Diaz")),
+ORDENES = [                                                    # ventas de mayo 2026 (día del mes)
+    _orden(1001, 1600, 20, 1, nombre=("Jose", "Perez")),
+    _orden(1002, 990, 15, 1, nombre=("Jose", "Perez")),
+    _orden(1003, 1500, 22, 1, pack=2000003, nombre=("Jose", "Perez")),
+    _orden(1004, 1000, 22, 1, pack=2000003, nombre=("Jose", "Perez")),
+    _orden(1005, 1600, 21, 2),                                 # Ana: el nombre solo viene en billing-info
+    _orden(1006, 500, 17, 3, nombre=("Luis", "Rodriguez")),
+    _orden(1007, 500, 23, 3, nombre=("Luis", "Rodriguez")),
+    _orden(1008, 800, 19, 4, nombre=("Marta", "Silva")),       # ya tiene factura en ML
+    _orden(1009, 1200, 24, 5, nombre=("Carlos", "Diaz")),
+    # el ejemplo del dueño: Juan Andrés compró 4 veces en mayo (la del 10 de mayo fue de $450)…
+    _orden(1101, 450, 10, 6, nombre=("Juan", "Andres")),
+    _orden(1102, 1200, 12, 6, nombre=("Juan", "Andres")),
+    _orden(1103, 300, 18, 6, nombre=("Juan", "Andres")),
+    _orden(1104, 980, 25, 6, nombre=("Juan", "Andres")),
+    # …y otra de $450 en abril, que solo cuenta si se elige abril
+    _orden(1105, 450, 20, 6, nombre=("Juan", "Andres"), mes="2026-04"),
 ]
 BILLING = {"BI1005": ("Ana", "Gómez")}
 FISCAL = {"1008": [{"id": "previa", "file_type": "application/pdf"}]}
@@ -64,8 +71,11 @@ ml = Flask("ml_falso")
 def _search():
     if request.args.get("seller") != SELLER:
         return jsonify({"results": [], "paging": {"total": 0}})
+    desde = datetime.fromisoformat(request.args["order.date_created.from"])
+    hasta = datetime.fromisoformat(request.args["order.date_created.to"])
+    sel = [o for o in ORDENES if desde <= datetime.fromisoformat(o["date_created"]) <= hasta]
     off, lim = int(request.args.get("offset", 0)), int(request.args.get("limit", 50))
-    return jsonify({"results": ORDENES[off:off + lim], "paging": {"total": len(ORDENES)}})
+    return jsonify({"results": sel[off:off + lim], "paging": {"total": len(sel)}})
 
 
 @ml.route("/orders/<oid>")
@@ -109,13 +119,13 @@ threading.Thread(target=ml_srv.serve_forever, daemon=True).start()
 
 
 # ── PDFs de prueba ────────────────────────────────────────────────────────────
-def factura(nombre, total, numero, serie="A"):
+def factura(nombre, total, numero, serie="A", fecha="31/05/2026"):
     from reportlab.pdfgen import canvas
     buf = io.BytesIO()
     c = canvas.Canvas(buf)
     y = 800
     for ln in ["EVEREST SAS   RUT EMISOR 214455660011", "e-Ticket", f"Serie: {serie}   Nro: {numero}",
-               f"Fecha: {datetime.now().strftime('%d/%m/%Y')}", f"Nombre: {nombre}", "Documento: 1.234.567-8",
+               f"Fecha: {fecha}", f"Nombre: {nombre}", "Documento: 1.234.567-8",
                "Remera algodon   1   1.000,00", f"TOTAL A PAGAR  $ {total}"]:
         c.drawString(40, y, ln)
         y -= 16
@@ -123,9 +133,9 @@ def factura(nombre, total, numero, serie="A"):
     return buf.getvalue()
 
 
-def subir(*pdfs):
+def subir(*pdfs, mes="2026-05"):
     files = [("factura", (f"f{i}.pdf", p, "application/pdf")) for i, p in enumerate(pdfs)]
-    return requests.post(B + "/api/facturas/subir", headers=K, files=files, timeout=60).json()
+    return requests.post(B + "/api/facturas/subir", headers=K, files=files, data={"mes": mes}, timeout=60).json()
 
 
 # ── Servidor local ────────────────────────────────────────────────────────────
@@ -167,6 +177,21 @@ try:
     check("dos facturas iguales → dos ventas distintas",
           {rs[0].get("pack_id"), rs[1].get("pack_id")} == {"1006", "1007"} and all(x["estado"] == "subida" for x in rs), rs)
 
+    print("filtro por mes (ejemplo del dueño)")
+    r = subir(factura("Juan Andrés", "450,00", "20"))["resultados"][0]
+    check("Juan Andrés $450, mes mayo → la venta del 10 de mayo (1101) entre sus 4 compras",
+          r["estado"] == "subida" and r["pack_id"] == "1101" and r["mes"] == "2026-05", r)
+    r = subir(factura("Juan Andrés", "450,00", "21"), mes="2026-04")["resultados"][0]
+    check("Juan Andrés $450, mes abril → la de abril (1105)", r["estado"] == "subida" and r["pack_id"] == "1105", r)
+    r = subir(factura("Juan Andrés", "980,00", "22"), mes="2026-04")["resultados"][0]
+    check("Juan Andrés $980 con mes abril → duda (esa compra es de mayo)", r["estado"] == "duda"
+          and "1104" not in POSTS, r)
+    r = subir(factura("Juan Andrés", "980,00", "22"), mes="2026-05")["resultados"][0]
+    check("la misma factura con el mes correcto → 1104", r["estado"] == "subida" and r["pack_id"] == "1104", r)
+    r = requests.post(B + "/api/facturas/subir", headers=K, data={"mes": "2026-13"},
+                      files=[("factura", ("x.pdf", factura("X Y", "1,00", "99"), "application/pdf"))])
+    check("mes inválido → 400", r.status_code == 400, r.text)
+
     print("dudas")
     r = subir(factura("Marta Silva", "800,00", "6"))["resultados"][0]
     check("venta que ya tiene factura en ML → duda, sin subir", r["estado"] == "duda" and "1008" not in POSTS
@@ -184,7 +209,7 @@ try:
     check("sin coincidencias → duda", r["estado"] == "duda", r)
     n_posts = len(POSTS)
     d = requests.get(B + "/api/facturas/dudas", headers=K).json()
-    check("4 dudas pendientes", len(d["dudas"]) == 4, len(d["dudas"]))
+    check("4 dudas pendientes", len(d["dudas"]) == 4, [x["factura"]["nombre"] for x in d["dudas"]])
 
     print("responder dudas")
     r = requests.post(B + "/api/facturas/responder", headers=K, json={"clave": clave_ana, "accion": "si"}).json()
@@ -225,6 +250,7 @@ try:
     r = requests.get(B + "/api/facturas", headers={"X-API-Key": tok}).json()
     check("tienda nueva no ve las facturas de Everest", r["ok"] and r["facturas"] == [], r)
     r = requests.post(B + "/api/facturas/subir", headers={"X-API-Key": tok},
+                      data={"mes": "2026-05"},
                       files=[("factura", ("x.pdf", factura("José Pérez", "990,00", "50"), "application/pdf"))]).json()
     check("tienda nueva sin ML conectado no usa las ventas de Everest",
           r["resultados"][0]["estado"] == "error" and "conectada" in r["resultados"][0]["motivo"], r)

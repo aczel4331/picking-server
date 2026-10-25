@@ -113,6 +113,29 @@ sin_rot = pdf_cfe(["e-Ticket Serie B Nro 77", "Fecha 15/10/2026", "Maria Fernand
 p, _, _ = F.elegir_pack(F.leer_cfe(sin_rot), [pack("T1", 1000.0, "Maria", "Lopez")])
 ok(p is not None, "nombre sin rótulo encontrado en el texto")
 
+print("== formato tabla (rótulos en una fila, valores abajo) — como el facturador de la DGI")
+tabla = "\n".join([
+    "MONOTRIBUTO SOCIAL MIDES", "Mi Comercio", "Juan Emisor Perez Rodriguez", "Calle 123 - Montevideo",
+    " RUT EMISOR TIPO DE DOCUMENTO", "210000000018 e-Factura",
+    "SERIE NUMERO FORMA DE PAGO", "A 2012 CONTADO",
+    "RUT COMPRADOR NOMBRE", "210000000016 FERRETERIA EL TORNILLO SRL",
+    "DOMICILIO CIUDAD DEPARTAMENTO", "AVENIDA ITALIA 2505MONTEVIDEO MONTEVIDEO",
+    "FECHA DE DOCUMENTO MONEDA", "13/10/2026 UYU",
+    "Descripción P. UnitarioCantidadImporte", "Servicio TE (0%)20.920 120.920,00",
+    "Subtotal no gravado: $ 20920",
+    "Subtotal: $ 20.920,00 Total IVA: $ 0,00 Total: $ 20.920,00",
+    "Nro de CAE 90000000000 Fecha de vencimiento CAE: 19/05/2028", "CAE serie  A2001 al 4000"])
+ft = F.leer_cfe_texto(tabla)
+ok(ft["serie"] == "A" and ft["numero"] == "2012", f"serie/número = {ft['serie']}-{ft['numero']}")
+ok(F.tokens_nombre(ft["nombre"]) == {"ferreteria", "tornillo"}, f"nombre = {ft['nombre']!r}")
+ok(ft["total"] == 20920.0, f"total = {ft['total']} (no el importe pegado a la cantidad)")
+ok(ft["fecha"] == "2026-10-13", f"fecha = {ft['fecha']} (no la del vencimiento del CAE)")
+ok(ft["tipo"] == "e-factura", f"tipo = {ft['tipo']}")
+venta_emp = {**pack("Z1", 20920.0, "Ferreteria El Tornillo S.R.L.", ""), "nombres": [{"nombre": "Ferreteria El Tornillo S.R.L.", "apellido": ""}]}
+ok(F.elegir_pack(ft, [venta_emp])[0] is not None, "empresa del formato tabla → se sube")
+ok(F.elegir_pack(ft, [pack("Z2", 20920.0, "Juan", "Perez")])[0] is None,
+   "el nombre del EMISOR (también está en el PDF) no hace coincidir a un comprador")
+
 print("== agrupar_packs")
 ords = [{"id": 11, "pack_id": 900, "total_amount": 100, "paid_amount": 120, "date_created": "2026-10-02T10:00:00-03:00",
          "currency_id": "UYU", "buyer": {"id": 5, "first_name": "Ana", "last_name": "Gomez"}},

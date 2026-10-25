@@ -5905,10 +5905,32 @@ def api_config_app_excel_get():
 # ══════════════════════════════════════════════════════════════════════════════
 import facturas_cfe as _fcfe
 
-FACTURAS_DIAS     = int(os.environ.get("FACTURAS_DIAS", "45") or 45)
 _FACT_MAX_REG     = 2000
 _fact_lock        = threading.Lock()
-_fact_ventas_mem  = {}     # cuenta_id -> (ts, packs) — 10 min, para no rebajar todo en cada PDF del lote
+_fact_ventas_mem  = {}     # (cuenta_id, mes) -> (ts, packs) — 10 min, para no rebajar todo en cada PDF del lote
+_FACT_MESES       = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+                     "setiembre", "octubre", "noviembre", "diciembre"]
+
+
+def _fact_mes(valor=None):
+    """Mes en el que se buscan las ventas: '2026-05'. Vacío → mes actual (hora de Uruguay). Inválido → None."""
+    v = str(valor or "").strip()
+    if not v:
+        return (datetime.now(timezone.utc) - timedelta(hours=3)).strftime("%Y-%m")
+    m = re.fullmatch(r"(\d{4})-(\d{2})", v)
+    return v if m and 1 <= int(m.group(2)) <= 12 else None
+
+
+def _fact_mes_texto(mes):
+    y, m = str(mes).split("-")
+    return f"{_FACT_MESES[int(m) - 1]} {y}"
+
+
+def _fact_rango_mes(mes):
+    """Del 1 al último día del mes, en hora de Uruguay."""
+    y, m = map(int, mes.split("-"))
+    ultimo = (datetime(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)).day
+    return f"{mes}-01T00:00:00.000-03:00", f"{mes}-{ultimo:02d}T23:59:59.999-03:00"
 
 
 def _fact_ruta(nombre):
@@ -5970,16 +5992,15 @@ def _ml_delete_cuenta(ruta, cuenta_id):
                                           timeout=15)
 
 
-def _fact_ventas(cuenta_id) -> list:
-    """Ventas pagadas de los últimos FACTURAS_DIAS días agrupadas por pack (no toca la caché del picking)."""
-    ts, packs = _fact_ventas_mem.get(cuenta_id, (0, None))
+def _fact_ventas(cuenta_id, mes) -> list:
+    """Ventas pagadas del mes elegido ('2026-05') agrupadas por pack (no toca la caché del picking)."""
+    ts, packs = _fact_ventas_mem.get((cuenta_id, mes), (0, None))
     if packs is not None and time.time() - ts < 600:
         return packs
     uid = _cuentas.get(cuenta_id, {}).get("user_id")
     if not uid or not _token_valido_cuenta(cuenta_id):
         return []
-    desde = (datetime.now() - timedelta(days=FACTURAS_DIAS)).strftime("%Y-%m-%dT00:00:00.000-00:00")
-    hasta = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT23:59:59.000-00:00")
+    desde, hasta = _fact_rango_mes(mes)
     ordenes, offset = [], 0
     while offset < 10000:
         r = _ml_get_cuenta("/orders/search", cuenta_id, params={
@@ -5998,8 +6019,8 @@ def _fact_ventas(cuenta_id) -> list:
         if not res or offset >= data.get("paging", {}).get("total", 0):
             break
     packs = _fcfe.agrupar_packs(ordenes, cuenta_id)
-    _fact_ventas_mem[cuenta_id] = (time.time(), packs)
-    logger.info(f"[FACTURAS] {cuenta_id}: {len(ordenes)} órdenes / {len(packs)} ventas en {FACTURAS_DIAS} días")
+    _fact_ventas_mem[(cuenta_id, mes)] = (time.time(), packs)
+    logger.info(f"[FACTURAS] {cuenta_id}: {len(ordenes)} órdenes / {len(packs)} ventas en {mes}")
     return packs
 
 
@@ -6063,11 +6084,11 @@ def _fact_pack_tiene_factura(cuenta_id, pack_id):
     return None
 
 
-def _fact_todas_las_ventas() -> list:
+def _fact_todas_las_ventas(mes) -> list:
     packs = []
     for cid in _tn_cuentas():
         if _cuentas.get(cid, {}).get("access_token"):
-            packs += _fact_ventas(cid)
+            packs += _fact_ventas(cid, mes)
     return packs
 
 
@@ -6123,8 +6144,9 @@ def _fact_subir(entrada, pack, pdf, modo_prueba) -> str:
     return "error"
 
 
-def _fact_procesar(archivo, pdf) -> dict:
-    """Lee una factura, busca su venta y la sube sola si nombre y monto coinciden; si no, deja una duda."""
+def _fact_procesar(archivo, pdf, mes) -> dict:
+    """Lee una factura, busca su venta entre las del mes elegido y la sube sola si nombre y monto
+    coinciden; si no, deja una duda."""
     ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if len(pdf) > _fcfe.TAMANO_MAX_PDF:
         return {"archivo": archivo, "estado": "error", "ts": ahora,
@@ -6139,12 +6161,12 @@ def _fact_procesar(archivo, pdf) -> dict:
         if prev and prev.get("estado") == "subida":
             return {**prev, "repetida": True,
                     "motivo": f"Esta factura ya estaba subida a la venta {prev.get('pack_id')}"}
-        if prev and prev.get("estado") == "duda":
-            return {**prev, "repetida": True}
+        if prev and prev.get("estado") == "duda" and prev.get("mes") == mes:
+            return {**prev, "repetida": True}      # con otro mes se vuelve a buscar
         entrada = {"clave": f["clave"], "sha256": f["sha256"], "archivo": archivo, "ts": ahora,
                    "factura": {k: f.get(k) for k in ("tipo", "serie", "numero", "nombre", "total",
                                                      "moneda", "fecha")},
-                   "candidatas": [], "pack_id": "", "cuenta": ""}
+                   "mes": mes, "candidatas": [], "pack_id": "", "cuenta": ""}
         if f.get("error"):
             entrada.update(estado="error", motivo=f["error"])
         else:
@@ -6153,7 +6175,7 @@ def _fact_procesar(archivo, pdf) -> dict:
             if not any(_cuentas.get(c, {}).get("access_token") for c in _tn_cuentas()):
                 entrada.update(estado="error", motivo="No hay cuenta de Mercado Libre conectada")
             else:
-                packs = _fact_todas_las_ventas()
+                packs = _fact_todas_las_ventas(mes)
                 _fact_completar_nombres(f, packs)
                 ocupados = _fact_ocupados(reg, modo)
                 if prev:                                   # re-proceso de una simulada: su venta no cuenta
@@ -6174,6 +6196,8 @@ def _fact_procesar(archivo, pdf) -> dict:
                 if entrada["estado"] == "duda" and ya_en_ml:
                     entrada["motivo"] = ("La venta que coincide (#" + ", #".join(ya_en_ml) +
                                          ") ya tiene una factura cargada en Mercado Libre")
+                elif entrada["estado"] == "duda" and not entrada["candidatas"]:
+                    entrada["motivo"] += f" en las ventas de {_fact_mes_texto(mes)}"
         if entrada["estado"] == "subida":
             _fact_borrar_pdf(entrada)
         reg["facturas"][f["clave"]] = entrada
@@ -6181,12 +6205,12 @@ def _fact_procesar(archivo, pdf) -> dict:
         return entrada
 
 
-def _fact_buscar_venta(pack_id):
-    """Venta (pack) de esta tienda por número de pack o de orden."""
+def _fact_buscar_venta(pack_id, mes):
+    """Venta (pack) de esta tienda, del mes dado, por número de pack o de orden."""
     x = re.sub(r"\D", "", str(pack_id or ""))
     if not x:
         return None
-    for p in _fact_todas_las_ventas():
+    for p in _fact_todas_las_ventas(mes):
         if p["pack_id"] == x or x in p["order_ids"]:
             return p
     return None
@@ -6198,10 +6222,13 @@ def api_facturas_subir():
     archivos = request.files.getlist("factura") or request.files.getlist("fiscal_document")
     if not archivos:
         return jsonify({"ok": False, "msg": "Falta el PDF de la factura"}), 400
+    mes = _fact_mes(request.form.get("mes"))
+    if not mes:
+        return jsonify({"ok": False, "msg": "Mes inválido (formato AAAA-MM)"}), 400
     resultados = []
     for a in archivos:
         try:
-            resultados.append(_fact_procesar(a.filename or "factura.pdf", a.read()))
+            resultados.append(_fact_procesar(a.filename or "factura.pdf", a.read(), mes))
         except Exception as e:
             logger.exception(f"[FACTURAS] Error procesando {a.filename}")
             resultados.append({"archivo": a.filename, "estado": "error", "motivo": f"Error interno: {e}"})
@@ -6244,9 +6271,10 @@ def api_facturas_responder():
             return jsonify({"ok": False, "msg": "Acción inválida"}), 400
         pid = str((e.get("candidatas") or [{}])[0].get("pack_id") or "") if accion == "si" \
             else str(d.get("pack_id") or "")
-        pack = _fact_buscar_venta(pid)
+        mes = e.get("mes") or _fact_mes()
+        pack = _fact_buscar_venta(pid, mes)
         if not pack:
-            return jsonify({"ok": False, "msg": f"No encontré la venta {pid} en los últimos {FACTURAS_DIAS} días"}), 404
+            return jsonify({"ok": False, "msg": f"No encontré la venta {pid} en las ventas de {_fact_mes_texto(mes)}"}), 404
         modo = _fact_modo_prueba()
         if pack["pack_id"] in _fact_ocupados(reg, modo):
             return jsonify({"ok": False, "msg": "Esa venta ya tiene una factura cargada"}), 409
@@ -6314,7 +6342,7 @@ def api_facturas_subir_simuladas():
         except FileNotFoundError:
             resultados.append({**e, "estado": "error", "motivo": "No está el PDF guardado"})
             continue
-        resultados.append(_fact_procesar(e.get("archivo") or "factura.pdf", pdf))
+        resultados.append(_fact_procesar(e.get("archivo") or "factura.pdf", pdf, e.get("mes") or _fact_mes()))
     return jsonify({"ok": True, "resultados": resultados})
 
 
@@ -8188,6 +8216,11 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
     Modo prueba: no sube nada a Mercado Libre, solo muestra a qué venta iría cada factura
   </label>
   <div class="info" id="fact-simuladas" style="display:none;margin-top:10px"></div>
+  <label for="fact-mes">Mes de las ventas a buscar</label>
+  <input type="month" id="fact-mes" style="max-width:220px">
+  <div style="font-size:11px;color:#94A3B8;margin-top:4px">
+    Se busca al comprador solo entre las ventas de ese mes y, si compró varias veces, la del mismo monto.
+  </div>
   <div class="drop" id="fact-drop">
     Arrastrá acá los PDF de las facturas<br>
     <button class="btn btn-green" style="margin-top:10px" onclick="elegirFacturas()">⬆ Elegir una o varias facturas</button>
@@ -8374,6 +8407,12 @@ let _dudas = [];
 let _filas = [];
 const ESTADOS = {subida:'✓ Subida', simulada:'Prueba: iría a', duda:'Duda', error:'Error',
                  descartada:'Descartada', quitada:'Quitada'};
+const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
+               'setiembre','octubre','noviembre','diciembre'];
+function mesTexto(m) {
+  if (!m || m.length !== 7) return '';
+  return MESES[parseInt(m.slice(5), 10) - 1] + ' ' + m.slice(0, 4);
+}
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g,
@@ -8411,11 +8450,13 @@ function progreso(txt) {
 async function subirFacturas(files) {
   const lista = Array.from(files || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.type === 'application/pdf');
   if (!lista.length) { mostrar('msg-facturas', 'Elegí archivos PDF', false); return; }
+  const mes = document.getElementById('fact-mes').value;
+  if (!mes) { mostrar('msg-facturas', 'Elegí el mes de las ventas', false); return; }
   let ok = 0, dud = 0, err = 0, i = 0;
   for (const f of lista) {
     i++;
-    progreso('Procesando ' + i + ' de ' + lista.length + ': ' + f.name + '…');
-    const fd = new FormData(); fd.append('factura', f, f.name);
+    progreso('Procesando ' + i + ' de ' + lista.length + ' (ventas de ' + mesTexto(mes) + '): ' + f.name + '…');
+    const fd = new FormData(); fd.append('factura', f, f.name); fd.append('mes', mes);
     try {
       const d = await apiFact('/api/facturas/subir', {method: 'POST', body: fd});
       (d.resultados || []).forEach(r => {
@@ -8481,7 +8522,8 @@ function pintarDudas() {
     const opciones = c.map(v => '<option value="' + esc(v.pack_id) + '">#' + esc(v.pack_id) + ' · ' +
       esc(v.comprador || v.nickname || '') + ' · ' + plata(v.total, v.moneda) + ' · ' + esc(v.fecha || '') +
       (v.motivo ? ' (' + esc(v.motivo) + ')' : '') + '</option>').join('');
-    return '<div class="duda"><b>🔔 Factura con duda</b> · ' + esc(e.archivo || '') + '<br>' +
+    return '<div class="duda"><b>🔔 Factura con duda</b> · ' + esc(e.archivo || '') +
+      (e.mes ? ' · buscada en las ventas de <b>' + esc(mesTexto(e.mes)) + '</b>' : '') + '<br>' +
       textoFactura(e.factura) + '<div class="q">' + esc(e.motivo || '') + '</div>' +
       (prop ? '<div class="q">¿Es la venta <b>#' + esc(prop.pack_id) + '</b> del ' + esc(prop.fecha || '') +
               ' (' + esc(prop.comprador || prop.nickname || '') + ', ' + plata(prop.total, prop.moneda) + ')?</div>' +
@@ -8500,7 +8542,8 @@ function pintarTabla(fs) {
   if (!filas.length) { tb.innerHTML = '<tr><td colspan="5" style="color:#64748B">Todavía no se cargaron facturas.</td></tr>'; return; }
   _filas = filas;
   tb.innerHTML = filas.map((e, i) =>
-    '<tr><td>' + esc((e.ts || '').slice(0, 16)) + '<br><span style="color:#64748B">' + esc(e.archivo || '') + '</span></td>' +
+    '<tr><td>' + esc((e.ts || '').slice(0, 16)) + '<br><span style="color:#64748B">' + esc(e.archivo || '') +
+    (e.mes ? '<br>ventas de ' + esc(mesTexto(e.mes)) : '') + '</span></td>' +
     '<td>' + textoFactura(e.factura) + '</td>' +
     '<td><span class="est est-' + esc(e.estado) + '">' + esc(ESTADOS[e.estado] || e.estado) + '</span>' +
     (e.estado === 'error' || e.estado === 'subida' ? '<br><span style="color:#64748B">' + esc(e.motivo || '') + '</span>' : '') + '</td>' +
@@ -8539,6 +8582,8 @@ async function cargarFacturas() {
   ['dragenter', 'dragover'].forEach(ev => z.addEventListener(ev, e => { e.preventDefault(); z.classList.add('sobre'); }));
   ['dragleave', 'drop'].forEach(ev => z.addEventListener(ev, e => { e.preventDefault(); z.classList.remove('sobre'); }));
   z.addEventListener('drop', e => subirFacturas(e.dataTransfer.files));
+  const hoy = new Date();
+  document.getElementById('fact-mes').value = hoy.getFullYear() + '-' + String(hoy.getMonth() + 1).padStart(2, '0');
   cargarFacturas();
   setInterval(cargarFacturas, 30000);
 })();

@@ -33,6 +33,12 @@ viejo = os.path.join(AQUI, "old_head")
 shutil.rmtree(viejo, ignore_errors=True); os.makedirs(viejo)
 open(os.path.join(viejo, "server.py"), "wb").write(subprocess.check_output(["git", "-C", REPO, "show", f"{ref}:server.py"]))
 shutil.copytree(os.path.join(REPO, "templates"), os.path.join(viejo, "templates"))
+for _mod in ("facturas_cfe.py",):     # módulos que server.py importa (si existen en esa versión)
+    try:
+        _src = subprocess.check_output(["git", "-C", REPO, "show", f"{ref}:{_mod}"], stderr=subprocess.DEVNULL)
+        open(os.path.join(viejo, _mod), "wb").write(_src)
+    except subprocess.CalledProcessError:
+        pass
 
 env = dict(os.environ, PYTHONIOENCODING="utf-8")
 fallas = 0
