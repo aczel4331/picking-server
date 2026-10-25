@@ -94,10 +94,19 @@ _RE_TOTAL_LINEA = [re.compile(r"total\s+a\s+pagar\s*:?\s*(?:\$|UYU|U\$S|USD)?\s*
 MAX_PAGINAS = 5      # un CFE ocupa una o dos páginas: no se lee entero un PDF enorme
 
 
+def _texto_pagina(p):
+    """Texto respetando la disposición de la página (cada renglón del ticket en su línea, con el
+    valor al lado de su rótulo). Si pypdf no puede, el texto plano."""
+    try:
+        return p.extract_text(extraction_mode="layout") or ""
+    except Exception:
+        return p.extract_text() or ""
+
+
 def texto_pdf(pdf_bytes):
     from pypdf import PdfReader
     r = PdfReader(io.BytesIO(pdf_bytes))
-    return "\n".join((p.extract_text() or "") for p in list(r.pages)[:MAX_PAGINAS])
+    return "\n".join(_texto_pagina(p) for p in list(r.pages)[:MAX_PAGINAS])
 
 
 def _lineas(texto):
@@ -171,18 +180,33 @@ def _fecha(lineas):
     return ""
 
 
+def _nombre_tras_consumidor_final(lineas):
+    """e-Ticket sin rótulo de nombre: el comprador va en el renglón de abajo de "Consumidor Final"."""
+    for i, ln in enumerate(lineas):
+        if re.fullmatch(r"consumidor\s+final", _sin_tildes(ln).strip(" :"), re.I):
+            for cand in lineas[i + 1:i + 2]:
+                v = _nombre_valido(cand)
+                if v:
+                    return v
+    return None
+
+
 def leer_cfe_texto(texto):
     """Campos de una factura a partir de su texto. Los que no se encuentran quedan vacíos."""
     lineas = _lineas(texto)
     plano = _sin_tildes(texto)
+    # sin direcciones web: "www.efactura.dgi.gub.uy" aparece en todos los CFE, también en los e-Ticket
+    sin_url = re.sub(r"\S*(?:https?://|www\.)\S*", " ", plano, flags=re.I)
 
     tipo = ""
-    if re.search(r"nota\s+de\s+cr[eé]dito", plano, re.I):
+    if re.search(r"nota\s+de\s+cr[eé]dito", sin_url, re.I):
         tipo = "nota_credito"
-    elif re.search(r"e-?\s*factura", plano, re.I):
+    elif re.search(r"e-?\s*factura", sin_url, re.I):
         tipo = "e-factura"
-    elif re.search(r"e-?\s*ticket", plano, re.I):
+    elif re.search(r"e-?\s*ticket", sin_url, re.I):
         tipo = "e-ticket"
+    elif re.search(r"consumidor\s+final", sin_url, re.I):
+        tipo = "e-ticket"        # el e-Ticket a consumidor final no siempre trae el título
 
     serie = numero = ""
     m = re.search(r"\bserie\b\s*:?\s*([A-Z]{1,2})\b[\s\S]{0,40}?\b(?:n[º°o.]*|nro\.?|numero)\s*:?\s*(\d{1,10})",
@@ -196,6 +220,14 @@ def leer_cfe_texto(texto):
         m = re.search(r"\be-?\s*(?:ticket|factura)\b[^\n]{0,30}?\b([A-Z]{1,2})\s*[-–]?\s*(\d{4,10})\b", plano, re.I)
         if m:
             serie, numero = m.group(1).upper(), m.group(2).lstrip("0") or "0"
+    if not serie:
+        # ticket sin rótulos: un renglón del encabezado empieza con la serie y el número
+        # ("A    185      11:08   Moneda  $")
+        for ln in lineas[:15]:
+            m = re.match(r"([A-Z]{1,2})\s+(\d{1,10})(?:\s|$)", ln)
+            if m:
+                serie, numero = m.group(1), m.group(2).lstrip("0") or "0"
+                break
 
     # sin rótulo de total no se adivina (el mayor importe podía ser una CI): queda None → duda
     total = _total_en_linea(lineas)
@@ -204,7 +236,8 @@ def leer_cfe_texto(texto):
 
     moneda = "USD" if re.search(r"U\$S|US\$|\bUSD\b|d[oó]lares", plano, re.I) else "UYU"
 
-    nombre = _valor_tras_rotulo(lineas, _ROT_NOMBRE, _nombre_valido) or ""
+    nombre = (_valor_tras_rotulo(lineas, _ROT_NOMBRE, _nombre_valido)
+              or _nombre_tras_consumidor_final(lineas) or "")
     return {
         "tipo": tipo,
         "serie": serie,

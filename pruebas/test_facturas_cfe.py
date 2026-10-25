@@ -136,6 +136,31 @@ ok(F.elegir_pack(ft, [venta_emp])[0] is not None, "empresa del formato tabla →
 ok(F.elegir_pack(ft, [pack("Z2", 20920.0, "Juan", "Perez")])[0] is None,
    "el nombre del EMISOR (también está en el PDF) no hace coincidir a un comprador")
 
+print("== e-Ticket a consumidor final (sin rótulos: el comprador va abajo de 'Consumidor Final')")
+ticket = "\n".join([
+    "              MI COMERCIO SA", "                  RUT 21.000.000.0011",
+    "    Calle 1234 - MONTEVIDEO-URUGUAY", "                        Tel: 22000000",
+    "                                  Fecha:        21/05/2026",
+    " A    185                     11:08       Moneda           $", "",
+    "  Consumidor Final", "", "                       Sofía Libonatti", "",
+    "MOR00013             Calefactor blanco CH-1920 HXR-001",
+    "  1,00 x 2.817,30                       Tot:   2.817,30    B",
+    "  Descuento Gral.                    $                 0,00",
+    "  SubTotal                           $            2.817,30",
+    "  IVA                                $               619.81",
+    "  Redondeo                           $                 0,00",
+    "  Total                              $            3.437,11",
+    "            Puede verificar comprobante en:", "             https://www.efactura.dgi.gub.uy",
+    "             Nro. de CAE:      90260498738", " FECHA DE VENCIMIENTO                     13/02/2028"])
+fk = F.leer_cfe_texto(ticket)
+ok(fk["tipo"] == "e-ticket", f"tipo = {fk['tipo']} (la dirección www.efactura... no lo vuelve e-Factura)")
+ok(fk["serie"] == "A" and fk["numero"] == "185", f"serie/número = {fk['serie']}-{fk['numero']}")
+ok(fk["nombre"] == "Sofía Libonatti", f"nombre = {fk['nombre']!r}")
+ok(fk["total"] == 3437.11, f"total = {fk['total']} (no el subtotal ni el 'Tot:' del renglón)")
+ok(fk["fecha"] == "2026-05-21", f"fecha = {fk['fecha']}")
+ok(F.elegir_pack(fk, [pack("T1", 3437.11, "Sofia", "Libonatti", fecha="2026-05-20T12:00:00.000-03:00")])[0] is not None,
+   "e-Ticket con nombre + total de la venta → se sube")
+
 print("== agrupar_packs")
 ords = [{"id": 11, "pack_id": 900, "total_amount": 100, "paid_amount": 120, "date_created": "2026-10-02T10:00:00-03:00",
          "currency_id": "UYU", "buyer": {"id": 5, "first_name": "Ana", "last_name": "Gomez"}},
