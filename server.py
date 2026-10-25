@@ -54,6 +54,26 @@ def _leer_template(nombre):
                 f"<p>Asegurate de que la carpeta <code>templates/</code> este "
                 f"en el repositorio junto a server.py.</p>"), 500
 
+# ── Estética común de los paneles web (paleta de la app de escritorio) ───────
+# Va al final del <head> de cada panel: la fuente y templates/panel.css (colores y piezas comunes).
+_HEAD_PANEL = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
+               '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+               '<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800'
+               '&display=swap" rel="stylesheet"><link rel="stylesheet" href="/panel.css?v=1">')
+_SECCIONES_PANEL = [("usuarios", "/admin/usuarios", "Usuarios"), ("estadisticas", "/estadisticas", "Estadísticas"),
+                    ("etiquetas", "/etiquetas", "Etiquetas"), ("config", "/config", "Configuración"),
+                    ("facturacion", "/facturacion", "Facturación")]
+
+
+def _barra_panel(activa):
+    """La misma barra de navegación en todos los paneles."""
+    actual = ' aria-current="page"'
+    links = "".join(f'<a href="{url}"{actual if clave == activa else ""}>{texto}</a>'
+                    for clave, url, texto in _SECCIONES_PANEL)
+    return (f'<header class="lb-barra"><a class="lb-marca" href="/admin/usuarios">Logibot</a>'
+            f'<nav class="lb-nav" aria-label="Secciones">{links}</nav>'
+            f'<a class="lb-salir" href="/admin/logout">Salir</a></header>')
+
 # ── Config ML ─────────────────────────────────────────────────────────────────
 ML_APP_ID     = os.environ.get("ML_APP_ID", "")
 ML_SECRET_KEY = os.environ.get("ML_SECRET_KEY", "")
@@ -747,16 +767,16 @@ def _html_ok(titulo, detalle=""):
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OK</title>
 <style>
-body{font-family:'Segoe UI',sans-serif;background:#0F172A;color:#F1F5F9;
+body{background:var(--bg);color:var(--text);
   display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
-.box{background:#1E293B;border-radius:16px;padding:40px;max-width:500px;width:90%;
-  text-align:center;border:1px solid #334155}
+.box{background:var(--surface);border-radius:16px;padding:40px;max-width:500px;width:90%;
+  text-align:center;border:1px solid var(--border)}
 .icon{font-size:56px;margin-bottom:16px}
-h1{color:#10B981;font-size:22px;margin:0 0 12px}
-p{color:#94A3B8;font-size:14px;line-height:1.6}
-.btn{display:inline-block;margin-top:24px;padding:10px 24px;background:#10B981;
+h1{color:var(--success);font-size:22px;margin:0 0 12px}
+p{color:var(--text-2);font-size:14px;line-height:1.6}
+.btn{display:inline-block;margin-top:24px;padding:10px 24px;background:var(--success);
   color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;cursor:pointer;border:none}
-</style></head>
+</style>""" + _HEAD_PANEL + """</head>
 <body><div class="box">
   <div class="icon">&#x2705;</div>
   <h1>{{ titulo }}</h1>
@@ -770,17 +790,17 @@ def _html_error(titulo, detalle=""):
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Error</title>
 <style>
-body{font-family:'Segoe UI',sans-serif;background:#0F172A;color:#F1F5F9;
+body{background:var(--bg);color:var(--text);
   display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px}
-.box{background:#1E293B;border-radius:16px;padding:36px;max-width:560px;width:100%;
-  border:1px solid #334155}
+.box{background:var(--surface);border-radius:16px;padding:36px;max-width:560px;width:100%;
+  border:1px solid var(--border)}
 .icon{font-size:48px;margin-bottom:12px;text-align:center;display:block}
-h1{color:#EF4444;font-size:20px;margin:0 0 16px;text-align:center}
-.detail{background:#0F172A;border-radius:8px;padding:14px;color:#94A3B8;
-  font-size:13px;line-height:1.7;border:1px solid #334155}
-.btn{display:inline-block;margin-top:20px;padding:8px 20px;background:#334155;
-  color:#F1F5F9;border-radius:8px;font-size:13px;cursor:pointer;border:none}
-</style></head>
+h1{color:var(--danger);font-size:20px;margin:0 0 16px;text-align:center}
+.detail{background:var(--bg);border-radius:8px;padding:14px;color:var(--text-2);
+  font-size:13px;line-height:1.7;border:1px solid var(--border)}
+.btn{display:inline-block;margin-top:20px;padding:8px 20px;background:var(--border);
+  color:var(--text);border-radius:8px;font-size:13px;cursor:pointer;border:none}
+</style>""" + _HEAD_PANEL + """</head>
 <body><div class="box">
   <span class="icon">&#x274C;</span>
   <h1>{{ titulo }}</h1>
@@ -2657,7 +2677,7 @@ _TENANT_READY = {
     "panel_etiquetas",
     # facturas (registro y ventas por tienda)
     "api_facturas_subir", "api_facturas_lista", "api_facturas_responder",
-    "api_facturas_quitar", "api_facturas_modo", "api_facturas_subir_simuladas", "panel_facturacion",
+    "api_facturas_quitar", "api_facturas_modo", "api_facturas_subir_simuladas", "panel_facturacion", "panel_css",
 }
 
 
@@ -3728,25 +3748,25 @@ def panel_etiquetas():
     filas_html = ""
     for e in etiquetas:
         canal     = e.get("canal","flex")
-        canal_c   = "#8B5CF6" if canal == "flex" else "#2563EB"
+        canal_c   = "var(--flex)" if canal == "flex" else "var(--colecta)"
         canal_txt = "⚡ Flex" if canal == "flex" else "🚚 Colecta"
         pdf_btn   = (
             f'<a href="/api/etiqueta/{e["order_id"]}/guardada" '
-            f'target="_blank" style="background:#3B82F6;color:white;'
+            f'target="_blank" style="background:var(--accent);color:white;'
             f'padding:4px 10px;border-radius:6px;text-decoration:none;'
             f'font-size:12px;font-weight:700">📄 Ver</a>'
             if e.get("tiene_pdf") else
-            '<span style="color:#334155;font-size:11px">Sin PDF</span>'
+            '<span style="color:var(--border);font-size:11px">Sin PDF</span>'
         )
         filas_html += f"""
         <tr data-canal="{canal}"
             data-order="{e.get('order_id','')}">
-          <td style="font-size:12px;color:#64748B">{e.get('ts','')}</td>
+          <td style="font-size:12px;color:var(--text-3)">{e.get('ts','')}</td>
           <td><span style="color:{canal_c};font-weight:700">{canal_txt}</span></td>
           <td style="font-weight:700">#{e.get('order_id','')}</td>
-          <td style="color:#64748B;font-size:11px">{e.get('shipping_id','')}</td>
+          <td style="color:var(--text-3);font-size:11px">{e.get('shipping_id','')}</td>
           <td style="font-weight:600">{e.get('comprador','—')}</td>
-          <td style="font-size:11px;color:#94A3B8;max-width:200px;
+          <td style="font-size:11px;color:var(--text-2);max-width:200px;
                      overflow:hidden;text-overflow:ellipsis">
             {e.get('items','')}</td>
           <td>{pdf_btn}</td>
@@ -3758,32 +3778,25 @@ def panel_etiquetas():
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:20px}
-.card{background:#1E293B;border-radius:12px;padding:20px;margin-bottom:20px}
-h1{font-size:22px;font-weight:800;color:#38BDF8;margin-bottom:4px}
-h2{font-size:15px;font-weight:700;color:#94A3B8;margin-bottom:16px}
+body{background:var(--bg);color:var(--text);padding:20px}
+.card{background:var(--surface);border-radius:12px;padding:20px;margin-bottom:20px}
+h1{font-size:22px;font-weight:800;color:var(--info);margin-bottom:4px}
+h2{font-size:15px;font-weight:700;color:var(--text-2);margin-bottom:16px}
 table{width:100%;border-collapse:collapse}
-th{background:#0F172A;padding:10px 8px;text-align:left;font-size:12px;
-   color:#64748B;font-weight:600;border-bottom:1px solid #334155}
-td{padding:10px 8px;border-bottom:1px solid #1E293B;vertical-align:middle}
-tr:hover td{background:rgba(255,255,255,.03)}
-input,select{background:#0F172A;border:1px solid #334155;color:#F1F5F9;
+th{background:var(--bg);padding:10px 8px;text-align:left;font-size:12px;
+   color:var(--text-3);font-weight:600;border-bottom:1px solid var(--border)}
+td{padding:10px 8px;border-bottom:1px solid var(--surface);vertical-align:middle}
+tr:hover td{background:rgba(30,58,138,.03)}
+input,select{background:var(--bg);border:1px solid var(--border);color:var(--text);
   border-radius:8px;padding:8px 12px;font-size:13px;outline:none}
 .nav{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;align-items:center}
-.nav a{background:#1E293B;color:#94A3B8;padding:8px 16px;border-radius:8px;
+.nav a{background:var(--surface);color:var(--text-2);padding:8px 16px;border-radius:8px;
        text-decoration:none;font-size:13px;font-weight:600}
-.nav a:hover{background:#334155;color:#F1F5F9}
-.nav a.active{background:#3B82F6;color:white}
-</style></head><body>
+.nav a:hover{background:var(--border);color:var(--text)}
+.nav a.active{background:var(--accent);color:white}
+</style>""" + _HEAD_PANEL + """</head><body>
 
-<div class="nav">
-  <a href="/admin/usuarios">👥 Usuarios</a>
-  <a href="/estadisticas">📊 Estadísticas</a>
-  <a href="/config">⚙ Config</a>
-  <a href="/etiquetas" class="active">🏷 Etiquetas</a>
-  <a href="/facturacion">🧾 Facturación</a>
-  <a href="/admin" style="margin-left:auto">🔒 Cerrar sesión</a>
-</div>
+""" + _barra_panel("etiquetas") + """
 
 <div class="card">
   <h1>🏷 Etiquetas generadas</h1>
@@ -3800,27 +3813,27 @@ input,select{background:#0F172A;border:1px solid #334155;color:#F1F5F9;
       <option value="flex">⚡ Flex</option>
       <option value="colecta">🚚 Colecta</option>
     </select>
-    <span id="contador" style="color:#64748B;font-size:13px;
+    <span id="contador" style="color:var(--text-3);font-size:13px;
           align-self:center"></span>
   </div>
   <!-- Botones descarga ZIP -->
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
     <button onclick="descargarZip('todos')"
-      style="background:#334155;color:#F1F5F9;border:none;padding:9px 16px;
+      style="background:var(--border);color:var(--text);border:none;padding:9px 16px;
              border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">
       📦 Descargar todo (ZIP)
     </button>
     <button onclick="descargarZip('flex')"
-      style="background:#7C3AED;color:white;border:none;padding:9px 16px;
+      style="background:var(--flex);color:white;border:none;padding:9px 16px;
              border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">
       ⚡ Descargar Flex (ZIP)
     </button>
     <button onclick="descargarZip('colecta')"
-      style="background:#2563EB;color:white;border:none;padding:9px 16px;
+      style="background:var(--colecta);color:white;border:none;padding:9px 16px;
              border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">
       🚚 Descargar Colecta (ZIP)
     </button>
-    <span id="msg-zip" style="color:#94A3B8;font-size:12px;align-self:center"></span>
+    <span id="msg-zip" style="color:var(--text-2);font-size:12px;align-self:center"></span>
   </div>
 
   <div style="overflow-x:auto">
@@ -5387,46 +5400,46 @@ _PANEL_LOGIN_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Logibot — Acceso Admin</title>
+<title>Logibot — Ingresar</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;
-  display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-.card{background:#1E293B;border-radius:16px;padding:40px;width:100%;max-width:380px;
-  box-shadow:0 20px 60px rgba(0,0,0,.5)}
-.logo{font-size:48px;text-align:center;margin-bottom:8px}
-h1{color:#F1F5F9;font-size:20px;text-align:center;margin-bottom:4px}
-.sub{color:#64748B;font-size:12px;text-align:center;margin-bottom:28px}
-label{display:block;color:#94A3B8;font-size:12px;font-weight:600;
-  text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;margin-top:16px}
-input{width:100%;padding:12px 14px;background:#0F172A;border:1px solid #334155;
-  color:#F1F5F9;border-radius:8px;font-size:15px;outline:none;transition:border .2s}
-input:focus{border-color:#3B82F6}
-.btn{margin-top:24px;width:100%;padding:13px;background:#3B82F6;color:white;
-  border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;
-  transition:background .2s}
-.btn:hover{background:#2563EB}
-.err{margin-top:14px;background:rgba(239,68,68,.15);border:1px solid #EF4444;
-  color:#FCA5A5;border-radius:8px;padding:10px 14px;font-size:13px;display:none}
+body{min-height:100vh;display:grid;grid-template-columns:minmax(280px,5fr) 7fr}
+.franja{background:var(--accent);color:#fff;padding:clamp(28px,5vw,64px);display:flex;flex-direction:column;
+  justify-content:space-between;gap:40px}
+.franja .marca{font-size:clamp(44px,7vw,88px);font-weight:800;letter-spacing:-.045em;line-height:.9}
+.franja p{max-width:30ch;font-size:17px;line-height:1.5;color:#DCE5F0}
+.franja small{color:#AFC0E0;font-size:13px}
+.lado{display:flex;align-items:center;justify-content:center;padding:32px 20px}
+form{width:100%;max-width:360px}
+form h1{font-size:30px !important;margin-bottom:6px}
+form .ayuda{color:var(--text-2);margin-bottom:26px;font-size:15px}
+label{display:block;font-weight:600;margin:16px 0 6px}
+input{width:100%;padding:13px 14px;border-radius:10px;font-size:16px;outline:none}
+.btn{margin-top:26px;width:100%;padding:14px;border:none;font-size:16px;font-weight:700;cursor:pointer}
+.err{margin-top:16px;background:var(--danger-soft);color:var(--danger-hover);border-radius:10px;
+  padding:11px 14px;font-size:14px;display:none}
 .err.show{display:block}
-</style>
+@media (max-width:720px){body{grid-template-columns:1fr}.franja{gap:14px}.franja p{display:none}}
+</style>""" + _HEAD_PANEL + """
 </head>
 <body>
-<div class="card">
-  <div class="logo">🏭</div>
-  <h1>Logibot Admin</h1>
-  <p class="sub">Panel de gestión de usuarios</p>
+<section class="franja">
+  <div class="marca">Logibot</div>
+  <p>Usuarios, estadísticas del depósito, etiquetas y facturas de Mercado Libre, en un solo lugar.</p>
+  <small>Acceso para supervisores y administradores</small>
+</section>
+<main class="lado">
   <form method="POST" action="/admin/usuarios">
-    <label>Usuario</label>
-    <input type="text" name="usuario" placeholder="Tu usuario supervisor"
-           autocomplete="username" required autofocus>
-    <label>Clave</label>
-    <input type="password" name="clave" placeholder="••••••••"
-           autocomplete="current-password" required>
+    <h1>Ingresar</h1>
+    <p class="ayuda">Con tu usuario de supervisor.</p>
+    <label for="u">Usuario</label>
+    <input id="u" type="text" name="usuario" autocomplete="username" required autofocus>
+    <label for="c">Clave</label>
+    <input id="c" type="password" name="clave" autocomplete="current-password" required>
     <button type="submit" class="btn">Ingresar</button>
-    <div class="err {% if error %}show{% endif %}">{{ error }}</div>
+    <div class="err {% if error %}show{% endif %}" role="alert">{{ error }}</div>
   </form>
-</div>
+</main>
 </body>
 </html>"""
 
@@ -5504,11 +5517,11 @@ def admin_usuarios_panel():
     for u in usuarios_visibles:
         rol = u.get("rol","operario")
         if rol == "admin":
-            rol_color = "#F59E0B"; rol_emoji = "👑"; rol_label = "Admin"
+            rol_color = "var(--warning)"; rol_emoji = "👑"; rol_label = "Admin"
         elif rol == "supervisor":
-            rol_color = "#10B981"; rol_emoji = "🏢"; rol_label = "Supervisor"
+            rol_color = "var(--success)"; rol_emoji = "🏢"; rol_label = "Supervisor"
         else:
-            rol_color = "#3B82F6"; rol_emoji = "👤"; rol_label = "Operario"
+            rol_color = "var(--accent)"; rol_emoji = "👤"; rol_label = "Operario"
 
         # El supervisor no puede eliminar otros supervisores ni admins
         puede_editar   = es_admin or rol == "operario"
@@ -5521,7 +5534,7 @@ def admin_usuarios_panel():
 
         btn_editar = (
             f"<button onclick=\"editar({uname_js})\" "
-            "style='background:#0EA5E9;color:white;border:none;"
+            "style='background:var(--info);color:white;border:none;"
             "padding:4px 10px;border-radius:6px;cursor:pointer;"
             "font-size:12px;margin-right:6px'>"
             "✏ Clave</button>"
@@ -5530,12 +5543,12 @@ def admin_usuarios_panel():
         if puede_eliminar:
             btn_eliminar = (
                 f"<button onclick=\"eliminar({uname_js})\" "
-                "style='background:#EF4444;color:white;border:none;"
+                "style='background:var(--danger);color:white;border:none;"
                 "padding:4px 12px;border-radius:6px;cursor:pointer;"
                 "font-size:12px'>"
                 "Eliminar</button>")
         else:
-            btn_eliminar = "<span style='color:#334155;font-size:11px'>—</span>"
+            btn_eliminar = "<span style='color:var(--border);font-size:11px'>—</span>"
 
         usuarios_html += f"""<tr>
           <td>{_esc_tpl(u.get('nombre',''))}</td>
@@ -5552,61 +5565,46 @@ def admin_usuarios_panel():
 <title>Logibot — Usuarios</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:32px 20px}
-h1{color:#3B82F6;margin-bottom:4px}
-.sub{color:#94A3B8;font-size:13px;margin-bottom:28px}
-table{width:100%;border-collapse:collapse;background:#1E293B;border-radius:12px;
+body{background:var(--bg);color:var(--text);padding:32px 20px}
+h1{color:var(--accent);margin-bottom:4px}
+.sub{color:var(--text-2);font-size:13px;margin-bottom:28px}
+table{width:100%;border-collapse:collapse;background:var(--surface);border-radius:12px;
   overflow:hidden;margin-bottom:32px}
-th{background:#1E3A5F;padding:12px 16px;text-align:left;font-size:13px;
-  color:#93C5FD;font-weight:700}
-td{padding:11px 16px;font-size:13px;border-bottom:1px solid #334155}
+th{background:var(--accent-soft);padding:12px 16px;text-align:left;font-size:13px;
+  color:var(--accent);font-weight:700}
+td{padding:11px 16px;font-size:13px;border-bottom:1px solid var(--border)}
 tr:last-child td{border-bottom:none}
-tr:hover td{background:#263350}
-code{background:#0F172A;padding:2px 6px;border-radius:4px;font-size:12px;color:#34D399}
-.card{background:#1E293B;border-radius:12px;padding:24px;max-width:520px}
-.card h2{color:#F1F5F9;font-size:16px;margin-bottom:16px}
-label{display:block;color:#94A3B8;font-size:12px;margin-bottom:4px;margin-top:12px}
-input,select{width:100%;padding:9px 12px;background:#0F172A;border:1px solid #334155;
-  color:#F1F5F9;border-radius:8px;font-size:14px}
-input:focus,select:focus{outline:none;border-color:#3B82F6}
-.btn{margin-top:16px;width:100%;padding:11px;background:#3B82F6;color:white;
+tr:hover td{background:var(--accent-soft)}
+code{background:var(--bg);padding:2px 6px;border-radius:4px;font-size:12px;color:var(--success)}
+.card{background:var(--surface);border-radius:12px;padding:24px;max-width:520px}
+.card h2{color:var(--text);font-size:16px;margin-bottom:16px}
+label{display:block;color:var(--text-2);font-size:12px;margin-bottom:4px;margin-top:12px}
+input,select{width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--border);
+  color:var(--text);border-radius:8px;font-size:14px}
+input:focus,select:focus{outline:none;border-color:var(--accent)}
+.btn{margin-top:16px;width:100%;padding:11px;background:var(--accent);color:white;
   border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer}
-.btn:hover{background:#2563EB}
+.btn:hover{background:var(--colecta)}
 #msg{margin-top:12px;font-size:13px;min-height:20px}
-.ok{color:#10B981}.err{color:#EF4444}
-</style></head><body>
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-  <h1 style="margin:0">Logibot — Gestion de Usuarios</h1>
-  <div style="display:flex;align-items:center;gap:12px">
-    <span style="color:#94A3B8;font-size:13px">
+.ok{color:var(--success)}.err{color:var(--danger)}
+</style>""" + _HEAD_PANEL + """</head><body>
+""" + _barra_panel("usuarios") + """
+<div class="topbar" style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap">
+  <h1 style="margin:0">Usuarios</h1>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span style="color:var(--text-2);font-size:14px">
       {% if "admin" in nombre_admin %}👑{% else %}🏢{% endif %}
       {{ nombre_admin }}
     </span>
-    <a href="/estadisticas" style="background:#1E3A5F;color:#93C5FD;
-       text-decoration:none;padding:6px 14px;border-radius:8px;
-       font-size:12px;font-weight:600">📊 Estadisticas</a>
-    <a href="/config" style="background:#1E3A5F;color:#A78BFA;
-       text-decoration:none;padding:6px 14px;border-radius:8px;
-       font-size:12px;font-weight:600">⚙ Config</a>
-    <a href="/facturacion" style="background:#1E3A5F;color:#6EE7B7;
-       text-decoration:none;padding:6px 14px;border-radius:8px;
-       font-size:12px;font-weight:600">🧾 Facturación</a>
-  <a href="/etiquetas" style="background:#1E293B;color:#94A3B8;padding:8px 16px;
-     border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">
-     🏷 Etiquetas</a>
-    <a href="/estadisticas" id="bell-btn" class="bell-btn"
-       title="Alertas sin stock">
+    <a href="/estadisticas" id="bell-btn" class="bell-btn" title="Alertas sin stock">
       🔔
       <span id="bell-badge" class="bell-badge">0</span>
     </a>
-    <a href="/admin/logout" style="background:#334155;color:#94A3B8;
-       text-decoration:none;padding:6px 14px;border-radius:8px;
-       font-size:12px;font-weight:600">🔒 Cerrar sesion</a>
   </div>
 </div>
 <p class="sub">Usuarios que pueden iniciar sesion en la app de escritorio.</p>
-<div style="background:#1E3A5F;border-radius:8px;padding:10px 14px;
-     margin-bottom:20px;font-size:12px;color:#93C5FD;line-height:1.8">
+<div style="background:var(--accent-soft);border-radius:8px;padding:10px 14px;
+     margin-bottom:20px;font-size:12px;color:var(--accent);line-height:1.8">
   👑 <b>Admin</b> — acceso total, puede agregar cuentas MercadoLibre<br>
   🏢 <b>Supervisor</b> — ve Inicio + estadísticas + Config, <b>no</b> puede agregar cuentas ML<br>
   👤 <b>Operario</b> — solo Pedidos ML y Picking/Packing de su tienda
@@ -5626,13 +5624,13 @@ input:focus,select:focus{outline:none;border-color:#3B82F6}
   <label>cuenta_id ML</label>
   {% if es_admin %}
   <input id="f-cuenta" placeholder="Ej: cuenta_0 o cuenta_2 o todas">
-  <small style="color:#64748B;font-size:11px">
+  <small style="color:var(--text-3);font-size:11px">
     Ver /api/cuentas para los cuenta_id disponibles
   </small>
   {% else %}
   <input id="f-cuenta" value="{{ cuenta_sesion }}"
          readonly style="opacity:.6;cursor:not-allowed">
-  <small style="color:#64748B;font-size:11px">
+  <small style="color:var(--text-3);font-size:11px">
     Los operarios que agregues quedarán asignados a tu tienda automáticamente.
   </small>
   {% endif %}
@@ -5719,19 +5717,19 @@ async function editar(usuario, nombre_actual) {
 </script>
 
 <style>
-.bell-btn{position:relative;background:#1E293B;border:none;border-radius:8px;
-  padding:7px 12px;cursor:pointer;color:#94A3B8;font-size:16px;
+.bell-btn{position:relative;background:var(--surface);border:none;border-radius:8px;
+  padding:7px 12px;cursor:pointer;color:var(--text-2);font-size:16px;
   transition:background .2s;text-decoration:none;display:inline-flex;
   align-items:center;gap:4px}
-.bell-btn:hover{background:#334155;color:#F1F5F9}
-.bell-badge{position:absolute;top:-4px;right:-4px;background:#EF4444;
+.bell-btn:hover{background:var(--border);color:var(--text)}
+.bell-badge{position:absolute;top:-4px;right:-4px;background:var(--danger);
   color:white;border-radius:10px;font-size:10px;font-weight:800;
   min-width:18px;height:18px;display:flex;align-items:center;
   justify-content:center;padding:0 4px;display:none}
 </style>
 <script>
 (function(){
-  const K='' + (API_KEY or '') + '';
+  const K=""" + json.dumps(_clave_para_panel(_tn_de_sesion())) + """;   // la campana consulta alertas con la clave de su tienda
   const B=window.location.origin;
   let _ac=null;
   function beep(){
@@ -5757,7 +5755,7 @@ async function editar(usuario, nombre_actual) {
       if(badge){
         if(nl>0){
           badge.textContent=nl;badge.style.display='flex';
-          if(btn)btn.style.color='#EF4444';
+          if(btn)btn.style.color='var(--danger)';
         } else {
           badge.style.display='none';
           if(btn)btn.style.color='';
@@ -7247,20 +7245,20 @@ def panel_estadisticas():
         med     = MEDAL[i] if i < len(MEDAL) else str(i+1)
         fx      = ranking_flex.get(op,0)
         cl      = ranking_col.get(op,0)
-        col     = "#F59E0B" if i==0 else "#94A3B8" if i==1 else "#CD7F32" if i==2 else "#3B82F6"
+        col     = "var(--warning)" if i==0 else "var(--text-2)" if i==1 else "#CD7F32" if i==2 else "var(--accent)"
         pct     = int(peds / (total_pedidos or 1) * 100)
         ranking_html += f"""
         <tr>
           <td style="color:{col};font-weight:800;font-size:20px;width:40px">{med}</td>
           <td style="font-weight:700;font-size:14px">{op}</td>
-          <td><span style="color:#8B5CF6;font-weight:700">⚡ {fx}</span></td>
-          <td><span style="color:#2563EB;font-weight:700">🚚 {cl}</span></td>
+          <td><span style="color:var(--flex);font-weight:700">⚡ {fx}</span></td>
+          <td><span style="color:var(--colecta);font-weight:700">🚚 {cl}</span></td>
           <td style="font-weight:800;color:{col};font-size:16px">{peds}</td>
           <td style="width:120px">
-            <div style="background:#1E293B;border-radius:4px;height:8px">
+            <div style="background:var(--surface);border-radius:4px;height:8px">
               <div style="background:{col};height:8px;border-radius:4px;width:{pct}%"></div>
             </div>
-            <span style="font-size:10px;color:#64748B">{pct}%</span>
+            <span style="font-size:10px;color:var(--text-3)">{pct}%</span>
           </td>
         </tr>"""
 
@@ -7297,27 +7295,27 @@ def panel_estadisticas():
         pass
 
     top5_html = ""
-    COLORS5 = ["#F59E0B","#94A3B8","#CD7F32","#3B82F6","#8B5CF6"]
+    COLORS5 = ["var(--warning)","var(--text-2)","#CD7F32","var(--accent)","var(--flex)"]
     for i,(sku,qty) in enumerate(top5_skus):
         pct = int(qty/total_all*100)
         col = COLORS5[i]
         nombre_sku = _sku_nombres_top5.get(sku.upper(), "")
-        nom_html   = (f'<div style="font-size:11px;color:#94A3B8">{nombre_sku}</div>'
+        nom_html   = (f'<div style="font-size:11px;color:var(--text-2)">{nombre_sku}</div>'
                       if nombre_sku else "")
         top5_html += f"""
         <tr>
           <td style="color:{col};font-weight:800;font-size:20px;width:40px">{MEDAL[i]}</td>
           <td>
-            <code style="background:#0F172A;padding:3px 8px;border-radius:4px;
+            <code style="background:var(--bg);padding:3px 8px;border-radius:4px;
                 color:{col};font-size:13px">{sku}</code>
             {nom_html}
           </td>
           <td style="font-weight:700;font-size:15px">{qty:,}</td>
           <td style="width:150px">
-            <div style="background:#1E293B;border-radius:4px;height:8px">
+            <div style="background:var(--surface);border-radius:4px;height:8px">
               <div style="background:{col};height:8px;border-radius:4px;width:{pct}%"></div>
             </div>
-            <span style="font-size:10px;color:#64748B">{pct}%</span>
+            <span style="font-size:10px;color:var(--text-3)">{pct}%</span>
           </td>
         </tr>"""
 
@@ -7325,7 +7323,7 @@ def panel_estadisticas():
     lotes_html = ""
     for d in sorted(data, key=lambda x: x.get("ts",""), reverse=True)[:100]:
         canal     = d.get("canal","")
-        canal_c   = "#8B5CF6" if canal=="flex" else "#2563EB"
+        canal_c   = "var(--flex)" if canal=="flex" else "var(--colecta)"
         canal_txt = "⚡ Flex" if canal=="flex" else "🚚 Colecta"
         op        = d.get("operario","—") or "—"
         dur_min   = int(d.get("duracion_seg",0)//60)
@@ -7347,14 +7345,14 @@ def panel_estadisticas():
 
         # Mostrar hasta 5 con order_id + shipping_id
         orders_disp = " ".join(
-            f'<code style="background:#0F172A;padding:1px 5px;border-radius:3px;'
+            f'<code style="background:var(--bg);padding:1px 5px;border-radius:3px;'
             f'font-size:10px;color:{canal_c}" '
             f'title="pack: {o.get("pack_id","-")} | envío: {o.get("shipping_id","-")}">'
             f'{o.get("order_id","")}</code>'
             for o in orders[:5]
         )
         if len(orders) > 5:
-            orders_disp += f' <span style="color:#64748B;font-size:10px">+{len(orders)-5} más</span>'
+            orders_disp += f' <span style="color:var(--text-3);font-size:10px">+{len(orders)-5} más</span>'
         lotes_html += f"""<tr data-orders="{orders_str}"
               data-ts="{d.get('ts','')}"
               data-canal="{canal}"
@@ -7366,7 +7364,7 @@ def panel_estadisticas():
           <td>{d.get('total_uds',0)}</td>
           <td>{dur_min} min</td>
           <td style="max-width:300px;overflow:hidden">{orders_disp if orders_disp else
-            '<span style="color:#334155;font-size:11px">Sin datos</span>'}</td>
+            '<span style="color:var(--border);font-size:11px">Sin datos</span>'}</td>
         </tr>"""
 
     dias_html = ""
@@ -7378,14 +7376,14 @@ def panel_estadisticas():
         dias_html += f"""
         <tr>
           <td style="font-weight:600">{dia}</td>
-          <td style="color:#6B7280">{vals['lotes']}</td>
-          <td style="color:#8B5CF6;font-weight:700">⚡ {fx}</td>
-          <td style="color:#2563EB;font-weight:700">🚚 {cl}</td>
+          <td style="color:var(--text-3)">{vals['lotes']}</td>
+          <td style="color:var(--flex);font-weight:700">⚡ {fx}</td>
+          <td style="color:var(--colecta);font-weight:700">🚚 {cl}</td>
           <td style="font-weight:800">{tot}</td>
           <td style="width:120px">
-            <div style="background:#1E293B;border-radius:4px;height:8px;position:relative">
-              <div style="background:#8B5CF6;height:8px;border-radius:4px 0 0 4px;
-                   width:{pct_f}%;display:inline-block"></div><div style="background:#2563EB;
+            <div style="background:var(--surface);border-radius:4px;height:8px;position:relative">
+              <div style="background:var(--flex);height:8px;border-radius:4px 0 0 4px;
+                   width:{pct_f}%;display:inline-block"></div><div style="background:var(--colecta);
                    height:8px;border-radius:0 4px 4px 0;
                    width:{100-pct_f}%;display:inline-block"></div>
             </div>
@@ -7407,87 +7405,82 @@ def panel_estadisticas():
 <title>Logibot — Estadísticas</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:20px 16px}
+body{background:var(--bg);color:var(--text);padding:20px 16px}
 .topbar{display:flex;justify-content:space-between;align-items:center;
   margin-bottom:20px;flex-wrap:wrap;gap:10px}
-h1{color:#3B82F6;font-size:22px;font-weight:900}
-.sub{color:#64748B;font-size:12px;margin-top:2px}
+h1{color:var(--accent);font-size:22px;font-weight:900}
+.sub{color:var(--text-3);font-size:12px;margin-top:2px}
 .nav{display:flex;gap:8px}
-.nav a{background:#1E293B;color:#94A3B8;text-decoration:none;
+.nav a{background:var(--surface);color:var(--text-2);text-decoration:none;
   padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;
   transition:background .2s}
-.nav a:hover{background:#334155;color:#F1F5F9}
-.nav a.active{background:#3B82F6;color:white}
+.nav a:hover{background:var(--border);color:var(--text)}
+.nav a.active{background:var(--accent);color:white}
 /* Filtros */
-.filters{background:#1E293B;border-radius:12px;padding:14px 16px;
+.filters{background:var(--surface);border-radius:12px;padding:14px 16px;
   margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
-.filters label{font-size:11px;color:#94A3B8;font-weight:700;
+.filters label{font-size:11px;color:var(--text-2);font-weight:700;
   text-transform:uppercase;display:block;margin-bottom:4px}
-.filters input,.filters select{background:#0F172A;border:1px solid #334155;
-  color:#F1F5F9;border-radius:8px;padding:8px 10px;font-size:13px;outline:none}
-.filters input:focus,.filters select:focus{border-color:#3B82F6}
-.btn-f{background:#3B82F6;color:white;border:none;border-radius:8px;
+.filters input,.filters select{background:var(--bg);border:1px solid var(--border);
+  color:var(--text);border-radius:8px;padding:8px 10px;font-size:13px;outline:none}
+.filters input:focus,.filters select:focus{border-color:var(--accent)}
+.btn-f{background:var(--accent);color:white;border:none;border-radius:8px;
   padding:9px 20px;font-size:13px;font-weight:700;cursor:pointer}
-.btn-f:hover{background:#2563EB}
+.btn-f:hover{background:var(--colecta)}
 /* KPIs */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
   gap:10px;margin-bottom:20px}
-.kpi{background:#1E293B;border-radius:12px;padding:14px 16px;
+.kpi{background:var(--surface);border-radius:12px;padding:14px 16px;
   border-left:4px solid;position:relative;overflow:hidden}
 .kpi .val{font-size:30px;font-weight:900;line-height:1}
-.kpi .lbl{font-size:10px;color:#64748B;margin-top:3px;font-weight:700;
+.kpi .lbl{font-size:10px;color:var(--text-3);margin-top:3px;font-weight:700;
   text-transform:uppercase;letter-spacing:.05em}
-.kpi .sub2{font-size:11px;color:#475569;margin-top:2px}
+.kpi .sub2{font-size:11px;color:var(--text-3);margin-top:2px}
 /* Progreso hoy */
-.hoy-bar{background:#1E293B;border-radius:12px;padding:16px;margin-bottom:20px}
-.hoy-bar h2{font-size:13px;color:#94A3B8;font-weight:700;text-transform:uppercase;
+.hoy-bar{background:var(--surface);border-radius:12px;padding:16px;margin-bottom:20px}
+.hoy-bar h2{font-size:13px;color:var(--text-2);font-weight:700;text-transform:uppercase;
   letter-spacing:.05em;margin-bottom:12px}
 .canal-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
 .canal-row .nombre{width:80px;font-size:12px;font-weight:700}
-.canal-row .bar{flex:1;background:#0F172A;border-radius:6px;height:20px;
+.canal-row .bar{flex:1;background:var(--bg);border-radius:6px;height:20px;
   overflow:hidden;position:relative}
 .canal-row .fill{height:100%;border-radius:6px;transition:width .5s}
 .canal-row .num{width:50px;text-align:right;font-size:13px;font-weight:800}
 /* Cards */
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
 @media(max-width:800px){.grid2{grid-template-columns:1fr}}
-.card{background:#1E293B;border-radius:12px;padding:18px}
-.card h2{font-size:13px;font-weight:700;color:#94A3B8;text-transform:uppercase;
+.card{background:var(--surface);border-radius:12px;padding:18px}
+.card h2{font-size:13px;font-weight:700;color:var(--text-2);text-transform:uppercase;
   letter-spacing:.05em;margin-bottom:14px}
 table{width:100%;border-collapse:collapse}
-th{background:#0F172A;padding:9px 10px;text-align:left;font-size:10px;
-  color:#64748B;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-td{padding:10px;font-size:13px;border-bottom:1px solid #0F172A}
+th{background:var(--bg);padding:9px 10px;text-align:left;font-size:10px;
+  color:var(--text-3);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+td{padding:10px;font-size:13px;border-bottom:1px solid var(--bg)}
 tr:last-child td{border-bottom:none}
-tr:hover td{background:rgba(255,255,255,.03)}
-</style></head><body>
+tr:hover td{background:rgba(30,58,138,.03)}
+</style>""" + _HEAD_PANEL + """</head><body>
 
+""" + _barra_panel("estadisticas") + """
 <div class="topbar">
   <div>
-    <h1>📊 Estadísticas""" + titulo_tienda + """</h1>
+    <h1>Estadísticas""" + titulo_tienda + """</h1>
     <div class="sub">{{ desde }} al {{ hasta }} · {{ total_lotes }} lotes · {{ "{:,}".format(total_pedidos) }} pedidos</div>
-  </div>
-  <div class="nav">
-    <a href="/admin/usuarios">👥 Usuarios</a>
-    <a href="/estadisticas" class="active">📊 Estadísticas</a>
-    <a href="/facturacion">🧾 Facturación</a>
-    <a href="/admin/logout">🔒 Salir</a>
   </div>
 </div>
 
 <!-- ── AUTORIZACIONES PENDIENTES ────────────────────────────────────────── -->
 <div id="auth-container" style="margin-bottom:16px;display:none">
-  <div style="background:#1E1B4B;border:2px solid #818CF8;border-radius:12px;
+  <div style="background:var(--flex-soft);border:2px solid var(--flex);border-radius:12px;
        padding:16px 20px">
     <div style="display:flex;justify-content:space-between;align-items:center;
          margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;align-items:center;gap:10px">
         <span style="font-size:22px">🔐</span>
         <div>
-          <div style="font-weight:800;font-size:15px;color:#C7D2FE">
+          <div style="font-weight:800;font-size:15px;color:var(--accent)">
             Solicitudes de Autorización Pendientes
           </div>
-          <div style="font-size:11px;color:#818CF8">
+          <div style="font-size:11px;color:var(--flex)">
             Un colector necesita tu aprobación para pasar a Fase 2
           </div>
         </div>
@@ -7499,33 +7492,33 @@ tr:hover td{background:rgba(255,255,255,.03)}
 
 <!-- ── ALERTAS SIN STOCK ────────────────────────────────────────────────── -->
 <div id="alertas-container" style="margin-bottom:20px;display:none">
-  <div style="background:#7C2D12;border:2px solid #F97316;border-radius:12px;
+  <div style="background:var(--warning-soft);border:2px solid var(--naranja);border-radius:12px;
        padding:16px 20px">
     <div style="display:flex;justify-content:space-between;align-items:center;
          margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;align-items:center;gap:10px">
         <span style="font-size:24px">⚠️</span>
         <div>
-          <div style="font-weight:800;font-size:16px;color:#FED7AA">
+          <div style="font-weight:800;font-size:16px;color:var(--naranja)">
             ⚠️ Alertas del Depósito
           </div>
-          <div style="font-size:11px;color:#FB923C;margin-top:2px">
-            <span style="background:#F97316;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700">SIN STOCK</span>
+          <div style="font-size:11px;color:var(--naranja);margin-top:2px">
+            <span style="background:var(--naranja);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700">SIN STOCK</span>
             = producto suspendido &nbsp;|&nbsp;
-            <span style="background:#EF4444;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700">FASE 2</span>
+            <span style="background:var(--danger);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700">FASE 2</span>
             = faltante al pasar a packing
           </div>
-          <div id="alertas-ts" style="font-size:11px;color:#FB923C"></div>
+          <div id="alertas-ts" style="font-size:11px;color:var(--naranja)"></div>
         </div>
-        <span id="alertas-badge" style="background:#EF4444;color:white;
+        <span id="alertas-badge" style="background:var(--danger);color:white;
               font-weight:800;font-size:13px;padding:4px 10px;
               border-radius:20px;min-width:28px;text-align:center"></span>
       </div>
       <div style="display:flex;gap:8px">
-        <button onclick="marcarLeidas()" style="background:#F97316;color:white;
+        <button onclick="marcarLeidas()" style="background:var(--naranja);color:white;
           border:none;padding:7px 14px;border-radius:8px;cursor:pointer;
           font-weight:700;font-size:12px">✅ Marcar como leídas</button>
-        <button onclick="limpiarAlertas()" style="background:#374151;color:#9CA3AF;
+        <button onclick="limpiarAlertas()" style="background:var(--surface-3);color:var(--text-3);
           border:none;padding:7px 14px;border-radius:8px;cursor:pointer;
           font-size:12px">🗑 Limpiar todas</button>
       </div>
@@ -7560,32 +7553,32 @@ tr:hover td{background:rgba(255,255,255,.03)}
 
 <!-- KPIs -->
 <div class="kpis">
-  <div class="kpi" style="border-color:#7C3AED">
-    <div class="val" style="color:#7C3AED">{{ total_lotes }}</div>
+  <div class="kpi" style="border-color:var(--flex)">
+    <div class="val" style="color:var(--flex)">{{ total_lotes }}</div>
     <div class="lbl">Lotes</div>
     <div class="sub2">{{ lotes_hoy }} hoy</div>
   </div>
-  <div class="kpi" style="border-color:#0891B2">
-    <div class="val" style="color:#0891B2">{{ "{:,}".format(total_pedidos) }}</div>
+  <div class="kpi" style="border-color:var(--info)">
+    <div class="val" style="color:var(--info)">{{ "{:,}".format(total_pedidos) }}</div>
     <div class="lbl">Pedidos</div>
     <div class="sub2">{{ peds_hoy }} hoy</div>
   </div>
-  <div class="kpi" style="border-color:#059669">
-    <div class="val" style="color:#059669">{{ "{:,}".format(total_uds) }}</div>
+  <div class="kpi" style="border-color:var(--success-hover)">
+    <div class="val" style="color:var(--success-hover)">{{ "{:,}".format(total_uds) }}</div>
     <div class="lbl">Unidades</div>
   </div>
-  <div class="kpi" style="border-color:#8B5CF6">
-    <div class="val" style="color:#8B5CF6">{{ flex_peds }}</div>
+  <div class="kpi" style="border-color:var(--flex)">
+    <div class="val" style="color:var(--flex)">{{ flex_peds }}</div>
     <div class="lbl">⚡ Flex</div>
     <div class="sub2">{{ flex_lotes }} lotes</div>
   </div>
-  <div class="kpi" style="border-color:#2563EB">
-    <div class="val" style="color:#2563EB">{{ col_peds }}</div>
+  <div class="kpi" style="border-color:var(--colecta)">
+    <div class="val" style="color:var(--colecta)">{{ col_peds }}</div>
     <div class="lbl">🚚 Colecta</div>
     <div class="sub2">{{ col_lotes }} lotes</div>
   </div>
-  <div class="kpi" style="border-color:#F59E0B">
-    <div class="val" style="color:#F59E0B">{{ prom_min }}</div>
+  <div class="kpi" style="border-color:var(--warning)">
+    <div class="val" style="color:var(--warning)">{{ prom_min }}</div>
     <div class="lbl">Min prom/lote</div>
   </div>
 </div>
@@ -7595,20 +7588,20 @@ tr:hover td{background:rgba(255,255,255,.03)}
   <h2>📅 Progreso de hoy — {{ lotes_hoy }} lotes · {{ peds_hoy }} pedidos</h2>
   {% set total_h = flex_hoy + col_hoy or 1 %}
   <div class="canal-row">
-    <div class="nombre" style="color:#8B5CF6">⚡ FLEX</div>
+    <div class="nombre" style="color:var(--flex)">⚡ FLEX</div>
     <div class="bar">
-      <div class="fill" style="background:#8B5CF6;
+      <div class="fill" style="background:var(--flex);
            width:{{ (flex_hoy/total_h*100)|int }}%"></div>
     </div>
-    <div class="num" style="color:#8B5CF6">{{ flex_hoy }}</div>
+    <div class="num" style="color:var(--flex)">{{ flex_hoy }}</div>
   </div>
   <div class="canal-row">
-    <div class="nombre" style="color:#2563EB">🚚 COLECTA</div>
+    <div class="nombre" style="color:var(--colecta)">🚚 COLECTA</div>
     <div class="bar">
-      <div class="fill" style="background:#2563EB;
+      <div class="fill" style="background:var(--colecta);
            width:{{ (col_hoy/total_h*100)|int }}%"></div>
     </div>
-    <div class="num" style="color:#2563EB">{{ col_hoy }}</div>
+    <div class="num" style="color:var(--colecta)">{{ col_hoy }}</div>
   </div>
 </div>
 
@@ -7674,12 +7667,12 @@ function _beep_alerta() {
 function _card(a) {
   const leida=a.leida?'opacity:.5;':'';
   const esFase2=a.tipo==='faltante_fase2';
-  const border=esFase2?'#EF4444':'#F97316';
-  const bg=esFase2?'#450A0A':'#431407';
+  const border=esFase2?'var(--danger)':'var(--naranja)';
+  const bg=esFase2?'var(--danger-soft)':'var(--warning-soft)';
   const badge=esFase2
-    ?`<span style="background:#EF4444;color:white;font-size:9px;font-weight:800;
+    ?`<span style="background:var(--danger);color:white;font-size:9px;font-weight:800;
         padding:2px 6px;border-radius:4px;margin-left:4px">FASE 2</span>`
-    :`<span style="background:#F97316;color:white;font-size:9px;font-weight:800;
+    :`<span style="background:var(--naranja);color:white;font-size:9px;font-weight:800;
         padding:2px 6px;border-radius:4px;margin-left:4px">SIN STOCK</span>`;
   const img=a.img_url
     ?`<img src="${a.img_url}"
@@ -7689,35 +7682,35 @@ function _card(a) {
         onmouseover="this.style.transform='scale(1.08)'"
         onmouseout="this.style.transform='scale(1)'"
         onerror="this.style.display='none'">`
-    :`<div style="width:56px;height:56px;background:#374151;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:22px">📦</div>`;
+    :`<div style="width:56px;height:56px;background:var(--surface-3);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:22px">📦</div>`;
   return `<div style="background:${bg};border:1px solid ${border};border-radius:10px;padding:12px;${leida}">
     <div style="display:flex;gap:10px;align-items:flex-start">
       ${img}
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
-          <span style="font-weight:800;font-size:13px;color:#FED7AA;
+          <span style="font-weight:800;font-size:13px;color:var(--naranja);
             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
             max-width:120px">${a.nombre||a.sku}</span>${badge}
         </div>
-        <code style="background:#1C0A00;padding:2px 6px;border-radius:4px;
+        <code style="background:var(--warning-soft);padding:2px 6px;border-radius:4px;
               font-size:11px;color:${border}">${a.sku}</code>
-        <div style="font-size:11px;color:#9CA3AF;margin-top:3px">
+        <div style="font-size:11px;color:var(--text-3);margin-top:3px">
           Faltan: <b style="color:${border}">×${a.cantidad}</b>
           ${!esFase2&&a.order_id?'· #'+a.order_id:''}
         </div>
         ${(a.pedidos_afectados&&a.pedidos_afectados.length>0)?`
         <div style="margin-top:5px;font-size:10px">
-          <div style="color:#94A3B8;margin-bottom:2px">Pedidos afectados:</div>
+          <div style="color:var(--text-2);margin-bottom:2px">Pedidos afectados:</div>
           ${a.pedidos_afectados.slice(0,3).map(p=>`
             <div style="background:rgba(0,0,0,.3);border-radius:4px;
-                 padding:2px 5px;margin-bottom:2px;color:#CBD5E1">
+                 padding:2px 5px;margin-bottom:2px;color:var(--text-3)">
               <b style="color:${border}">#${p.order_id}</b>
-              <span style="color:#94A3B8;font-size:9px"> — ${p.contenido||''}</span>
+              <span style="color:var(--text-2);font-size:9px"> — ${p.contenido||''}</span>
             </div>`).join('')}
           ${a.pedidos_afectados.length>3?
-            `<div style="color:#64748B;font-size:9px">+${a.pedidos_afectados.length-3} más</div>`:''}
+            `<div style="color:var(--text-3);font-size:9px">+${a.pedidos_afectados.length-3} más</div>`:''}
         </div>`:''}
-        <div style="font-size:10px;color:#6B7280">${a.operario?'👤 '+a.operario+' · ':''}${a.ts?a.ts.slice(11,16):''}</div>
+        <div style="font-size:10px;color:var(--text-3)">${a.operario?'👤 '+a.operario+' · ':''}${a.ts?a.ts.slice(11,16):''}</div>
       </div>
     </div>
   </div>`;
@@ -7739,30 +7732,30 @@ async function _poll_auth() {
     if (pend.length>0) {
       ct.style.display='block';
       li.innerHTML=pend.map(p=>`
-        <div style="background:#2E1065;border:1px solid #818CF8;border-radius:10px;
+        <div style="background:var(--flex-soft);border:1px solid var(--flex);border-radius:10px;
              padding:14px;min-width:220px;flex:1">
-          <div style="font-size:22px;font-weight:900;color:#A5B4FC;
+          <div style="font-size:22px;font-weight:900;color:var(--accent);
                letter-spacing:3px;text-align:center;margin-bottom:6px">
             🔑 ${p.token}
           </div>
-          <div style="font-size:12px;color:#C7D2FE;margin-bottom:4px">
+          <div style="font-size:12px;color:var(--accent);margin-bottom:4px">
             👤 ${p.operario||'Operario'} · ${p.ts}
           </div>
-          <div style="font-size:11px;color:#818CF8;margin-bottom:10px">
+          <div style="font-size:11px;color:var(--flex);margin-bottom:10px">
             ${p.incompletos&&p.incompletos.length>0
               ?p.incompletos.slice(0,3).map(i=>
-                `<span style="background:#1E1B4B;padding:1px 5px;border-radius:4px;
+                `<span style="background:var(--flex-soft);padding:1px 5px;border-radius:4px;
                  margin-right:3px">${i.sku} ${i.colectado}/${i.requerido}</span>`
               ).join(''):'Artículos incompletos'}
           </div>
           <button onclick="aprobarAuth('${p.token}')"
-            style="width:100%;background:#4F46E5;color:white;border:none;
+            style="width:100%;background:var(--accent);color:white;border:none;
                    padding:9px;border-radius:8px;cursor:pointer;
                    font-weight:700;font-size:13px;margin-bottom:6px">
             ✅ Autorizar paso a Fase 2
           </button>
           <button onclick="rechazarAuth('${p.token}')"
-            style="width:100%;background:#1E293B;color:#94A3B8;border:1px solid #334155;
+            style="width:100%;background:var(--surface);color:var(--text-2);border:1px solid var(--border);
                    padding:7px;border-radius:8px;cursor:pointer;
                    font-size:12px">
             ✕ Cerrar solicitud
@@ -7883,12 +7876,12 @@ function abrirLightbox(url, titulo) {
       'z-index:9999','cursor:zoom-out','padding:20px','box-sizing:border-box'
     ].join(';');
     lb.innerHTML = `
-      <div id="lb-titulo" style="color:#F1F5F9;font-size:14px;font-weight:700;
+      <div id="lb-titulo" style="color:var(--text);font-size:14px;font-weight:700;
            margin-bottom:12px;text-align:center;max-width:90%"></div>
       <img id="lb-img" src="" alt=""
            style="max-width:90vw;max-height:80vh;border-radius:12px;
                   box-shadow:0 8px 40px rgba(0,0,0,.6);object-fit:contain">
-      <div style="color:#64748B;font-size:12px;margin-top:12px">
+      <div style="color:var(--text-3);font-size:12px;margin-top:12px">
         Clic o ESC para cerrar
       </div>`;
     lb.addEventListener('click', cerrarLightbox);
@@ -7932,19 +7925,19 @@ async function _poll_lote_vivo() {
     }
     ct.style.display = 'block';
     ct.innerHTML = d.lotes.map(L => {
-      const canalColor = L.canal === 'flex' ? '#8B5CF6' : '#2563EB';
+      const canalColor = L.canal === 'flex' ? 'var(--flex)' : 'var(--colecta)';
       const canalTxt   = L.canal === 'flex' ? '⚡ Flex' : '🚚 Colecta';
       const faseTxt    = L.fase === 1 ? 'FASE 1: COLECTA' : 'FASE 2: PACKING';
-      const faseColor  = L.fase === 1 ? '#F59E0B' : '#10B981';
+      const faseColor  = L.fase === 1 ? 'var(--warning)' : 'var(--success)';
 
       // Barra de progreso
       const barra = `
-        <div style="background:#0F172A;border-radius:8px;height:22px;
+        <div style="background:var(--bg);border-radius:8px;height:22px;
              overflow:hidden;position:relative;margin:8px 0">
           <div style="background:linear-gradient(90deg,${canalColor},${faseColor});
                height:100%;width:${L.pct}%;transition:width .4s"></div>
           <div style="position:absolute;inset:0;display:flex;align-items:center;
-               justify-content:center;font-size:12px;font-weight:800;color:#F1F5F9;
+               justify-content:center;font-size:12px;font-weight:800;color:var(--text);
                text-shadow:0 1px 3px rgba(0,0,0,.8)">
             ${L.skus_ok} / ${L.total_skus} SKUs  ·  ${L.pct}%
           </div>
@@ -7954,7 +7947,7 @@ async function _poll_lote_vivo() {
       let tiempoTxt = '';
       if (L.mins_estimados > 0) {
         const restante = Math.max(0, L.mins_estimados - L.mins_transcurridos);
-        const colorT = restante > 0 ? '#94A3B8' : '#F59E0B';
+        const colorT = restante > 0 ? 'var(--text-2)' : 'var(--warning)';
         tiempoTxt = `
           <div style="font-size:12px;color:${colorT};margin-top:4px">
             ⏱ ${L.mins_transcurridos} min transcurridos
@@ -7962,32 +7955,32 @@ async function _poll_lote_vivo() {
             ${restante > 0 ? `&nbsp;·&nbsp; <b>~${restante} min restantes</b>` :
                              '&nbsp;·&nbsp; <b>excedido</b>'}
           </div>
-          <div style="font-size:10px;color:#475569">${L.est_fuente}</div>`;
+          <div style="font-size:10px;color:var(--text-3)">${L.est_fuente}</div>`;
       } else {
-        tiempoTxt = `<div style="font-size:12px;color:#94A3B8;margin-top:4px">
+        tiempoTxt = `<div style="font-size:12px;color:var(--text-2);margin-top:4px">
           ⏱ ${L.mins_transcurridos} min transcurridos</div>`;
       }
 
       // Últimos escaneos
       const scans = (L.ultimos_scans || []).map(s => `
         <div style="display:flex;gap:8px;align-items:center;padding:3px 0;
-             font-size:11px;color:#CBD5E1">
-          <span style="color:#10B981">✔</span>
+             font-size:11px;color:var(--text-3)">
+          <span style="color:var(--success)">✔</span>
           <code style="color:${canalColor};font-size:10px">${s.sku}</code>
-          <span style="color:#94A3B8;flex:1;overflow:hidden;
+          <span style="color:var(--text-2);flex:1;overflow:hidden;
                 text-overflow:ellipsis;white-space:nowrap">${s.nombre}</span>
-          <span style="color:#475569;font-size:10px">${s.ts}</span>
-        </div>`).join('') || '<div style="color:#475569;font-size:11px">Sin escaneos aún</div>';
+          <span style="color:var(--text-3);font-size:10px">${s.ts}</span>
+        </div>`).join('') || '<div style="color:var(--text-3);font-size:11px">Sin escaneos aún</div>';
 
       // Faltantes
       const falt = (L.faltantes || []).slice(0,5).map(f => `
-        <div style="font-size:11px;color:#94A3B8;padding:2px 0">
-          <code style="color:#F59E0B;font-size:10px">${f.sku}</code>
+        <div style="font-size:11px;color:var(--text-2);padding:2px 0">
+          <code style="color:var(--warning);font-size:10px">${f.sku}</code>
           &nbsp;${f.nombre}&nbsp;
-          <b style="color:#EF4444">×${f.falta}</b>
+          <b style="color:var(--danger)">×${f.falta}</b>
         </div>`).join('');
       const faltExtra = L.n_faltantes > 5 ?
-        `<div style="color:#475569;font-size:10px">+${L.n_faltantes-5} más</div>` : '';
+        `<div style="color:var(--text-3);font-size:10px">+${L.n_faltantes-5} más</div>` : '';
 
       return `
       <div class="card" style="border-left:4px solid ${canalColor};padding:16px">
@@ -7995,10 +7988,10 @@ async function _poll_lote_vivo() {
              align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:6px">
           <div>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span style="background:#EF4444;color:white;font-size:10px;
+              <span style="background:var(--danger);color:white;font-size:10px;
                     font-weight:800;padding:2px 8px;border-radius:10px;
                     animation:pulso 2s infinite">● EN VIVO</span>
-              <span style="font-size:16px;font-weight:800;color:#F1F5F9">
+              <span style="font-size:16px;font-weight:800;color:var(--text)">
                 👤 ${L.operario}</span>
               <span style="color:${canalColor};font-weight:700">${canalTxt}</span>
               <span style="background:${faseColor};color:white;font-size:10px;
@@ -8010,7 +8003,7 @@ async function _poll_lote_vivo() {
           <div style="text-align:right">
             <div style="font-size:22px;font-weight:800;color:${faseColor}">
               ${L.pct}%</div>
-            <div style="font-size:11px;color:#64748B">
+            <div style="font-size:11px;color:var(--text-3)">
               ${L.n_pedidos} pedidos · ${L.total_uds} uds</div>
           </div>
         </div>
@@ -8020,14 +8013,14 @@ async function _poll_lote_vivo() {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;
              margin-top:10px">
           <div>
-            <div style="font-size:10px;font-weight:700;color:#64748B;
+            <div style="font-size:10px;font-weight:700;color:var(--text-3);
                  margin-bottom:4px">ÚLTIMOS ESCANEADOS</div>
             ${scans}
           </div>
           <div>
-            <div style="font-size:10px;font-weight:700;color:#64748B;
+            <div style="font-size:10px;font-weight:700;color:var(--text-3);
                  margin-bottom:4px">FALTAN (${L.n_faltantes})</div>
-            ${falt || '<div style="color:#10B981;font-size:11px">✅ Todo colectado</div>'}
+            ${falt || '<div style="color:var(--success);font-size:11px">✅ Todo colectado</div>'}
             ${faltExtra}
           </div>
         </div>
@@ -8062,17 +8055,17 @@ _ciclo_vivo();
   <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
     <input type="text" id="buscar-venta"
            placeholder="Ej: 2000017587387720"
-           style="background:#0F172A;border:1px solid #334155;color:#F1F5F9;
+           style="background:var(--bg);border:1px solid var(--border);color:var(--text);
                   border-radius:8px;padding:10px 14px;font-size:14px;
                   flex:1;min-width:200px;outline:none"
            onkeydown="if(event.key==='Enter')buscarVenta()">
     <button onclick="buscarVenta()"
-      style="background:#3B82F6;color:white;border:none;padding:10px 20px;
+      style="background:var(--accent);color:white;border:none;padding:10px 20px;
              border-radius:8px;cursor:pointer;font-weight:700;font-size:13px">
       🔍 Buscar
     </button>
     <button onclick="limpiarBusquedaVenta()"
-      style="background:#334155;color:#94A3B8;border:none;padding:10px 14px;
+      style="background:var(--border);color:var(--text-2);border:none;padding:10px 14px;
              border-radius:8px;cursor:pointer;font-size:13px">
       ✕ Limpiar
     </button>
@@ -8110,7 +8103,7 @@ function buscarVenta() {
 
   // Sin búsqueda: mostrar todas las filas de nuevo
   if (!q) { res.innerHTML=''; filas.forEach(f => f.style.display=''); return; }
-  res.innerHTML = '<div style="color:#94A3B8;padding:8px">Buscando...</div>';
+  res.innerHTML = '<div style="color:var(--text-2);padding:8px">Buscando...</div>';
 
   // Buscar en la tabla de lotes y ocultar las filas que no coinciden
   const encontrados = [];
@@ -8127,27 +8120,27 @@ function buscarVenta() {
   });
 
   if (encontrados.length === 0) {
-    res.innerHTML = `<div style="background:#1E293B;border:1px solid #EF4444;
-      border-radius:8px;padding:14px;color:#FCA5A5">
+    res.innerHTML = `<div style="background:var(--surface);border:1px solid var(--danger);
+      border-radius:8px;padding:14px;color:var(--danger-hover)">
       ❌ Venta <b>#${q}</b> no encontrada en el rango de fechas actual.<br>
-      <span style="font-size:11px;color:#64748B">Ampliá el filtro Desde/Hasta arriba y volvé a buscar.</span>
+      <span style="font-size:11px;color:var(--text-3)">Ampliá el filtro Desde/Hasta arriba y volvé a buscar.</span>
     </div>`;
     return;
   }
 
   res.innerHTML = encontrados.map(r => {
-    const cc = r.canal==='flex'?'#8B5CF6':'#2563EB';
+    const cc = r.canal==='flex'?'var(--flex)':'var(--colecta)';
     const ct = r.canal==='flex'?'⚡ Flex':'🚚 Colecta';
-    return `<div style="background:#052E16;border:1px solid #10B981;
+    return `<div style="background:var(--success-soft);border:1px solid var(--success);
          border-radius:8px;padding:14px;margin-bottom:8px">
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <span style="font-size:28px">✅</span>
         <div>
-          <div style="font-weight:800;color:#34D399;font-size:16px">
+          <div style="font-weight:800;color:var(--success);font-size:16px">
             Venta #${q} encontrada
           </div>
-          <div style="font-size:13px;color:#94A3B8;margin-top:6px">
-            👤 <b style="color:#F1F5F9;font-size:15px">${r.operario}</b>
+          <div style="font-size:13px;color:var(--text-2);margin-top:6px">
+            👤 <b style="color:var(--text);font-size:15px">${r.operario}</b>
             &nbsp;·&nbsp;
             <span style="color:${cc};font-weight:700">${ct}</span>
             &nbsp;·&nbsp;
@@ -8197,60 +8190,54 @@ def panel_config():
 <title>Logibot — Configuración</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0F172A;color:#F1F5F9;font-family:'Segoe UI',sans-serif;padding:20px 16px}
+body{background:var(--bg);color:var(--text);padding:20px 16px}
 .topbar{display:flex;justify-content:space-between;align-items:center;
   margin-bottom:24px;flex-wrap:wrap;gap:10px}
-h1{color:#3B82F6;font-size:22px;font-weight:900}
-.sub{color:#64748B;font-size:12px;margin-top:2px}
+h1{color:var(--accent);font-size:22px;font-weight:900}
+.sub{color:var(--text-3);font-size:12px;margin-top:2px}
 .nav{display:flex;gap:8px}
-.nav a{background:#1E293B;color:#94A3B8;text-decoration:none;
+.nav a{background:var(--surface);color:var(--text-2);text-decoration:none;
   padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600}
-.nav a.active{background:#3B82F6;color:white}
-.nav a:hover{background:#334155;color:#F1F5F9}
+.nav a.active{background:var(--accent);color:white}
+.nav a:hover{background:var(--border);color:var(--text)}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
 @media(max-width:700px){.grid{grid-template-columns:1fr}}
-.card{background:#1E293B;border-radius:12px;padding:20px}
-.card h2{font-size:14px;font-weight:700;color:#94A3B8;text-transform:uppercase;
+.card{background:var(--surface);border-radius:12px;padding:20px}
+.card h2{font-size:14px;font-weight:700;color:var(--text-2);text-transform:uppercase;
   letter-spacing:.05em;margin-bottom:16px}
-label{display:block;color:#94A3B8;font-size:12px;font-weight:600;
+label{display:block;color:var(--text-2);font-size:12px;font-weight:600;
   text-transform:uppercase;margin-bottom:5px;margin-top:12px}
-input,select,textarea{width:100%;padding:9px 12px;background:#0F172A;
-  border:1px solid #334155;color:#F1F5F9;border-radius:8px;
+input,select,textarea{width:100%;padding:9px 12px;background:var(--bg);
+  border:1px solid var(--border);color:var(--text);border-radius:8px;
   font-size:13px;outline:none;font-family:inherit}
-input:focus,select:focus,textarea:focus{border-color:#3B82F6}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .btn{padding:10px 20px;border:none;border-radius:8px;font-size:13px;
   font-weight:700;cursor:pointer;transition:background .2s}
-.btn-blue{background:#3B82F6;color:white}.btn-blue:hover{background:#2563EB}
-.btn-green{background:#10B981;color:white}.btn-green:hover{background:#059669}
+.btn-blue{background:var(--accent);color:white}.btn-blue:hover{background:var(--colecta)}
+.btn-green{background:var(--success);color:white}.btn-green:hover{background:var(--success-hover)}
 .btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
 #msg-etiqueta,#msg-excel,#msg-supervisor{margin-top:10px;font-size:13px;
   min-height:20px;padding:6px 10px;border-radius:6px;display:none}
-.ok-msg{background:rgba(16,185,129,.15);color:#34D399;border:1px solid #059669}
-.err-msg{background:rgba(239,68,68,.15);color:#FCA5A5;border:1px solid #EF4444}
-.info{background:#1E3A5F;border-radius:8px;padding:10px 14px;
-  font-size:12px;color:#93C5FD;margin-bottom:12px}
+.ok-msg{background:rgba(16,185,129,.15);color:var(--success);border:1px solid var(--success-hover)}
+.err-msg{background:rgba(239,68,68,.15);color:var(--danger-hover);border:1px solid var(--danger)}
+.info{background:var(--accent-soft);border-radius:8px;padding:10px 14px;
+  font-size:12px;color:var(--accent);margin-bottom:12px}
 .pos-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:6px}
-.pos-btn{padding:8px;background:#0F172A;border:2px solid #334155;
-  color:#94A3B8;border-radius:8px;cursor:pointer;font-size:11px;
+.pos-btn{padding:8px;background:var(--bg);border:2px solid var(--border);
+  color:var(--text-2);border-radius:8px;cursor:pointer;font-size:11px;
   text-align:center;transition:all .2s}
-.pos-btn.active{border-color:#3B82F6;color:#3B82F6;background:#1E3A5F}
-.pos-btn:hover{border-color:#3B82F6;color:#3B82F6}
-.preview-box{background:#0F172A;border:1px solid #334155;border-radius:8px;
+.pos-btn.active{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.pos-btn:hover{border-color:var(--accent);color:var(--accent)}
+.preview-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;
   padding:16px;margin-top:12px;min-height:80px;position:relative;
-  font-size:11px;color:#64748B}
-</style></head><body>
+  font-size:11px;color:var(--text-3)}
+</style>""" + _HEAD_PANEL + """</head><body>
 
+""" + _barra_panel("config") + """
 <div class="topbar">
   <div>
-    <h1>⚙ Configuración de la App</h1>
+    <h1>Configuración de la app</h1>
     <div class="sub">Ajustes sincronizados con todas las PCs automáticamente</div>
-  </div>
-  <div class="nav">
-    <a href="/admin/usuarios">👥 Usuarios</a>
-    <a href="/estadisticas">📊 Stats</a>
-    <a href="/config" class="active">⚙ Config</a>
-    <a href="/facturacion">🧾 Facturación</a>
-    <a href="/admin/logout">🔒 Salir</a>
   </div>
 </div>
 
@@ -8311,7 +8298,7 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
       </div>
 
       <label>Tamaño del logo (% del ancho de la etiqueta)</label>
-      <div style="font-size:11px;color:#94A3B8;margin-bottom:6px">
+      <div style="font-size:11px;color:var(--text-2);margin-bottom:6px">
         Recomendado: <b>12-20%</b>. Máximo 35%. El logo se centra automáticamente arriba
         de la etiqueta y mantiene su proporción original sin distorsión.
       </div>
@@ -8334,7 +8321,7 @@ input:focus,select:focus,textarea:focus{border-color:#3B82F6}
       </select>
 
       <div class="preview-box" id="preview-etiqueta">
-        <span style="color:#475569;font-size:11px">Vista previa de la etiqueta</span>
+        <span style="color:var(--text-3);font-size:11px">Vista previa de la etiqueta</span>
       </div>
     </div>
   </div>
@@ -8464,7 +8451,8 @@ def panel_facturacion():
     html = _leer_template("facturacion.html")
     if isinstance(html, tuple):                 # plantilla faltante: el error que arma _leer_template
         return html
-    return html.replace("__CLAVE_PANEL__", json.dumps(_clave_para_panel(_tn_de_sesion())))
+    return (html.replace("__CLAVE_PANEL__", json.dumps(_clave_para_panel(_tn_de_sesion())))
+                .replace("__BARRA_PANEL__", _barra_panel("facturacion")))
 
 
 
@@ -8740,6 +8728,17 @@ def index():
     if not _token_valido():
         return redirect("/auth/login")
     return _leer_template("app.html")
+
+
+@app.route("/panel.css")
+def panel_css():
+    """Estilos comunes de los paneles (públicos: solo colores y formas)."""
+    css = _leer_template("panel.css")
+    if isinstance(css, tuple):
+        return css
+    resp = app.response_class(css, mimetype="text/css")
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
 
 
 @app.route("/manifest.json")

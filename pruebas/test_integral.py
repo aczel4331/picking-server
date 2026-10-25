@@ -93,7 +93,7 @@ try:
     check("tienda nueva creada (con logo)", r.status_code == 200 and TID.startswith("t_"), r.text[:200])
     ses = requests.Session()
     rp = ses.post(B + "/admin/usuarios", data={"usuario": "admin", "clave": "1234"})
-    check("panel: admin general entra (cookie)", rp.status_code == 200 and "Gestion de Usuarios" in rp.text)
+    check("panel: admin general entra (cookie)", rp.status_code == 200 and "Agregar usuario" in rp.text)
     check("panel Everest: sigue incrustando la clave de siempre", KEY in rp.text)
     for u in [{"usuario": "badmin", "clave": "bpw1", "nombre": "Admin Beta", "cuenta_id": TID, "rol": "admin"},
               {"usuario": "bop", "clave": "bpw2", "nombre": "Op Beta", "cuenta_id": TID, "rol": "operario"}]:

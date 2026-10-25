@@ -3,16 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<meta name="theme-color" content="#1E293B">
+<meta name="theme-color" content="#1E3A8A">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.json">
 <title>Logibot · Picking</title>
 <style>
-:root{--bg:#111318;--panel:#1C2030;--card:#161B27;--border:#2A3352;
-  --accent:#2563EB;--accent2:#1D4ED8;--success:#0EA5E9;
-  --warning:#F59E0B;--danger:#EF4444;--hi:#F1F5F9;--mid:#94A3B8;--lo:#475569;--bar:#1E3A5F}
+/* Colores de la app de escritorio (ui_theme.PALETTE): claro, acento azul marino */
+:root{--bg:#F4F7FB;--panel:#FFFFFF;--card:#FFFFFF;--border:#DCE5F0;
+  --accent:#1E3A8A;--accent2:#2563EB;--success:#15803D;
+  --warning:#B45309;--danger:#DC2626;--hi:#0F2347;--mid:#48597A;--lo:#8A99B5;--bar:#EEF3FA}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-serif;
   min-height:100vh;display:flex;flex-direction:column}
@@ -25,23 +26,23 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 .badge{background:var(--accent);color:#fff;font-size:13px;font-weight:800;
   padding:5px 12px;border-radius:20px}
 .badge.done{background:var(--success)}
-.badge.warn{background:var(--warning);color:#000}
+.badge.warn{background:var(--warning);color:#fff}
 .sync-status{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--mid);
   white-space:nowrap}
 .sync-dot{width:7px;height:7px;border-radius:50%;background:var(--lo);display:inline-block;
   box-shadow:0 0 0 3px rgba(71,85,105,.16);transition:background .2s,box-shadow .2s}
-.sync-dot.ok{background:#34D399;box-shadow:0 0 0 3px rgba(52,211,153,.13)}
+.sync-dot.ok{background:var(--success);box-shadow:0 0 0 3px rgba(21,128,61,.15)}
 .sync-dot.warn{background:var(--warning);box-shadow:0 0 0 3px rgba(245,158,11,.13)}
 @media(max-width:390px){.sync-status span:last-child{display:none}}
 #ban{display:none;background:var(--success);color:#fff;text-align:center;
   padding:14px;font-size:16px;font-weight:800;letter-spacing:.04em;flex-shrink:0}
 #ban.show{display:block}
-.operacion-resumen{margin:10px 10px 2px;padding:11px 13px;border:1px solid var(--border);
-  border-radius:12px;background:linear-gradient(135deg,rgba(37,99,235,.14),rgba(14,165,233,.06));}
+.operacion-resumen{margin:10px 10px 2px;padding:12px 14px;border:1px solid var(--border);
+  border-radius:14px;background:var(--panel)}
 .resumen-titulo{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
-.resumen-eyebrow{font-size:10px;font-weight:800;letter-spacing:.09em;color:#93C5FD}
-.resumen-pct{font-size:17px;font-weight:900;color:#fff}
-.progreso-rail{height:7px;border-radius:8px;background:rgba(255,255,255,.12);overflow:hidden;margin:8px 0 6px}
+.resumen-eyebrow{font-size:10px;font-weight:800;letter-spacing:.09em;color:var(--accent)}
+.resumen-pct{font-size:17px;font-weight:900;color:var(--accent)}
+.progreso-rail{height:7px;border-radius:8px;background:var(--bar);overflow:hidden;margin:8px 0 6px}
 .progreso-fill{height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,#38BDF8,#34D399);
   transition:width .35s ease}
 .resumen-detalle{font-size:11px;color:var(--mid);display:flex;justify-content:space-between;gap:8px}
@@ -53,7 +54,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   font-size:20px;font-family:monospace;font-weight:700;padding:12px 14px;
   border-radius:10px;outline:none;text-align:center;text-transform:uppercase;
   caret-color:var(--accent)}
-#sku:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.25)}
+#sku:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(30,58,138,.18)}
 #fb{margin-top:8px;min-height:48px;border-radius:10px;padding:10px 14px;
   font-size:15px;font-weight:700;display:flex;align-items:center;gap:10px;
   transition:background .15s}
@@ -115,14 +116,14 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   background:var(--danger);color:#fff;font-size:15px;font-weight:700;cursor:pointer}
 #btn-cam{position:fixed;bottom:88px;right:16px;background:#7C3AED;color:#fff;border:none;
   border-radius:50%;width:52px;height:52px;font-size:22px;cursor:pointer;
-  box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
+  box-shadow:0 4px 14px rgba(15,35,71,.25);display:flex;align-items:center;
   justify-content:center;z-index:50;transition:transform .15s}
 #btn-cam:active{transform:scale(.9)}
 #cam-torch{margin-top:10px;padding:8px 20px;border-radius:20px;border:1px solid rgba(255,255,255,.3);
   background:transparent;color:#fff;font-size:13px;cursor:pointer;display:none}
 .fab{position:fixed;bottom:20px;right:16px;background:var(--accent);color:#fff;border:none;
   border-radius:50%;width:56px;height:56px;font-size:24px;cursor:pointer;
-  box-shadow:0 4px 20px rgba(0,0,0,.5);display:flex;align-items:center;
+  box-shadow:0 4px 14px rgba(15,35,71,.25);display:flex;align-items:center;
   justify-content:center;z-index:50;transition:transform .15s}
 .fab:active{transform:scale(.9)}
 .spin{animation:spin .7s linear infinite}
@@ -131,7 +132,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
   background:var(--panel);border:1px solid var(--border);color:var(--hi);
   padding:12px 24px;border-radius:30px;font-size:14px;font-weight:700;z-index:999;
   transition:transform .25s,opacity .25s;opacity:0;white-space:nowrap;
-  box-shadow:0 4px 20px rgba(0,0,0,.4)}
+  box-shadow:0 4px 14px rgba(15,35,71,.18)}
 #toast.show{transform:translateX(-50%) translateY(0);opacity:1}
 #toast.ok{border-color:var(--success);color:var(--success)}
 #toast.err{border-color:var(--danger);color:var(--danger)}
@@ -151,7 +152,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
 <div id="flash"></div>
 
 <div id="login-gate" style="display:none;position:fixed;inset:0;z-index:9998;
-     background:#0B0F1A;flex-direction:column;align-items:center;
+     background:var(--bg);flex-direction:column;align-items:center;
      justify-content:center;padding:24px;text-align:center;gap:18px">
   <div id="login-marca" style="font-size:44px">📦</div>
   <div style="font-size:19px;font-weight:800;color:var(--hi)">Iniciá sesión para colectar</div>
@@ -723,9 +724,9 @@ function _tintarPorCanal(canal) {
   const topbar = document.querySelector('.topbar');
   if (!topbar) return;
   if (canal === 'flex') {
-    topbar.style.background = '#2E1065'; topbar.style.borderBottomColor = '#7C3AED';
+    topbar.style.background = '#EDE9FE'; topbar.style.borderBottomColor = '#7C3AED';
   } else if (canal === 'colecta') {
-    topbar.style.background = '#0C2A5E'; topbar.style.borderBottomColor = '#2563EB';
+    topbar.style.background = '#E7ECF8'; topbar.style.borderBottomColor = '#2563EB';
   } else {
     topbar.style.background = ''; topbar.style.borderBottomColor = '';
   }
