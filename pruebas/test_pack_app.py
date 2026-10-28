@@ -250,6 +250,7 @@ print("9) refresco silencioso de Pedidos ML")
 app = nueva_app(ords, "colecta")                                   # la PC tiene las 4 órdenes sueltas (como las dejaba el webhook)
 principal = A.agrupar_por_envio([copy.deepcopy(o) for o in ords])[0]  # y el servidor ya las manda fundidas en 1 envío
 class RespJ:
+    headers = {}                                   # como una respuesta real (sin ETag ni gzip)
     def __init__(self, d): self.d = json.dumps(d).encode()
     def __enter__(self): return self
     def __exit__(self, *a): return False

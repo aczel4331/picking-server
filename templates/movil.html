@@ -1120,11 +1120,19 @@ document.addEventListener('DOMContentLoaded', () => {
     load().finally(()=>setTimeout(()=>$('fab').classList.remove('spin'),500));
   });
 
-  // ── Auto-refresh cada 5s ──────────────────────────────────────────────────
+  // ── Auto-refresh: cada 5s con lote, cada 15s sin lote, nada con la pantalla apagada ──
+  // (el servidor responde 304 sin cuerpo cuando nada cambió: el navegador reusa lo último)
+  let _ultimoSondeo = 0;
   setInterval(() => {
-    if (!_colector) return;   // esperando login en el selector inicial
+    if (!_colector || document.hidden) return;   // esperando login / pantalla apagada o pestaña oculta
+    const conLote = !!(E && (E.cargado === true || E.cargado === 'true' || E.cargado === 1));
+    if (!conLote && Date.now() - _ultimoSondeo < 14000) return;
+    _ultimoSondeo = Date.now();
     loadQ();
   }, 5000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && _colector) { _ultimoSondeo = Date.now(); loadQ(); }   // al volver: al día
+  });
 });
 </script>
 </body>

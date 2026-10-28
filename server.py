@@ -7,6 +7,11 @@ VERSION: 2.1.0 — Auto-token + Persistencia Railway
 SERVER_VERSION = "2.1.0"
 
 import os, json, threading, time, requests, logging, re
+try:   # Linux (Railway): 2 arenas de malloc en vez de 8 por CPU → menos RAM retenida por los hilos
+    import ctypes as _ctypes
+    _ctypes.CDLL("libc.so.6").mallopt(-8, 2)   # M_ARENA_MAX
+except Exception:
+    pass
 from datetime import datetime, timedelta, timezone
 from flask import (Flask, jsonify, request, render_template_string,
                    session, redirect, url_for, Response)
@@ -5078,7 +5083,8 @@ def api_lote_en_vivo():
 def get_estado():
     canal = request.args.get("canal","default")
     clave = _tn_clave(request.args.get("usuario",""), request.args.get("cuenta_id",""), canal)
-    est   = _get_estado(clave)
+    # Leer no crea lotes: antes cada usuario/canal consultado quedaba en memoria y se guardaba en disco.
+    est   = _estados_canal.get((clave or "default").lower().strip()) or _estado_vacio()
     with _lock:
         estado = dict(est)
     estado["rev"] = int(estado.get("rev",0) or 0)
@@ -6156,7 +6162,7 @@ def api_config_app_excel():
             f.write(excel_bytes)
         cfg = _cargar_config_app()
         cfg["excel_filename"] = filename
-        cfg["excel_ts"]       = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M")
+        cfg["excel_ts"]       = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")   # con segundos: la app la baja solo si cambió
         cfg["excel_size"]     = len(excel_bytes)
         _guardar_config_app(cfg)
         logger.info(f"[CONFIG-APP] Excel subido: {filename} ({len(excel_bytes)//1024} KB)")
@@ -6165,6 +6171,27 @@ def api_config_app_excel():
                         "ts": cfg["excel_ts"]})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)}), 500
+
+
+@app.route("/api/config-app/excel/archivo", methods=["GET"])
+@requiere_api_key
+def api_config_app_excel_archivo():
+    """La planilla tal cual (sin base64). La app 4.1.33+ manda ?ts= con la que ya tiene:
+    si es la misma responde 304 y no viaja nada."""
+    from urllib.parse import quote as _q
+    from flask import send_file
+    excel_path = _tpath(os.path.join(DATA_DIR, "planilla_pasillos.xlsx"))
+    if not os.path.exists(excel_path):
+        return jsonify({"ok": False, "msg": "No hay Excel subido aún"}), 404
+    cfg = _cargar_config_app()
+    ts  = cfg.get("excel_ts", "")
+    if ts and request.args.get("ts", "") == ts:
+        return "", 304
+    resp = send_file(excel_path, conditional=False,
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    resp.headers["X-Excel-Ts"]       = _q(ts)
+    resp.headers["X-Excel-Filename"] = _q(cfg.get("excel_filename", "planilla.xlsx"))
+    return resp
 
 
 @app.route("/api/config-app/excel", methods=["GET"])
@@ -6793,6 +6820,28 @@ def _aplicar_marca_html(resp):
             resp.set_data(cuerpo.replace("Logibot", nombre))
     except Exception as e:
         logger.debug(f"[MARCA] after_request: {e}")
+    return resp
+
+
+_RUTAS_SONDEO = ("/api/estado", "/api/pedidos", "/api/pedidos/estados")
+
+
+@app.after_request
+def _sondeo_condicional(resp):
+    """Sondeos de PC y celular: ETag + 304 sin cuerpo si el cliente ya tiene esa misma respuesta
+    (la mayoría de las veces nada cambió). Sin If-None-Match (exe viejos) la respuesta es la de siempre."""
+    try:
+        if (request.method == "GET" and request.path in _RUTAS_SONDEO and resp.status_code == 200
+                and not resp.direct_passthrough and resp.mimetype == "application/json"):
+            resp.headers["Cache-Control"] = "private, no-cache"   # el navegador guarda y revalida siempre
+            datos = resp.get_data()
+            if request.path == "/api/pedidos/estados":   # su "ts" es la hora actual: no cuenta para el ETag
+                d = json.loads(datos); d.pop("ts", None)
+                datos = json.dumps(d, sort_keys=True).encode()
+            resp.set_etag(__import__("hashlib").sha1(datos).hexdigest())
+            resp.make_conditional(request)
+    except Exception as e:
+        logger.debug(f"[SONDEO] etag: {e}")
     return resp
 
 
@@ -9053,8 +9102,8 @@ if __name__ == "__main__":
     else:
         try:
             from waitress import serve
-            logger.info(f"Servidor iniciado (waitress) en http://0.0.0.0:{port} — threads=32")
-            serve(app, host="0.0.0.0", port=port, threads=32,
+            logger.info(f"Servidor iniciado (waitress) en http://0.0.0.0:{port} — threads=16")
+            serve(app, host="0.0.0.0", port=port, threads=16,
                   channel_timeout=60,   # antes 120 — liberar conexiones colgadas más rápido
                   connection_limit=100, # antes 200 — Railway tiene límite de recursos
                   cleanup_interval=5)   # antes 10 — limpiar más seguido
