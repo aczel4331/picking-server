@@ -134,6 +134,19 @@ try:
     correr()
     check("app: planilla nueva en el servidor -> la baja y aplica", fake.db_nombres.get("SKU-A", {}).get("pasillo") == "P5 OTRO"
           and "SKU-C" in fake.db_nombres and A.cargar_planilla_local()[0] == ts3, log)
+    # La planilla bajada no se puede leer (p. ej. archivo pisado): se usa la guardada, no queda sin pasillos
+    time.sleep(1.1)
+    x4 = planilla([[1, "SKU-A", "Producto A", "V", "P7 NUEVA"]])
+    requests.post(B + "/api/config-app/excel", headers=K, json={"excel_b64": base64.b64encode(x4).decode(), "filename": "P4.xlsx"})
+    rutas = []; _leer = A.leer_planilla_pasillos
+    A.leer_planilla_pasillos = lambda ruta: (rutas.append(ruta), {})[1]
+    fake.db_nombres = {}; correr(); A.leer_planilla_pasillos = _leer
+    check("app: planilla bajada ilegible -> usa la guardada y avisa", fake.db_nombres.get("SKU-A", {}).get("pasillo") == "P5 OTRO"
+          and any("se usa la guardada" in l for l in log) and A.cargar_planilla_local()[0] == ts3, log)
+    check("app: cada descarga usa su propio archivo temporal y lo borra",
+          rutas and os.path.basename(rutas[0]) != "logibot_pasillos.xlsx" and not os.path.exists(rutas[0]), rutas)
+    correr()
+    check("app: la vez siguiente baja la nueva bien", fake.db_nombres.get("SKU-A", {}).get("pasillo") == "P7 NUEVA", log)
 finally:
     srv.terminate()
     try: srv.wait(10)

@@ -61,6 +61,13 @@ try:
     sys.path.insert(0, REPO)
     import app_deposito as A
     A.RAILWAY_URL = B
+    # Config y planilla de la PC en la carpeta de la prueba: cambiar de tienda borra la planilla
+    # guardada y anota ultima_tienda, y eso no debe tocar los archivos reales del proyecto
+    if os.path.exists(A.CONFIG_PATH):
+        shutil.copy(A.CONFIG_PATH, os.path.join(DATA, "config_pc.json"))
+    A.CONFIG_PATH = os.path.join(DATA, "config_pc.json")
+    A.EXCEL_CACHE_PATH = os.path.join(DATA, "excel_cache_pc.json")
+    A.EXCEL_PLANILLA_PATH = os.path.join(DATA, "excel_planilla_pc.json")
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 
     def get(path, headers=None, con_ctx=False):
