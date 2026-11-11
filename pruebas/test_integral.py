@@ -129,9 +129,11 @@ try:
     check("…los pedidos reales llegan completos", {p["order_id"] for p in d["pedidos"]} == {str(p["order_id"]) for p in real})
     for ruta in ["/api/cuentas", "/auth/status", "/api/ping", "/api/token_status", "/api/etiquetas_cache", "/api/lote-en-vivo",
                  "/api/pedidos/estados", "/api/cortes", "/api/tokens-estado", "/api/diagnostico", "/api/verificar-etiquetas",
-                 "/api/tokens_export", "/api/auth/usuarios", "/api/alertas/sin-stock", "/api/metricas", "/api/config-app"]:
+                 "/api/auth/usuarios", "/api/alertas/sin-stock", "/api/metricas", "/api/config-app"]:
         r = req("GET", ruta, headers=hk())
         check(f"GET {ruta} responde y no filtra datos de otra tienda", r.status_code in (200, 400) and sin_marcadores_b(r.text), f"{r.status_code} {r.text[:120]}")
+    r = req("GET", "/api/tokens_export", headers=hk())
+    check("GET /api/tokens_export con la clave de los exe: cerrado (seguridad 11/11)", r.status_code == 403 and "access_token" not in r.text, f"{r.status_code}")
     check("/auth/status: todos los pedidos y solo Everest", j(req("GET", "/auth/status"))["pedidos"] == len(real))
     cu = j(req("GET", "/api/cuentas"))["cuentas"]
     check("/api/cuentas: solo EVEREST_SHOPPING.UY", [c["nickname"] for c in cu] == ["EVEREST_SHOPPING.UY"], str(cu))
@@ -301,7 +303,7 @@ try:
     check("/etiquetas de la tienda: su etiqueta, no la de Everest", OID_B in ses_b.get(B + "/etiquetas").text and OID_E not in ses_b.get(B + "/etiquetas").text)
     # rutas fuera de la lista
     for m, ruta in [("GET", "/api/tokens_export"), ("GET", "/api/diagnostico"), ("GET", "/api/token_status"), ("GET", "/api/skus"),
-                    ("GET", "/api/admin/compat-stats"), ("POST", "/api/forzar-carga"), ("GET", "/auth/logout?cuenta=cuenta_2"),
+                    ("GET", "/api/admin/compat-stats"), ("POST", "/api/forzar-carga"), ("POST", "/auth/logout?cuenta=cuenta_2"),
                     ("GET", "/api/diag-colecta"), ("POST", "/api/skus/limpiar_todo")]:
         r = req(m, ruta, headers=ht(TK_B))
         check(f"tienda nueva: {m} {ruta} bloqueada", r.status_code in (401, 403) and sin_marcadores_b("") , f"{r.status_code} {r.text[:80]}")
@@ -330,7 +332,7 @@ try:
     cruces = [("GET", f"/api/estado?usuario=bop&cuenta_id={TID}&canal=colecta"), ("GET", f"/api/estado?usuario=bop&cuenta_id=cuenta_2"),
               ("GET", f"/api/pedidos/impreso/{OID_B}"), ("GET", f"/api/etiqueta/{OID_B}"), ("GET", f"/api/etiqueta/{OID_B}/guardada"),
               ("POST", f"/api/pedidos/marcar_impreso/{OID_B}"), ("POST", f"/api/fase2/marcar-impresa/{OID_B}"),
-              ("GET", f"/auth/logout?cuenta={TID}"), ("POST", f"/api/cuentas/{TID}/logout"), ("GET", "/api/sesion/recuperar/bop"),
+              ("POST", f"/auth/logout?cuenta={TID}"), ("POST", f"/api/cuentas/{TID}/logout"), ("GET", "/api/sesion/recuperar/bop"),
               ("GET", f"/api/fase2/pedidos-completos?usuario=bop&cuenta_id={TID}")]
     for m, ruta in cruces:
         r = req(m, ruta, headers=hk())

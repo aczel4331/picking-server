@@ -156,7 +156,7 @@ body{background:var(--bg);color:var(--hi);font-family:'Segoe UI',system-ui,sans-
     <div class="ml-dot"></div>
     <span id="nickname">Cargando…</span>
   </div>
-  <button class="btn btn-ghost" onclick="location='/auth/logout'">Cerrar sesión</button>
+  <button class="btn btn-ghost" onclick="fetch('/auth/logout',{method:'POST',headers:{'X-API-Key':'everest2024'}}).then(()=>location.reload())">Cerrar sesión</button>
 </div>
 
 <!-- TABS -->

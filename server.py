@@ -771,6 +771,20 @@ def _sku_info(sku):
 
 # ── HTML helpers ──────────────────────────────────────────────────────────────
 
+def _e(v) -> str:
+    """Texto que llega de afuera (pedidos, métricas, archivos) listo para mostrar en HTML."""
+    import html as _h
+    return _h.escape("" if v is None else str(v), quote=True)
+
+
+_RE_OID = re.compile(r"^[0-9A-Za-z_-]{1,40}$")
+
+
+def _oid_ok(order_id) -> bool:
+    """Un order_id/pack_id de ML: solo letras, números, _ y -. Se usa para nombres de archivo y HTML."""
+    return bool(_RE_OID.match(str(order_id or "")))
+
+
 def _esc_tpl(v) -> str:
     """Escapa texto de usuario para incrustarlo en el CÓDIGO de una plantilla
     Jinja armada por concatenación: escapa HTML y neutraliza { } para que
@@ -1726,6 +1740,28 @@ def _tipo_credencial(k: str) -> str:
         return "clave_maestra"
     return "clave_desconocida"
 
+_TOPE_MB_DEFECTO = 64
+_TOPES_MB = (("/api/admin/app/publicar", 320), ("/api/facturas", 80), ("/api/panel/facturas", 80),
+             ("/api/escanear", 1), ("/api/reset_sku", 1), ("/webhook/ml", 1))
+
+
+@app.before_request
+def _tope_tamano():
+    """Corta antes de leer el cuerpo los pedidos más grandes de lo razonable para esa ruta."""
+    n = request.content_length
+    if not n:
+        return None
+    tope = _TOPE_MB_DEFECTO
+    for pref, mb in _TOPES_MB:
+        if request.path.startswith(pref):
+            tope = mb
+            break
+    if n > tope * 1024 * 1024:
+        logger.warning(f"[SEGURIDAD] {request.path}: cuerpo de {n // 1048576} MB rechazado (tope {tope} MB)")
+        return jsonify({"ok": False, "msg": f"El envío supera {tope} MB."}), 413
+    return None
+
+
 @app.before_request
 def _telemetria_compat():
     try:
@@ -2157,7 +2193,7 @@ def auth_callback():
     state = request.args.get("state", "")
     if error or not code:
         return _html_error(f"Error de autorizacion: {error or 'sin codigo'}",
-                           f"Redirect URI: <code>{ML_REDIRECT}</code>")
+                           f"Redirect URI: <code>{_e(ML_REDIRECT)}</code>")
     entry = _pkce_tomar(state)
     if not entry:
         # Antes se seguía igual y el token terminaba pisando a 'cuenta_0'.
@@ -2189,7 +2225,7 @@ def auth_callback():
             except Exception:
                 err_detail = r.text
             return _html_error(f"Error obteniendo token ({r.status_code})",
-                               f"<pre>{err_detail}</pre>")
+                               f"<pre>{_e(err_detail)}</pre>")
         d   = r.json()
         tok = {"access_token": d["access_token"], "refresh_token": d.get("refresh_token",""),
                "expires_at": datetime.now() + timedelta(seconds=d.get("expires_in", 21600))}
@@ -2246,14 +2282,14 @@ def auth_callback():
         return _html_ok(f"Conectado como <b>{_html.escape(str(tok['nickname']))}</b>",
                         f"Cuenta registrada como <b>{_html.escape(cuenta_id)}</b>.")
     except Exception as e:
-        return _html_error("Error inesperado", str(e))
+        return _html_error("Error inesperado", _e(str(e)))
 
 
-@app.route("/auth/logout")
+@app.route("/auth/logout", methods=["POST"])
 def auth_logout():
     # Desconecta una cuenta de ML: antes lo podía hacer cualquiera con solo
     # abrir la URL. Ahora exige la clave API o una sesión de panel.
-    k = (request.headers.get("X-API-Key") or request.args.get("key") or "").strip()
+    k = (request.headers.get("X-API-Key") or "").strip()
     claves = {API_KEY}
     if os.environ.get("ALLOW_LEGACY_KEYS", "1").strip() != "0":
         claves |= {"everest2024", "everest2025"}
@@ -2269,7 +2305,7 @@ def auth_logout():
             _pedidos_ml.pop(oid, None)
     if cuenta_id == "cuenta_0":
         _tokens.clear()
-    return redirect("/")
+    return jsonify({"ok": True})
 
 
 @app.route("/auth/status")
@@ -3447,21 +3483,6 @@ def debug_logistica():
                     "por_logistica": conteo_log, "ejemplos": ejemplos})
 
 
-@app.route("/api/test_credentials")
-def test_credentials():
-    try:
-        r = requests.post(ML_API_URL + "/oauth/token",
-                          headers={"Accept": "application/json",
-                                   "Content-Type": "application/x-www-form-urlencoded"},
-                          data={"grant_type": "client_credentials",
-                                "client_id": ML_APP_ID, "client_secret": ML_SECRET_KEY},
-                          timeout=10)
-        return jsonify({"status": r.status_code, "app_id_usado": ML_APP_ID,
-                        "credenciales_ok": r.status_code == 200,
-                        "respuesta": r.json() if "json" in r.headers.get("content-type","") else r.text})
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # ETIQUETA PERSONALIZADA
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3693,13 +3714,15 @@ def api_diag_etiqueta(order_id):
 
 @app.route("/api/etiqueta/<order_id>", methods=["GET","POST"])
 def api_etiqueta(order_id):
+    if not _oid_ok(order_id):
+        return jsonify({"ok": False, "msg": "Número de venta inválido."}), 400
     _tn_exigir_orden(order_id)
     try:
         return _api_etiqueta_impl(order_id)
     except Exception as e:
         logger.error(f"[ETIQUETA] Error inesperado para {order_id}: {e}")
         return _html_error("Error interno al obtener etiqueta",
-                           f"Pedido #{order_id}<br>Error: {str(e)[:200]}"), 200
+                           f"Pedido #{_e(order_id)}<br>Error: {_e(str(e)[:200])}"), 200
 
 
 def _api_etiqueta_impl(order_id):
@@ -3784,6 +3807,11 @@ def _api_etiqueta_impl(order_id):
             for p_num, p_data in snap_lote.items():
                 if str(p_data.get("_order_id","")) == order_id:
                     pedido = p_data; break
+        _ship_conocido = str((pedido or {}).get("shipping_id") or (pedido or {}).get("_shipping_id") or "").strip()
+        if not shipping_id_directo.isdigit() or (_ship_conocido and _ship_conocido != shipping_id_directo):
+            logger.warning(f"[SEGURIDAD] etiqueta #{order_id}: shipping_id {shipping_id_directo[:30]!r} no es el del "
+                           f"pedido ({_ship_conocido or 'desconocido'}) — rechazado ({request.headers.get('X-Forwarded-For', request.remote_addr or '')[:60]})")
+            return jsonify({"ok": False, "msg": "El envío no corresponde a ese pedido."}), 409
         cuenta_id   = (pedido or {}).get("_cuenta") or (_tn().tid or "cuenta_0")
         at          = _cuentas.get(cuenta_id,{}).get("access_token","")
         # Intentar con todas las cuentas de ESTA tienda si no hay token
@@ -3814,7 +3842,7 @@ def _api_etiqueta_impl(order_id):
                               "items": p_data.get("items",[])}; real_oid = order_id; break
         if not pedido:
             return _html_error("Pedido no encontrado",
-                               f"El pedido #{order_id} no esta en la lista. "
+                               f"El pedido #{_e(order_id)} no esta en la lista. "
                                f"Hay {len(snap)} pedidos ML y {len(snap_lote)} en el lote."), 404
 
         shipping_id = pedido.get("shipping_id","")
@@ -3822,7 +3850,7 @@ def _api_etiqueta_impl(order_id):
         items_txt   = " | ".join(f"{it.get('sku','?')}" for it in pedido.get("items",[])[:3])
         if not shipping_id:
             return _html_error(f"Pedido #{real_oid} sin envio ML",
-                               f"<b>Comprador:</b> {comprador}<br><b>Productos:</b> {items_txt}"), 200
+                               f"<b>Comprador:</b> {_e(comprador)}<br><b>Productos:</b> {_e(items_txt)}"), 200
 
         at = _cuentas.get(pedido.get("_cuenta","cuenta_0"),{}).get("access_token","")
         if not at:
@@ -3977,13 +4005,13 @@ def _api_etiqueta_impl(order_id):
                                    f"Estado: {estado or 'desconocido'} / {substatus}"))
     btn_alt = ""
     if estado == "ready_to_ship" or not estado:
-        btn_alt = (f'<br><br><a href="/api/etiqueta/{real_oid}/descargar" target="_blank" '
+        btn_alt = (f'<br><br><a href="/api/etiqueta/{_e(real_oid)}/descargar" target="_blank" '
                    f'style="display:inline-block;background:#3B82F6;color:#fff;padding:12px 24px;'
                    f'border-radius:8px;text-decoration:none;font-weight:bold">'
                    f'Descargar etiqueta (metodo alternativo)</a>')
     return _html_error(tit,
-        f"<b>Pedido:</b> #{real_oid} — {comprador}<br><b>Productos:</b> {items_txt}<br>"
-        f"<b>Shipping:</b> {shipping_id}<br><b>Estado ML:</b> {estado}/{substatus or '-'}<br>"
+        f"<b>Pedido:</b> #{_e(real_oid)} — {_e(comprador)}<br><b>Productos:</b> {_e(items_txt)}<br>"
+        f"<b>Shipping:</b> {_e(shipping_id)}<br><b>Estado ML:</b> {_e(estado)}/{_e(substatus or '-')}<br>"
         f"<b>HTTP:</b> {last_status}<br><br>{desc}{btn_alt}"), 200
 
 
@@ -4031,7 +4059,7 @@ def panel_etiquetas():
         canal_c   = "var(--flex)" if canal == "flex" else "var(--colecta)"
         canal_txt = "⚡ Flex" if canal == "flex" else "🚚 Colecta"
         pdf_btn   = (
-            f'<a href="/api/etiqueta/{e["order_id"]}/guardada" '
+            f'<a href="/api/etiqueta/{_e(e["order_id"])}/guardada" '
             f'target="_blank" style="background:var(--accent);color:white;'
             f'padding:4px 10px;border-radius:6px;text-decoration:none;'
             f'font-size:12px;font-weight:700">📄 Ver</a>'
@@ -4039,16 +4067,16 @@ def panel_etiquetas():
             '<span style="color:var(--border);font-size:11px">Sin PDF</span>'
         )
         filas_html += f"""
-        <tr data-canal="{canal}"
-            data-order="{e.get('order_id','')}">
-          <td style="font-size:12px;color:var(--text-3)">{e.get('ts','')}</td>
+        <tr data-canal="{_e(canal)}"
+            data-order="{_e(e.get('order_id',''))}">
+          <td style="font-size:12px;color:var(--text-3)">{_e(e.get('ts',''))}</td>
           <td><span style="color:{canal_c};font-weight:700">{canal_txt}</span></td>
-          <td style="font-weight:700">#{e.get('order_id','')}</td>
-          <td style="color:var(--text-3);font-size:11px">{e.get('shipping_id','')}</td>
-          <td style="font-weight:600">{e.get('comprador','—')}</td>
+          <td style="font-weight:700">#{_e(e.get('order_id',''))}</td>
+          <td style="color:var(--text-3);font-size:11px">{_e(e.get('shipping_id',''))}</td>
+          <td style="font-weight:600">{_e(e.get('comprador','—'))}</td>
           <td style="font-size:11px;color:var(--text-2);max-width:200px;
                      overflow:hidden;text-overflow:ellipsis">
-            {e.get('items','')}</td>
+            {_e(e.get('items',''))}</td>
           <td>{pdf_btn}</td>
         </tr>"""
 
@@ -4390,6 +4418,8 @@ def api_lote_backup_ultimo():
 def api_etiqueta_guardada(order_id):
     """Sirve el PDF guardado en /data/etiquetas/."""
     order_id = str(order_id).strip()
+    if not _oid_ok(order_id):
+        return jsonify({"ok": False, "msg": "Número de venta inválido."}), 400
     _tn_exigir_orden(order_id)
     pdf_path = os.path.join(ETIQUETAS_DIR, f"{order_id}.pdf")
     if not os.path.exists(pdf_path):
@@ -4403,6 +4433,8 @@ def api_etiqueta_guardada(order_id):
 
 @app.route("/api/etiqueta/<order_id>/descargar")
 def api_etiqueta_descargar(order_id):
+    if not _oid_ok(order_id):
+        return jsonify({"ok": False, "msg": "Número de venta inválido."}), 400
     try:
         with _lock:
             snap = _pv_dict()
@@ -4412,7 +4444,7 @@ def api_etiqueta_descargar(order_id):
                 if k.endswith(order_id[-8:]):
                     pedido = v; order_id = k; break
         if not pedido:
-            return _html_error("Pedido no encontrado", f"#{order_id} no esta en memoria."), 404
+            return _html_error("Pedido no encontrado", f"#{_e(order_id)} no esta en memoria."), 404
         shipping_id = pedido.get("shipping_id","")
         if not shipping_id:
             return _html_error("Sin envio ML","Este pedido no tiene envio asignado."), 400
@@ -4437,7 +4469,7 @@ def api_etiqueta_descargar(order_id):
         return _html_error("Etiqueta no disponible",
                            f"No se pudo obtener la etiqueta #{order_id}. HTTP: {last_status}"), 200
     except Exception as e:
-        return _html_error("Error al descargar", str(e)[:200]), 200
+        return _html_error("Error al descargar", _e(str(e)[:200])), 200
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # WEBHOOK MERCADOLIBRE
@@ -4730,6 +4762,13 @@ def marcar_impreso(order_id):
 @app.route("/api/tokens_export")
 @requiere_api_key
 def api_tokens_export():
+    # Devuelve los tokens de Mercado Libre: NO alcanza con la clave de los exe (es pública de hecho).
+    # Solo con PLATAFORMA_KEY (variable aparte en el servidor); si no está definida, queda cerrada.
+    _pk = os.environ.get("PLATAFORMA_KEY", "").strip()
+    _dada = (request.headers.get("X-Plataforma-Clave") or "").strip()
+    if not _pk or len(_pk) < 16 or not __import__('hmac').compare_digest(_dada.encode(), _pk.encode()):
+        logger.warning(f"[SEGURIDAD] /api/tokens_export denegado ({request.headers.get('X-Forwarded-For', request.remote_addr or '')[:60]})")
+        return jsonify({"ok": False, "msg": "Exportar tokens está deshabilitado."}), 403
     if not _cuentas:
         return jsonify({"ok": False, "msg": "No hay cuentas conectadas."}), 400
     tokens_json  = _serializar_cuentas()
@@ -7585,7 +7624,7 @@ def panel_estadisticas():
         ranking_html += f"""
         <tr>
           <td style="color:{col};font-weight:800;font-size:20px;width:40px">{med}</td>
-          <td style="font-weight:700;font-size:14px">{op}</td>
+          <td style="font-weight:700;font-size:14px">{_e(op)}</td>
           <td><span style="color:var(--flex);font-weight:700">⚡ {fx}</span></td>
           <td><span style="color:var(--colecta);font-weight:700">🚚 {cl}</span></td>
           <td style="font-weight:800;color:{col};font-size:16px">{peds}</td>
@@ -7635,14 +7674,14 @@ def panel_estadisticas():
         pct = int(qty/total_all*100)
         col = COLORS5[i]
         nombre_sku = _sku_nombres_top5.get(sku.upper(), "")
-        nom_html   = (f'<div style="font-size:11px;color:var(--text-2)">{nombre_sku}</div>'
+        nom_html   = (f'<div style="font-size:11px;color:var(--text-2)">{_e(nombre_sku)}</div>'
                       if nombre_sku else "")
         top5_html += f"""
         <tr>
           <td style="color:{col};font-weight:800;font-size:20px;width:40px">{MEDAL[i]}</td>
           <td>
             <code style="background:var(--bg);padding:3px 8px;border-radius:4px;
-                color:{col};font-size:13px">{sku}</code>
+                color:{col};font-size:13px">{_e(sku)}</code>
             {nom_html}
           </td>
           <td style="font-weight:700;font-size:15px">{qty:,}</td>
@@ -7682,21 +7721,21 @@ def panel_estadisticas():
         orders_disp = " ".join(
             f'<code style="background:var(--bg);padding:1px 5px;border-radius:3px;'
             f'font-size:10px;color:{canal_c}" '
-            f'title="pack: {o.get("pack_id","-")} | envío: {o.get("shipping_id","-")}">'
-            f'{o.get("order_id","")}</code>'
+            f'title="pack: {_e(o.get("pack_id","-"))} | envío: {_e(o.get("shipping_id","-"))}">'
+            f'{_e(o.get("order_id",""))}</code>'
             for o in orders[:5]
         )
         if len(orders) > 5:
             orders_disp += f' <span style="color:var(--text-3);font-size:10px">+{len(orders)-5} más</span>'
-        lotes_html += f"""<tr data-orders="{orders_str}"
-              data-ts="{d.get('ts','')}"
-              data-canal="{canal}"
-              data-operario="{op}">
-          <td style="font-size:12px">{d.get('ts','')}</td>
+        lotes_html += f"""<tr data-orders="{_e(orders_str)}"
+              data-ts="{_e(d.get('ts',''))}"
+              data-canal="{_e(canal)}"
+              data-operario="{_e(op)}">
+          <td style="font-size:12px">{_e(d.get('ts',''))}</td>
           <td><span style="color:{canal_c};font-weight:700">{canal_txt}</span></td>
-          <td style="font-weight:600">{op}</td>
-          <td style="font-weight:700">{d.get('n_pedidos',0)}</td>
-          <td>{d.get('total_uds',0)}</td>
+          <td style="font-weight:600">{_e(op)}</td>
+          <td style="font-weight:700">{_e(d.get('n_pedidos',0))}</td>
+          <td>{_e(d.get('total_uds',0))}</td>
           <td>{dur_min} min</td>
           <td style="max-width:300px;overflow:hidden">{orders_disp if orders_disp else
             '<span style="color:var(--border);font-size:11px">Sin datos</span>'}</td>
@@ -7710,7 +7749,7 @@ def panel_estadisticas():
         pct_f = int(fx/tot*100) if tot else 0
         dias_html += f"""
         <tr>
-          <td style="font-weight:600">{dia}</td>
+          <td style="font-weight:600">{_e(dia)}</td>
           <td style="color:var(--text-3)">{vals['lotes']}</td>
           <td style="color:var(--flex);font-weight:700">⚡ {fx}</td>
           <td style="color:var(--colecta);font-weight:700">🚚 {cl}</td>
@@ -7726,7 +7765,7 @@ def panel_estadisticas():
         </tr>"""
 
     ops_opts = "".join(
-        f'<option value="{o}" {"selected" if op_fil==o.lower() else ""}>{o}</option>'
+        f'<option value="{_e(o)}" {"selected" if op_fil==o.lower() else ""}>{_e(o)}</option>'
         for o in ops_unicos)
 
     titulo_tienda = (f" — {_esc_tpl(cuenta_sesion)}" if cuenta_sesion != "todas"
@@ -8515,9 +8554,9 @@ def panel_config():
 
     excel_info = ""
     if cfg.get("excel_ts"):
-        excel_info = (f"Archivo: <b>{cfg.get('excel_filename','planilla.xlsx')}</b> · "
-                      f"{cfg.get('excel_size',0)//1024} KB · "
-                      f"Subido: {cfg.get('excel_ts','')}")
+        excel_info = (f"Archivo: <b>{_e(cfg.get('excel_filename','planilla.xlsx'))}</b> · "
+                      f"{_e(cfg.get('excel_size',0)//1024)} KB · "
+                      f"Subido: {_e(cfg.get('excel_ts',''))}")
 
     return render_template_string("""<!DOCTYPE html>
 <html lang="es"><head><meta charset="UTF-8">
