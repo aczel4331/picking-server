@@ -3074,12 +3074,13 @@ def _leer_token(tok: str):
 
 
 def _clave_para_panel(tn=None) -> str:
-    """Credencial que el panel web incrusta en su JS: la clave de siempre para la
-    primaria; un token firmado de su tienda para las demás."""
+    """Credencial que el panel web incrusta en su JS: un token firmado del usuario logueado (también
+    en la tienda primaria). Antes la primaria incrustaba la clave del servidor: cualquier supervisor
+    la veía en el código de la página. Sin usuario no se incrusta nada."""
     tn = tn or _tn()
-    if tn.tid:
+    if tn and tn.usuario and _usuario_reg(tn.usuario):
         return _emitir_token(tn.tid, tn.usuario, tn.rol)
-    return API_KEY or ""
+    return ""
 
 
 def _tn_de_sesion():
@@ -4226,7 +4227,7 @@ input,select{background:var(--bg);border:1px solid var(--border);color:var(--tex
 function descargarZip(canal) {
   const msg = document.getElementById('msg-zip');
   msg.textContent = '⏳ Generando ZIP...';
-  const KEY = '""" + (_clave_para_panel() or "everest2024") + """';
+  const KEY = '""" + _clave_para_panel() + """';
   const url = BASE + '/api/etiquetas/descargar-zip?canal=' + canal + '&key=' + KEY;
 
   // Timeout de seguridad — si tarda más de 90s, avisar
