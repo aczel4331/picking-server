@@ -573,7 +573,7 @@ async function resolverImagen(sku) {
   if (_imgPedida.has(sku)) return null;
   _imgPedida.add(sku);
   try {
-    const r = await fetch(`/api/imagen-sku/${sku}`, { headers: _hdr() });
+    const r = await fetch(`/api/imagen-sku/${encodeURIComponent(sku)}`, { headers: _hdr() });
     const d = await r.json();
     const url = (d.existe && d.imagen_url) ? d.imagen_url : null;
     _imgCache[sku] = url;
@@ -583,7 +583,7 @@ async function resolverImagen(sku) {
 }
 
 function aplicarMiniatura(sku, url) {
-  document.querySelectorAll(`.ithumb[data-sku="${sku}"]`).forEach(el => {
+  document.querySelectorAll(`.ithumb[data-sku="${CSS.escape(sku)}"]`).forEach(el => {
     if (url) {
       el.style.backgroundImage = `url("${url}")`;
       el.classList.add('has-img');
@@ -787,12 +787,12 @@ function render(quiet = false) {
       const its = g.items || [];
       const d   = its.filter(it => (col[it.sku] || 0) >= it.req).length;
       const cl  = colaps.has(p) ? 'col' : '';
-      return `<div class="grupo" data-p="${p}">
+      return `<div class="grupo" data-p="${esc(p)}">
         <div class="g-hdr" onclick="tog(this)">
           <div class="g-left">
             <span style="font-size:18px">📦</span>
             <div>
-              <div class="g-name">${p}</div>
+              <div class="g-name">${esc(p)}</div>
               <div class="g-stats">${its.length} SKU${its.length>1?'s':''} · ${its.reduce((s,i)=>s+(i.req||0),0)} ud.</div>
             </div>
           </div>
@@ -802,15 +802,15 @@ function render(quiet = false) {
           ${its.map(it => {
             const c  = col[it.sku] || 0;
             const ok = c >= it.req;
-            return `<div class="item ${ok?'done':''}" id="item-${it.sku}">
+            return `<div class="item ${ok?'done':''}" id="item-${esc(it.sku)}">
               <div class="chk ${ok?'ok':'pend'}">${ok ? '✔' : '○'}</div>
-              <div class="ithumb" data-sku="${it.sku}" onclick="event.stopPropagation();abrirImagen('${it.sku}')">📷</div>
+              <div class="ithumb" data-sku="${esc(it.sku)}" onclick="event.stopPropagation();abrirImagen(this.dataset.sku)">📷</div>
               <div class="ibody">
-                <span class="isku-badge">${it.sku}</span>
-                <div class="iname">${it.nombre || '—'}</div>
+                <span class="isku-badge">${esc(it.sku)}</span>
+                <div class="iname">${esc(it.nombre || '—')}</div>
                 <div class="irow">
                   <span class="icnt ${ok?'ok':'pend'}">${c} / ${it.req}</span>
-                  ${it.estanteria ? `<span class="iest">🗂 ${it.estanteria}</span>` : ''}
+                  ${it.estanteria ? `<span class="iest">🗂 ${esc(it.estanteria)}</span>` : ''}
                 </div>
               </div>
             </div>`;
@@ -827,6 +827,11 @@ function render(quiet = false) {
 }
 
 function tog(h) { h.nextElementSibling.classList.toggle('col'); }
+
+// Texto de pedidos / planilla puesto en HTML: siempre escapado
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
+}
 
 // ── ESCANEO ─────────────────────────────────────────────────────────────────
 async function scan(raw) {

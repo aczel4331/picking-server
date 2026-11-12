@@ -95,7 +95,13 @@ try:
     U._get_json = falso; got.clear(); ev.clear()
     U.verificar_actualizacion("4.1.31", lambda i: (got.append(i), ev.set()), servidor="http://127.0.0.1:1"); ev.wait(10)
     U._get_json = orig_get
-    check("servidor caido -> usa GitHub como antes (sin firma: solo aviso con boton)", got and got[0]["origen"] == "github" and not got[0]["firma"], got)
+    check("servidor caido -> GitHub sin firma NO se ofrece (ni aviso ni boton)", not got, got)
+    def falso_firmado(url, timeout=10):
+        return {"ok": True, "version": "4.1.41", "url": "/x.zip", "sha256": "a" * 64, "firma": "Zg=="}
+    U._get_json = falso_firmado; got.clear(); ev.clear()
+    U.verificar_actualizacion("4.1.31", lambda i: (got.append(i), ev.set()), servidor="http://127.0.0.1:1"); ev.wait(10)
+    U._get_json = orig_get
+    check("una version con firma y sha256 si se ofrece", got and got[0]["version"] == "4.1.41", got)
 
     print("3) ACTUALIZADOR: nunca deja lista una version rota, ajena o sin firma")
     tmp = tempfile.mkdtemp(); U._dir_instalacion = lambda: tmp
@@ -118,6 +124,13 @@ try:
     check("firma de otra clave -> NO se instala", "firma" in r.get("err", ""), r)
     r = bajar(info, firma="")
     check("sin firma y con requerir_firma -> NO se instala", "firma" in r.get("err", ""), r)
+    r = bajar(info, firma="", requerir_firma=False)
+    check("sin firma aunque NO se pida firma (boton manual viejo) -> NO se instala", "firma" in r.get("err", "")
+          and not os.path.exists(os.path.join(tmp, "_update_pending.txt")), r)
+    r = bajar(info, sha256="", firma="", requerir_firma=False)
+    check("sin sha256 ni firma -> NO se instala", "firma" in r.get("err", ""), r)
+    check("el actualizador verifica certificados (no queda CERT_NONE)", U._SSL_CTX.verify_mode.name == "CERT_REQUIRED"
+          and U._SSL_CTX.check_hostname, U._SSL_CTX.verify_mode)
     check("la firma de una version no sirve para otra", not U.verificar_firma("4.1.99", info["sha256"], info["firma"]))
     shutil.rmtree(tmp, ignore_errors=True)
 finally:
