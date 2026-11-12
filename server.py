@@ -694,6 +694,62 @@ def _cuentas_info():
 # GESTIÓN DE USUARIOS — persiste en /data/usuarios.json (Railway Volume)
 # ══════════════════════════════════════════════════════════════════════════════
 
+_HASH_METODO = "pbkdf2:sha256:150000"     # liviano en RAM (scrypt, el de werkzeug, usa ~32 MB por intento)
+
+
+def _hash_clave(clave: str) -> str:
+    from werkzeug.security import generate_password_hash
+    return generate_password_hash(clave, method=_HASH_METODO)
+
+
+def _es_hash_nuevo(guardada: str) -> bool:
+    return str(guardada).startswith(("pbkdf2:", "scrypt:"))
+
+
+def _es_sha_viejo(guardada: str) -> bool:
+    g = str(guardada)
+    return len(g) == 64 and all(ch in "0123456789abcdef" for ch in g.lower())
+
+
+def _clave_coincide(guardada: str, clave: str) -> bool:
+    """La clave escrita contra lo guardado (hash nuevo, sha256 viejo del panel o texto plano viejo).
+    Ya no se acepta escribir el hash guardado como si fuera la clave."""
+    import hmac, hashlib
+    guardada = str(guardada or "")
+    if not guardada or not clave:
+        return False
+    if _es_hash_nuevo(guardada):
+        from werkzeug.security import check_password_hash
+        try:
+            return check_password_hash(guardada, clave)
+        except Exception:
+            return False
+    if _es_sha_viejo(guardada):
+        return hmac.compare_digest(hashlib.sha256(clave.encode()).hexdigest(), guardada.lower())
+    return hmac.compare_digest(guardada.encode(), clave.encode())
+
+
+def _migrar_claves_texto_plano():
+    """Cifra las claves que siguen en texto plano. Antes guarda una copia (para volver atrás con el
+    código anterior, que solo entiende texto plano o sha256). Las sha256 viejas se cifran en su
+    próximo login correcto (no se puede sin saber la clave)."""
+    planas = [u for u in _usuarios if u.get("clave") and not _es_hash_nuevo(u["clave"]) and not _es_sha_viejo(u["clave"])]
+    if not planas:
+        return
+    bak = USUARIOS_PATH + ".antes_de_cifrar.bak"
+    try:
+        if not os.path.exists(bak) and os.path.exists(USUARIOS_PATH):
+            import shutil
+            shutil.copy2(USUARIOS_PATH, bak)
+    except Exception as e:
+        logger.error(f"[USUARIOS] No se pudo respaldar antes de cifrar: {e} — no se cifra nada")
+        return
+    for u in planas:
+        u["clave"] = _hash_clave(u["clave"])
+    _guardar_usuarios()
+    logger.info(f"[USUARIOS] {len(planas)} clave(s) en texto plano cifradas (respaldo: {os.path.basename(bak)})")
+
+
 def _cargar_usuarios():
     """Carga usuarios desde /data/usuarios.json al arrancar."""
     global _usuarios
@@ -702,11 +758,12 @@ def _cargar_usuarios():
             with open(USUARIOS_PATH, encoding="utf-8") as f:
                 _usuarios = json.load(f)
             logger.info(f"[USUARIOS] Cargados: {[u.get('usuario') for u in _usuarios]}")
+            _migrar_claves_texto_plano()
         else:
             # Primera vez: crear usuario admin por defecto
             _usuarios = [{
                 "usuario":    "admin",
-                "clave":      os.environ.get("ADMIN_BOOTSTRAP_CLAVE", "1234"),
+                "clave":      _hash_clave(os.environ.get("ADMIN_BOOTSTRAP_CLAVE", "1234")),
                 "nombre":     "Administrador",
                 "cuenta_id":  "todas",
                 "rol":        "supervisor",
@@ -734,15 +791,11 @@ def _verificar_credenciales(usuario: str, clave: str):
     No guarda contraseñas en texto plano en logs.
     """
     usuario = usuario.strip().lower()
-    import hashlib
-    clave_sha = hashlib.sha256(clave.encode()).hexdigest()
     for u in _usuarios:
-        guardada = u.get("clave", "")
-        # Texto plano (altas y ediciones normales) o sha256 (lo que guarda el
-        # endpoint /clave del panel): antes ese último caso dejaba al usuario
-        # sin poder entrar.
-        if u.get("usuario","").lower() == usuario and (
-                guardada == clave or (len(guardada) == 64 and guardada == clave_sha)):
+        if u.get("usuario","").lower() == usuario and _clave_coincide(u.get("clave", ""), clave):
+            if not _es_hash_nuevo(u.get("clave", "")):
+                u["clave"] = _hash_clave(clave)     # sha256 / texto plano viejo → cifrado, en el primer login
+                _guardar_usuarios()
             return {
                 "usuario":   u.get("usuario"),
                 "nombre":    u.get("nombre", u.get("usuario")),
@@ -1822,6 +1875,26 @@ _login_fallos = {}
 _login_fallos_lock = threading.Lock()
 
 
+def _login_ip() -> str:
+    return request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+
+
+def _login_bloqueado(ip: str, usuario: str) -> bool:
+    """Más de 40 fallos desde una IP o 8 para un mismo usuario en 10 minutos (app y panel web)."""
+    ahora = time.time()
+    with _login_fallos_lock:
+        for kk in (ip, f"{ip}|{usuario.lower()}"):
+            _login_fallos[kk] = [t for t in _login_fallos.get(kk, []) if ahora - t < 600]
+        return len(_login_fallos[ip]) >= 40 or len(_login_fallos[f"{ip}|{usuario.lower()}"]) >= 8
+
+
+def _login_fallo(ip: str, usuario: str):
+    ahora = time.time()
+    with _login_fallos_lock:
+        _login_fallos.setdefault(ip, []).append(ahora)
+        _login_fallos.setdefault(f"{ip}|{usuario.lower()}", []).append(ahora)
+
+
 @app.route("/api/auth/login", methods=["POST"])
 def api_auth_login():
     """
@@ -1837,13 +1910,9 @@ def api_auth_login():
     if not usuario or not clave:
         return jsonify({"ok": False, "msg": "Falta usuario o clave"}), 400
 
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
-    ahora = time.time()
-    with _login_fallos_lock:
-        for kk in (ip, f"{ip}|{usuario.lower()}"):
-            _login_fallos[kk] = [t for t in _login_fallos.get(kk, []) if ahora - t < 600]
-        if len(_login_fallos[ip]) >= 40 or len(_login_fallos[f"{ip}|{usuario.lower()}"]) >= 8:
-            return jsonify({"ok": False, "msg": "Demasiados intentos. Esperá unos minutos."}), 429
+    ip, ahora = _login_ip(), time.time()
+    if _login_bloqueado(ip, usuario):
+        return jsonify({"ok": False, "msg": "Demasiados intentos. Esperá unos minutos."}), 429
 
     resultado = _verificar_credenciales(usuario, clave)
     if resultado:
@@ -1863,9 +1932,7 @@ def api_auth_login():
                         "token": _emitir_token(tid, resultado["usuario"], resultado["rol"])})
     else:
         logger.warning(f"[AUTH] Login FALLIDO: {usuario}")
-        with _login_fallos_lock:
-            _login_fallos[ip].append(ahora)
-            _login_fallos[f"{ip}|{usuario.lower()}"].append(ahora)
+        _login_fallo(ip, usuario)
         return jsonify({"ok": False, "msg": "Usuario o clave incorrectos"}), 401
 
 
@@ -1967,7 +2034,7 @@ def api_usuarios_crear():
     if cuenta.lower() == "todas" and not idn["plataforma"]:
         return jsonify({"ok": False, "msg": "Sin permiso"}), 403
 
-    nuevo = {"usuario": usuario, "clave": clave,
+    nuevo = {"usuario": usuario, "clave": _hash_clave(clave),
              "nombre": nombre, "cuenta_id": cuenta, "rol": rol_nuevo}
     _usuarios.append(nuevo)
     _guardar_usuarios()
@@ -2006,7 +2073,7 @@ def api_usuarios_editar(usuario_id):
             and data["cuenta_id"].strip().lower() not in _tiendas:
         return jsonify({"ok": False, "msg": "Esa tienda no existe"}), 400
     if data.get("clave"):
-        u["clave"]     = data["clave"].strip()
+        u["clave"]     = _hash_clave(data["clave"].strip())
     if data.get("nombre"):
         u["nombre"]    = data["nombre"].strip()
     if data.get("cuenta_id"):
@@ -2038,8 +2105,7 @@ def api_usuarios_cambiar_clave(usuario_id):
     if len(nueva_clave) < 4:
         return jsonify({"ok": False, "msg": "Mínimo 4 caracteres"}), 400
 
-    import hashlib
-    u["clave"] = hashlib.sha256(nueva_clave.encode()).hexdigest()
+    u["clave"] = _hash_clave(nueva_clave)
     _guardar_usuarios()
     logger.info(f"[USUARIOS] Clave cambiada: {usuario_id} (por {idn['rol']})")
     return jsonify({"ok": True, "msg": f"Clave de '{usuario_id}' actualizada"})
@@ -2715,7 +2781,7 @@ def api_panel_tiendas_crear():
         tid = _tienda_crear(d.get("nombre"), d.get("subtitulo"), logo_raw, d.get("plan") or "facturacion")
     except ValueError as e:
         return jsonify({"ok": False, "msg": str(e)}), 400
-    _usuarios.append({"usuario": usuario, "clave": clave, "nombre": str(d.get("nombre_usuario") or usuario).strip()[:60],
+    _usuarios.append({"usuario": usuario, "clave": _hash_clave(clave), "nombre": str(d.get("nombre_usuario") or usuario).strip()[:60],
                       "cuenta_id": tid, "rol": "supervisor"})
     _guardar_usuarios()
     logger.info(f"[TIENDAS] {tid}: supervisor '{usuario}' creado desde el panel")
@@ -5795,6 +5861,9 @@ def admin_usuarios_panel():
         if request.method == "POST":
             u = request.form.get("usuario","").strip().lower()
             c = request.form.get("clave","").strip()
+            if _login_bloqueado(_login_ip(), u):
+                return render_template_string(_PANEL_LOGIN_HTML,
+                    error="Demasiados intentos. Esperá unos minutos."), 429
             resultado = _verificar_credenciales(u, c)
             _tid_login = _tienda_de_cuenta((resultado or {}).get("cuenta_id"))
             if resultado and _tid_login and (_tiendas.get(_tid_login) or {}).get("estado") == "suspendida":
@@ -5813,6 +5882,7 @@ def admin_usuarios_panel():
                     return redirect("/facturacion")         # plan solo facturación: su pantalla
             else:
                 logger.warning(f"[ADMIN-PANEL] Login fallido: {u}")
+                _login_fallo(_login_ip(), u)
                 return render_template_string(_PANEL_LOGIN_HTML,
                     error="Usuario o clave incorrectos, o no tenés permiso de supervisor/admin.")
         else:
