@@ -75,10 +75,10 @@ try:
         with urllib.request.urlopen(r, timeout=10, **({"context": ctx} if con_ctx else {})) as x:
             return json.loads(x.read())
 
-    print("escritorio: usuario de Everest (sin token)")
+    print("escritorio: usuario de Everest (token firmado de la tienda primaria, desde 4.1.37)")
     r = requests.post(B + "/api/auth/login", json={"usuario": "colector1", "clave": "c1"}).json()
     A.activar_marca_de_usuario(r["tienda"], r["token"])
-    check("Everest no usa token (sigue con la clave de siempre)", A._TOKEN_SESION["v"] == "")
+    check("Everest usa su token firmado (tienda primaria)", A._TOKEN_SESION["v"].startswith("tk1.") and A._TOKEN_SESION["primaria"], A._TOKEN_SESION)
     pe = get("/api/pedidos")
     check("Everest: ve sus pedidos y ninguno de la tienda nueva", pe["total"] >= 20 and not any(p["_cuenta"] == TID for p in pe["pedidos"]))
 
@@ -104,10 +104,12 @@ try:
     r3 = urllib.request.Request("https://api.mercadolibre.com/users/me")
     check("pedidos a OTROS servidores no llevan el token ni la versión", r3.get_header("X-api-key") is None and r3.get_header("X-client-version") is None)
     A.set_token_sesion("")
-    check("al cerrar sesión se borra el token", urllib.request.Request(B + "/api/pedidos").get_header("X-api-key") is None)
+    check("al cerrar sesión se borra el token (queda la clave de la instalación, nunca sin credencial)",
+          A._TOKEN_SESION["v"] == "" and urllib.request.Request(B + "/api/pedidos").get_header("X-api-key") == A.API_KEY_NUBE)
     r = requests.post(B + "/api/auth/login", json={"usuario": "colector1", "clave": "c1"}).json()
     A.activar_marca_de_usuario(r["tienda"], r["token"])
-    check("al volver Everest, sin token otra vez", A._TOKEN_SESION["v"] == "" and get("/api/pedidos")["total"] >= 20)
+    check("al volver Everest, su token otra vez y ve sus pedidos", A._TOKEN_SESION["v"].startswith("tk1.") and A._TOKEN_SESION["primaria"]
+          and get("/api/pedidos")["total"] >= 20)
 finally:
     srv.kill()
 print(f"\nRESULTADO P2 escritorio: {ok_n} ok, {fail_n} fallas")

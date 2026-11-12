@@ -318,7 +318,7 @@ catch(e) { _colector = null; }
 // Timestamp del último lote recibido — para detectar lotes nuevos
 let _loteTimestamp = '';
 
-// Credencial de sesión: solo las tiendas nuevas reciben token (Everest sigue como siempre).
+// Credencial de sesión: todo colector recibe un token firmado al iniciar sesión (también Everest).
 function _hdr(extra) {
   const h = Object.assign({}, extra || {});
   if (_colector && _colector.token) h['X-API-Key'] = _colector.token;
@@ -407,7 +407,7 @@ async function intentarLogin() {
     }
     _revReiniciar(); E = null; _loteTimestamp = '';   // otro colector: empezar sin la guarda del anterior
     _colector = d.usuario;   // {usuario, nombre, cuenta_id, rol}
-    if (d.token && d.tienda && d.tienda.tienda_id) _colector.token = d.token;
+    if (d.token) _colector.token = d.token;
     if (d.tienda) aplicarMarca(d.tienda);
     localStorage.setItem('colector_activo', JSON.stringify(_colector));
     document.getElementById('login-gate').style.display = 'none';
@@ -492,7 +492,7 @@ async function load() {
   if (!_colector) return;
   try {
     const r = await fetch('/api/estado?' + _paramsColector(), { headers: _hdr() });
-    if (r.status === 401 && _colector && _colector.token) { _sesionVencida(); return; }
+    if (r.status === 401 && _colector) { _sesionVencida(); return; }
     if (!r.ok) { fb('err', '❌ Error del servidor: ' + r.status); return; }
     const nuevoE = await r.json();
     setConexion('ok');
@@ -514,7 +514,7 @@ async function loadQ() {
   if (!_colector) return;
   try {
     const r = await fetch('/api/estado?' + _paramsColector(), { headers: _hdr() });
-    if (r.status === 401 && _colector && _colector.token) { _sesionVencida(); return; }
+    if (r.status === 401 && _colector) { _sesionVencida(); return; }
     if (!r.ok) { setConexion('warn'); return; }
     const nuevo = await r.json();
     setConexion('ok');
@@ -849,6 +849,7 @@ async function scan(raw) {
       body:    JSON.stringify({ sku, usuario: (_colector && _colector.usuario) || '',
                                  cuenta_id: (_colector && _colector.cuenta_id) || '' })
     });
+    if (r.status === 401 && _colector) { _sesionVencida(); return; }
     const d = await r.json();
 
     if (!d.ok) {
